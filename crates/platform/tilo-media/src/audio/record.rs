@@ -340,65 +340,6 @@ mod tests {
         label: "test recording",
     };
 
-    #[test]
-    fn every_capture_asks_pw_record_for_the_same_shape() {
-        let args = arguments(&STEREO).unwrap();
-        assert_eq!(
-            args,
-            [
-                "--target",
-                "42",
-                "--rate",
-                "48000",
-                "--channels",
-                "2",
-                "--channel-map",
-                "Stereo",
-                "--properties",
-                "{ node.name = test }",
-                "--media-type",
-                "Audio",
-                "--media-category",
-                "Capture",
-                "--media-role",
-                "Production",
-                "--latency",
-                "20ms",
-                "--format",
-                "s16",
-                "--raw",
-                "-",
-            ]
-        );
-        assert_eq!(Format::STEREO_48K.frame_bytes(), 4);
-        assert_eq!(Format::STEREO_48K.rate, 48_000);
-        let mono = arguments(&Spec {
-            target: "mic",
-            properties: None,
-            format: Format::MONO_16K,
-            overflow: Overflow::Fail,
-            label: "test dictation",
-        })
-        .unwrap();
-        assert!(mono.windows(2).any(|pair| pair == ["--rate", "16000"]));
-        assert!(mono.windows(2).any(|pair| pair == ["--channels", "1"]));
-        assert!(
-            mono.windows(2)
-                .any(|pair| pair == ["--channel-map", "mono"])
-        );
-        assert!(!mono.iter().any(|arg| arg == "--properties"));
-        assert_eq!(mono.last().map(String::as_str), Some("-"));
-        assert_eq!(Format::MONO_16K.frame_bytes(), 2);
-        let bad = arguments(&Spec {
-            format: Format {
-                rate: 48_000,
-                channels: 3,
-            },
-            ..STEREO
-        });
-        assert!(bad.is_err());
-    }
-
     fn stream(frame_bytes: usize) -> (Stream, SyncSender<Zeroizing<Vec<u8>>>, Arc<AtomicBool>) {
         let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
         let interrupted = Arc::new(AtomicBool::new(false));
@@ -415,125 +356,188 @@ mod tests {
         )
     }
 
-    #[test]
-    fn pause_discards_what_it_heard_and_each_take_is_whole_sample_frames() {
-        let (mut stream, sender, _interrupted) = stream(Format::STEREO_48K.frame_bytes());
-        sender.send(Zeroizing::new(vec![1; 8])).unwrap();
-        sender.send(Zeroizing::new(vec![2; 6])).unwrap();
-        // Paused: everything captured so far is discarded, not replayed.
-        stream.discard();
-        assert!(stream.pending.is_empty());
-        assert!(stream.take().unwrap().is_empty());
-        sender.send(Zeroizing::new(vec![3; 4])).unwrap();
-        assert_eq!(stream.take().unwrap(), vec![3; 4]);
-        assert!(stream.take().unwrap().is_empty());
-        // Half a stereo sample is held back until its other half arrives.
-        sender.send(Zeroizing::new(vec![4; 2])).unwrap();
-        assert!(stream.take().unwrap().is_empty());
-        assert_eq!(stream.pending.len(), 2);
-        sender.send(Zeroizing::new(vec![4; 2])).unwrap();
-        assert_eq!(stream.take().unwrap(), vec![4; 4]);
-    }
+    tilo_test_env::scenario! {
+        fn pw_record_capture_and_its_reader;
 
-    #[test]
-    fn the_end_of_the_pipe_is_reported_rather_than_recorded_as_silence() {
-        let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
-        let interrupted = Arc::new(AtomicBool::new(false));
-        read_audio(
-            std::io::empty(),
-            &sender,
-            Overflow::Drop,
-            &Arc::clone(&interrupted),
-        );
-        drop(sender);
-        let mut stream = Stream {
-            chunks,
-            pending: Zeroizing::new(Vec::new()),
-            frame_bytes: 4,
-            interrupted,
-            label: "test",
-        };
-        assert_eq!(stream.take().unwrap_err(), "PipeWire capture of test ended");
-        assert!(stream.next_chunk().is_none());
-    }
+        phase every_capture_asks_pw_record_for_the_same_shape;
+        {
+            let args = arguments(&STEREO).unwrap();
+            assert_eq!(
+                args,
+                [
+                    "--target",
+                    "42",
+                    "--rate",
+                    "48000",
+                    "--channels",
+                    "2",
+                    "--channel-map",
+                    "Stereo",
+                    "--properties",
+                    "{ node.name = test }",
+                    "--media-type",
+                    "Audio",
+                    "--media-category",
+                    "Capture",
+                    "--media-role",
+                    "Production",
+                    "--latency",
+                    "20ms",
+                    "--format",
+                    "s16",
+                    "--raw",
+                    "-",
+                ]
+            );
+            assert_eq!(Format::STEREO_48K.frame_bytes(), 4);
+            assert_eq!(Format::STEREO_48K.rate, 48_000);
+            let mono = arguments(&Spec {
+                target: "mic",
+                properties: None,
+                format: Format::MONO_16K,
+                overflow: Overflow::Fail,
+                label: "test dictation",
+            })
+            .unwrap();
+            assert!(mono.windows(2).any(|pair| pair == ["--rate", "16000"]));
+            assert!(mono.windows(2).any(|pair| pair == ["--channels", "1"]));
+            assert!(
+                mono.windows(2)
+                    .any(|pair| pair == ["--channel-map", "mono"])
+            );
+            assert!(!mono.iter().any(|arg| arg == "--properties"));
+            assert_eq!(mono.last().map(String::as_str), Some("-"));
+            assert_eq!(Format::MONO_16K.frame_bytes(), 2);
+            let bad = arguments(&Spec {
+                format: Format {
+                    rate: 48_000,
+                    channels: 3,
+                },
+                ..STEREO
+            });
+            assert!(bad.is_err());
+        }
 
-    #[test]
-    fn a_reader_that_falls_behind_drops_sound_or_ends_the_capture() {
-        let (sender, chunks) = sync_channel(1);
-        let interrupted = AtomicBool::new(false);
-        let source = std::io::Cursor::new(vec![0u8; CHUNK_BYTES.saturating_mul(3)]);
-        read_audio(source, &sender, Overflow::Drop, &interrupted);
-        assert_eq!(chunks.try_recv().unwrap().len(), CHUNK_BYTES);
-        assert!(
-            chunks.try_recv().is_err(),
-            "the chunks after a full queue never block the reader"
-        );
+        phase pause_discards_what_it_heard_and_each_take_is_whole_sample_frames;
+        {
+            let (mut stream, sender, _interrupted) = stream(Format::STEREO_48K.frame_bytes());
+            sender.send(Zeroizing::new(vec![1; 8])).unwrap();
+            sender.send(Zeroizing::new(vec![2; 6])).unwrap();
+            // Paused: everything captured so far is discarded, not replayed.
+            stream.discard();
+            assert!(stream.pending.is_empty());
+            assert!(stream.take().unwrap().is_empty());
+            sender.send(Zeroizing::new(vec![3; 4])).unwrap();
+            assert_eq!(stream.take().unwrap(), vec![3; 4]);
+            assert!(stream.take().unwrap().is_empty());
+            // Half a stereo sample is held back until its other half arrives.
+            sender.send(Zeroizing::new(vec![4; 2])).unwrap();
+            assert!(stream.take().unwrap().is_empty());
+            assert_eq!(stream.pending.len(), 2);
+            sender.send(Zeroizing::new(vec![4; 2])).unwrap();
+            assert_eq!(stream.take().unwrap(), vec![4; 4]);
+        }
 
-        let (sender, chunks) = sync_channel(1);
-        let interrupted = AtomicBool::new(false);
-        let mut source = std::io::Cursor::new(vec![0u8; CHUNK_BYTES.saturating_mul(3)]);
-        read_audio(&mut source, &sender, Overflow::Fail, &interrupted);
-        assert!(interrupted.load(Ordering::Acquire));
-        assert_eq!(
-            source.position(),
-            u64::try_from(CHUNK_BYTES.saturating_mul(2)).unwrap(),
-            "a capture that may not lose words stops at the overflow"
-        );
-        assert_eq!(chunks.try_recv().unwrap().len(), CHUNK_BYTES);
-        assert!(chunks.try_recv().is_err());
-    }
+        phase the_end_of_the_pipe_is_reported_rather_than_recorded_as_silence;
+        {
+            let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
+            let interrupted = Arc::new(AtomicBool::new(false));
+            read_audio(
+                std::io::empty(),
+                &sender,
+                Overflow::Drop,
+                &Arc::clone(&interrupted),
+            );
+            drop(sender);
+            let mut stream = Stream {
+                chunks,
+                pending: Zeroizing::new(Vec::new()),
+                frame_bytes: 4,
+                interrupted,
+                label: "test",
+            };
+            assert_eq!(stream.take().unwrap_err(), "PipeWire capture of test ended");
+            assert!(stream.next_chunk().is_none());
+        }
 
-    #[test]
-    fn a_capture_with_nobody_listening_ends_its_reader() {
-        let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
-        drop(chunks);
-        let interrupted = AtomicBool::new(false);
-        let source = std::io::Cursor::new(vec![0u8; CHUNK_BYTES]);
-        read_audio(source, &sender, Overflow::Drop, &interrupted);
-        assert!(
-            !interrupted.load(Ordering::Acquire),
-            "an owner that left is not an interruption to report"
-        );
-    }
+        phase a_reader_that_falls_behind_drops_sound_or_ends_the_capture;
+        {
+            let (sender, chunks) = sync_channel(1);
+            let interrupted = AtomicBool::new(false);
+            let source = std::io::Cursor::new(vec![0u8; CHUNK_BYTES.saturating_mul(3)]);
+            read_audio(source, &sender, Overflow::Drop, &interrupted);
+            assert_eq!(chunks.try_recv().unwrap().len(), CHUNK_BYTES);
+            assert!(
+                chunks.try_recv().is_err(),
+                "the chunks after a full queue never block the reader"
+            );
 
-    #[test]
-    fn dropping_a_capture_reaps_its_process_and_ends_its_stream() {
-        let mut command = Command::new("cat");
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        bounded_command::own_process_tree(&mut command);
-        let mut child = command.spawn_locked().unwrap();
-        let pid = libc::pid_t::try_from(child.id()).unwrap();
-        assert!(child.try_wait().unwrap().is_none());
-        let pipe = child.stdout.take().unwrap();
-        let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let reading = Arc::clone(&interrupted);
-        let reader = std::thread::spawn(move || {
-            read_audio(pipe, &sender, Overflow::Drop, &reading);
-        });
-        let capture = Capture {
-            child,
-            reader: Some(reader),
-        };
-        let mut stream = Stream {
-            chunks,
-            pending: Zeroizing::new(Vec::new()),
-            frame_bytes: 2,
-            interrupted,
-            label: "test",
-        };
-        drop(capture);
-        assert!(stream.next_chunk().is_none());
-        // SAFETY: signal 0 only checks the PID of the child this test spawned;
-        // it cannot send a signal or affect another process.
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::ESRCH)
-        );
+            let (sender, chunks) = sync_channel(1);
+            let interrupted = AtomicBool::new(false);
+            let mut source = std::io::Cursor::new(vec![0u8; CHUNK_BYTES.saturating_mul(3)]);
+            read_audio(&mut source, &sender, Overflow::Fail, &interrupted);
+            assert!(interrupted.load(Ordering::Acquire));
+            assert_eq!(
+                source.position(),
+                u64::try_from(CHUNK_BYTES.saturating_mul(2)).unwrap(),
+                "a capture that may not lose words stops at the overflow"
+            );
+            assert_eq!(chunks.try_recv().unwrap().len(), CHUNK_BYTES);
+            assert!(chunks.try_recv().is_err());
+        }
+
+        phase a_capture_with_nobody_listening_ends_its_reader;
+        {
+            let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
+            drop(chunks);
+            let interrupted = AtomicBool::new(false);
+            let source = std::io::Cursor::new(vec![0u8; CHUNK_BYTES]);
+            read_audio(source, &sender, Overflow::Drop, &interrupted);
+            assert!(
+                !interrupted.load(Ordering::Acquire),
+                "an owner that left is not an interruption to report"
+            );
+        }
+
+        phase dropping_a_capture_reaps_its_process_and_ends_its_stream;
+        {
+            let mut command = Command::new("cat");
+            command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            bounded_command::own_process_tree(&mut command);
+            let mut child = command.spawn_locked().unwrap();
+            let pid = libc::pid_t::try_from(child.id()).unwrap();
+            assert!(child.try_wait().unwrap().is_none());
+            let pipe = child.stdout.take().unwrap();
+            let (sender, chunks) = sync_channel(QUEUED_CHUNKS);
+            let interrupted = Arc::new(AtomicBool::new(false));
+            let reading = Arc::clone(&interrupted);
+            let reader = std::thread::spawn(move || {
+                read_audio(pipe, &sender, Overflow::Drop, &reading);
+            });
+            let capture = Capture {
+                child,
+                reader: Some(reader),
+            };
+            let mut stream = Stream {
+                chunks,
+                pending: Zeroizing::new(Vec::new()),
+                frame_bytes: 2,
+                interrupted,
+                label: "test",
+            };
+            drop(capture);
+            assert!(stream.next_chunk().is_none());
+            // SAFETY: signal 0 only checks the PID of the child this test spawned;
+            // it cannot send a signal or affect another process.
+            assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]

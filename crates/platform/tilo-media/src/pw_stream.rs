@@ -1561,270 +1561,195 @@ mod tests {
         (renderer, seen, status)
     }
 
-    #[test]
-    fn raw_time_converts_graph_ticks_and_stream_frames() {
-        // 480 ticks of a 1/48000 graph is 10 ms; 3840 queued bytes of stereo
-        // f32 are 480 frames, plus 16 in the resampler.
-        let timing = DeviceTiming::from_raw(5_000_000_000, 1, 48_000, 480, 3840, 16, 8);
-        assert_eq!(timing.delay_ns, 10_000_000);
-        assert_eq!(timing.queued_frames, 496);
-        let graph = DeviceTiming::from_raw(1, 1, 44_100, 441, 0, 0, 8);
-        assert_eq!(graph.delay_ns, 10_000_000);
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn the_playback_renderer;
 
-    #[test]
-    fn a_block_is_scheduled_when_it_leaves_the_speaker() {
-        let (mut renderer, seen, status) = renderer(2);
-        let timing = DeviceTiming {
-            now_ns: 7_000_000_000,
-            delay_ns: 12_000_000,
-            queued_frames: 480,
-        };
-        let clock = FakeClock {
-            timing: Some(timing),
-            now_ns: 7_000_500_000,
-        };
-        let mut out = vec![0_u8; 1024 * 8];
-        let written = renderer.fill(&clock, &mut out, Some(256));
-        assert_eq!(written, 256 * 8, "only the requested frames are written");
-        let (presentation, samples) = seen.lock().unwrap()[0];
-        // cycle start + device delay + the 10 ms still queued in the stream.
-        assert_eq!(presentation, 7_000_000_000 + 12_000_000 + 10_000_000);
-        assert_eq!(samples, 512);
-        assert_eq!(
-            status.timing(),
-            Some(timing),
-            "the owner can read the timing"
-        );
-        let second = f32::from_le_bytes(out[4..8].try_into().unwrap());
-        assert!((second - 0.01).abs() < 1e-6, "samples are written as f32le");
-    }
-
-    #[test]
-    fn before_the_graph_runs_a_block_is_scheduled_for_now() {
-        let (mut renderer, seen, status) = renderer(1);
-        let clock = FakeClock {
-            timing: Some(DeviceTiming::default()),
-            now_ns: 42,
-        };
-        let mut out = vec![0_u8; 64];
-        assert_eq!(renderer.fill(&clock, &mut out, None), 64);
-        assert_eq!(seen.lock().unwrap()[0], (42, 16));
-        assert_eq!(status.timing(), None);
-    }
-
-    #[test]
-    fn a_buffer_smaller_than_a_frame_renders_nothing() {
-        let (mut renderer, seen, _) = renderer(2);
-        let clock = FakeClock {
-            timing: None,
-            now_ns: 1,
-        };
-        assert_eq!(renderer.fill(&clock, &mut [0; 7], None), 0);
-        assert!(seen.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn samples_are_clamped_to_full_scale() {
-        struct Loud;
-        impl PlaybackSource for Loud {
-            fn render(&mut self, _: i64, out: &mut [f32]) {
-                out.fill(3.0);
-            }
+        phase a_block_is_scheduled_when_it_leaves_the_speaker;
+        {
+            let (mut renderer, seen, status) = renderer(2);
+            let timing = DeviceTiming {
+                now_ns: 7_000_000_000,
+                delay_ns: 12_000_000,
+                queued_frames: 480,
+            };
+            let clock = FakeClock {
+                timing: Some(timing),
+                now_ns: 7_000_500_000,
+            };
+            let mut out = vec![0_u8; 1024 * 8];
+            let written = renderer.fill(&clock, &mut out, Some(256));
+            assert_eq!(written, 256 * 8, "only the requested frames are written");
+            let (presentation, samples) = seen.lock().unwrap()[0];
+            // cycle start + device delay + the 10 ms still queued in the stream.
+            assert_eq!(presentation, 7_000_000_000 + 12_000_000 + 10_000_000);
+            assert_eq!(samples, 512);
+            assert_eq!(
+                status.timing(),
+                Some(timing),
+                "the owner can read the timing"
+            );
+            let second = f32::from_le_bytes(out[4..8].try_into().unwrap());
+            assert!((second - 0.01).abs() < 1e-6, "samples are written as f32le");
         }
-        let mut renderer =
-            PlaybackRenderer::new(Box::new(Loud), 1, RATE, Arc::new(StreamStatus::default()));
-        let mut out = [0_u8; 4];
-        renderer.fill(
-            &FakeClock {
+
+        phase before_the_graph_runs_a_block_is_scheduled_for_now;
+        {
+            let (mut renderer, seen, status) = renderer(1);
+            let clock = FakeClock {
+                timing: Some(DeviceTiming::default()),
+                now_ns: 42,
+            };
+            let mut out = vec![0_u8; 64];
+            assert_eq!(renderer.fill(&clock, &mut out, None), 64);
+            assert_eq!(seen.lock().unwrap()[0], (42, 16));
+            assert_eq!(status.timing(), None);
+        }
+
+        phase a_buffer_smaller_than_a_frame_renders_nothing;
+        {
+            let (mut renderer, seen, _) = renderer(2);
+            let clock = FakeClock {
                 timing: None,
                 now_ns: 1,
-            },
-            &mut out,
-            None,
-        );
-        assert!((f32::from_le_bytes(out) - 1.0).abs() < f32::EPSILON);
-    }
+            };
+            assert_eq!(renderer.fill(&clock, &mut [0; 7], None), 0);
+            assert!(seen.lock().unwrap().is_empty());
+        }
 
-    #[test]
-    fn a_sync_playout_plays_at_the_device_presentation_time() {
-        let latency = 50_000_000;
-        let mut playout = SyncPlayout::new(PlayoutConfig::new(RATE, latency, ChannelRole::Left));
-        let samples = (0..RATE).flat_map(|_| [0.5_f32, -0.25]).collect();
-        playout.push(&AudioFrame {
-            seq: 1,
-            media_ts: 0,
-            channels: 2,
-            payload: Payload::F32(samples),
-        });
-        let shared = Arc::new(Mutex::new(SyncPlayoutState {
-            playout,
-            clock: LinearClockMapping::default(),
-        }));
-        let status = Arc::new(StreamStatus::default());
-        let mut renderer = PlaybackRenderer::new(
-            Box::new(SyncPlaybackSource::new(Arc::clone(&shared))),
-            1,
-            RATE,
-            status,
-        );
-        // The callback runs 30 ms before the group latency elapses, but the
-        // device delay is 20 ms and 10 ms are queued, so the block lands at
-        // exactly `latency`: the first sample of the stream.
-        let clock = FakeClock {
-            timing: Some(DeviceTiming {
+        phase samples_are_clamped_to_full_scale;
+        {
+            struct Loud;
+            impl PlaybackSource for Loud {
+                fn render(&mut self, _: i64, out: &mut [f32]) {
+                    out.fill(3.0);
+                }
+            }
+            let mut renderer =
+                PlaybackRenderer::new(Box::new(Loud), 1, RATE, Arc::new(StreamStatus::default()));
+            let mut out = [0_u8; 4];
+            renderer.fill(
+                &FakeClock {
+                    timing: None,
+                    now_ns: 1,
+                },
+                &mut out,
+                None,
+            );
+            assert!((f32::from_le_bytes(out) - 1.0).abs() < f32::EPSILON);
+        }
+
+        phase a_sync_playout_plays_at_the_device_presentation_time;
+        {
+            let latency = 50_000_000;
+            let mut playout = SyncPlayout::new(PlayoutConfig::new(RATE, latency, ChannelRole::Left));
+            let samples = (0..RATE).flat_map(|_| [0.5_f32, -0.25]).collect();
+            playout.push(&AudioFrame {
+                seq: 1,
+                media_ts: 0,
+                channels: 2,
+                payload: Payload::F32(samples),
+            });
+            let shared = Arc::new(Mutex::new(SyncPlayoutState {
+                playout,
+                clock: LinearClockMapping::default(),
+            }));
+            let status = Arc::new(StreamStatus::default());
+            let mut renderer = PlaybackRenderer::new(
+                Box::new(SyncPlaybackSource::new(Arc::clone(&shared))),
+                1,
+                RATE,
+                status,
+            );
+            // The callback runs 30 ms before the group latency elapses, but the
+            // device delay is 20 ms and 10 ms are queued, so the block lands at
+            // exactly `latency`: the first sample of the stream.
+            let clock = FakeClock {
+                timing: Some(DeviceTiming {
+                    now_ns: latency - 30_000_000,
+                    delay_ns: 20_000_000,
+                    queued_frames: 480,
+                }),
                 now_ns: latency - 30_000_000,
-                delay_ns: 20_000_000,
-                queued_frames: 480,
-            }),
-            now_ns: latency - 30_000_000,
-        };
-        let mut out = vec![0_u8; 480 * 4];
-        renderer.fill(&clock, &mut out, None);
-        let error = shared.lock().unwrap().playout.stats().presentation_error_ns;
-        assert_eq!(error, 0);
-        let last = f32::from_le_bytes(out[out.len() - 4..].try_into().unwrap());
-        assert!((last - 0.5).abs() < 0.01, "the left channel plays: {last}");
+            };
+            let mut out = vec![0_u8; 480 * 4];
+            renderer.fill(&clock, &mut out, None);
+            let error = shared.lock().unwrap().playout.stats().presentation_error_ns;
+            assert_eq!(error, 0);
+            let last = f32::from_le_bytes(out[out.len() - 4..].try_into().unwrap());
+            assert!((last - 0.5).abs() < 0.01, "the left channel plays: {last}");
+        }
     }
 
-    #[test]
-    fn capture_properties_name_the_target_and_forbid_substitutes() {
-        let config = CaptureConfig {
-            node_name: "tilo-capture\0x".into(),
-            target: CaptureTarget {
-                serial: 812,
-                monitor_sink: true,
-            },
-            rate: RATE,
-            channels: 2,
-            queue_chunks: 8,
-        };
-        let properties = config.properties();
-        let get = |key: &str| {
-            properties
-                .iter()
-                .find(|(name, _)| *name == key)
-                .map(|(_, value)| value.as_str())
-        };
-        assert_eq!(get("target.object"), Some("812"));
-        assert_eq!(get("node.dont-fallback"), Some("true"));
-        assert_eq!(get("node.dont-reconnect"), Some("true"));
-        assert_eq!(get("node.dont-move"), Some("true"));
-        assert_eq!(get("stream.capture.sink"), Some("true"));
-        assert_eq!(get("node.name"), Some("tilo-capturex"));
-        let source = CaptureConfig {
-            target: CaptureTarget {
-                serial: 5,
-                monitor_sink: false,
-            },
-            ..config
-        };
-        assert!(
-            source
-                .properties()
-                .iter()
-                .all(|(key, _)| *key != "stream.capture.sink")
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_target_link_guard;
 
-    #[test]
-    fn playback_properties_carry_the_role_channels_and_quantum() {
-        let config =
-            PlaybackConfig::for_role("tilo-member", "Speaker group", RATE, ChannelRole::Right);
-        assert_eq!(config.channels, 1);
-        let properties = config.properties();
-        assert!(properties.contains(&("node.latency", "480/48000".into())));
-        assert!(properties.contains(&("audio.channels", "1".into())));
-        let stereo =
-            PlaybackConfig::for_role("tilo-member", "Speaker group", RATE, ChannelRole::Stereo);
-        assert_eq!(stereo.channels, 2);
-    }
+        phase governed_playback_requires_only_the_observed_output_link;
+        {
+            let mut guard = TargetLinkGuard::new(812);
+            guard.observe_node(40, Some(812));
+            guard.set_own_node(77);
+            guard.observe_link(40, 77);
+            assert_eq!(guard.verdict(), LinkVerdict::Linked);
+            guard.remove_link(40, 77);
+            assert_eq!(guard.verdict(), LinkVerdict::Waiting);
+            guard.observe_link(55, 77);
+            assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
+            guard.observe_link(40, 77);
+            assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
+            guard.observe_removal(40);
+            assert_eq!(guard.verdict(), LinkVerdict::TargetGone);
+        }
 
-    #[test]
-    fn a_continuous_capture_stays_sample_continuous_through_jitter() {
-        let mut timeline = CaptureTimeline::new(RATE);
-        let start = 10_000_000_000;
-        assert_eq!(timeline.stamp(start, 480), 480_000);
-        assert_eq!(timeline.stamp(start + 10_300_000, 480), 480_480);
-        assert_eq!(timeline.stamp(start + 19_900_000, 480), 480_960);
-        // A 50 ms hole (an xrun) re-anchors on the measured time, leaving a gap.
-        let after_gap = timeline.stamp(start + 80_000_000, 480);
-        assert_eq!(after_gap, 483_840);
-        assert_eq!(timeline.stamp(start + 90_000_000, 480), after_gap + 480);
-    }
+        phase a_link_from_the_target_verifies_the_capture;
+        {
+            let mut guard = TargetLinkGuard::new(812);
+            assert_eq!(guard.verdict(), LinkVerdict::Waiting);
+            guard.observe_node(40, Some(812));
+            guard.observe_node(41, Some(900));
+            guard.set_own_node(77);
+            assert_eq!(guard.verdict(), LinkVerdict::Waiting);
+            guard.observe_link(40, 77);
+            guard.observe_link(41, 12);
+            assert_eq!(guard.verdict(), LinkVerdict::Linked);
+        }
 
-    #[test]
-    fn governed_playback_requires_only_the_observed_output_link() {
-        let mut guard = TargetLinkGuard::new(812);
-        guard.observe_node(40, Some(812));
-        guard.set_own_node(77);
-        guard.observe_link(40, 77);
-        assert_eq!(guard.verdict(), LinkVerdict::Linked);
-        guard.remove_link(40, 77);
-        assert_eq!(guard.verdict(), LinkVerdict::Waiting);
-        guard.observe_link(55, 77);
-        assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
-        guard.observe_link(40, 77);
-        assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
-        guard.observe_removal(40);
-        assert_eq!(guard.verdict(), LinkVerdict::TargetGone);
-    }
+        phase a_link_from_any_other_node_fails_the_capture;
+        {
+            let mut guard = TargetLinkGuard::new(812);
+            guard.observe_node(40, Some(812));
+            guard.set_own_node(77);
+            guard.observe_link(55, 77);
+            assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
+            guard.observe_link(40, 77);
+            assert_eq!(
+                guard.verdict(),
+                LinkVerdict::Foreign { node: 55 },
+                "the chosen node joining too does not excuse the substitute"
+            );
+        }
 
-    #[test]
-    fn a_link_from_the_target_verifies_the_capture() {
-        let mut guard = TargetLinkGuard::new(812);
-        assert_eq!(guard.verdict(), LinkVerdict::Waiting);
-        guard.observe_node(40, Some(812));
-        guard.observe_node(41, Some(900));
-        guard.set_own_node(77);
-        assert_eq!(guard.verdict(), LinkVerdict::Waiting);
-        guard.observe_link(40, 77);
-        guard.observe_link(41, 12);
-        assert_eq!(guard.verdict(), LinkVerdict::Linked);
-    }
+        phase a_missing_target_is_never_substituted;
+        {
+            let mut guard = TargetLinkGuard::new(812);
+            guard.set_own_node(77);
+            // The target never appeared; something else was linked anyway.
+            guard.observe_link(55, 77);
+            assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
+        }
 
-    #[test]
-    fn a_link_from_any_other_node_fails_the_capture() {
-        let mut guard = TargetLinkGuard::new(812);
-        guard.observe_node(40, Some(812));
-        guard.set_own_node(77);
-        guard.observe_link(55, 77);
-        assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
-        guard.observe_link(40, 77);
-        assert_eq!(
-            guard.verdict(),
-            LinkVerdict::Foreign { node: 55 },
-            "the chosen node joining too does not excuse the substitute"
-        );
-    }
-
-    #[test]
-    fn a_missing_target_is_never_substituted() {
-        let mut guard = TargetLinkGuard::new(812);
-        guard.set_own_node(77);
-        // The target never appeared; something else was linked anyway.
-        guard.observe_link(55, 77);
-        assert_eq!(guard.verdict(), LinkVerdict::Foreign { node: 55 });
-    }
-
-    #[test]
-    fn the_target_leaving_the_graph_fails_the_capture() {
-        let mut guard = TargetLinkGuard::new(812);
-        guard.observe_node(40, Some(812));
-        guard.set_own_node(77);
-        guard.observe_link(40, 77);
-        guard.observe_removal(40);
-        assert_eq!(guard.verdict(), LinkVerdict::TargetGone);
-    }
-
-    #[test]
-    fn frame_conversions_round_towards_earlier_frames() {
-        assert_eq!(frames_to_ns(48_000, RATE), NS_PER_SECOND);
-        assert_eq!(ns_to_frames(NS_PER_SECOND, RATE), 48_000);
-        assert_eq!(ns_to_frames(20_833, RATE), 0);
-        assert_eq!(ns_to_frames(20_834, RATE), 1);
-        assert_eq!(ns_to_frames(-1, RATE), -1);
-        assert_eq!(whole_frames(&[1, 2, 3, 4, 5, 6], 4), &[1, 2, 3, 4]);
+        phase the_target_leaving_the_graph_fails_the_capture;
+        {
+            let mut guard = TargetLinkGuard::new(812);
+            guard.observe_node(40, Some(812));
+            guard.set_own_node(77);
+            guard.observe_link(40, 77);
+            guard.observe_removal(40);
+            assert_eq!(guard.verdict(), LinkVerdict::TargetGone);
+        }
     }
 
     #[cfg(not(all(feature = "pipewire", target_os = "linux")))]
@@ -1843,96 +1768,211 @@ mod tests {
         assert!(matches!(error, StreamError::Unavailable(_)));
     }
 
-    #[test]
-    fn a_scheduled_buffer_starts_on_its_frame() {
-        // 1000 frames of mono ramp, due at t = 1 s.
-        let samples = (0..1000).map(|index| index as f32 / 1000.0).collect();
-        let mut buffer = ScheduledBuffer::new(samples, 1, RATE, NS_PER_SECOND);
-        let progress = buffer.progress();
-        let mut out = vec![1.0; 480];
-        buffer.render(NS_PER_SECOND - frames_to_ns(100, RATE), &mut out);
-        assert!(out[..100].iter().all(|sample| sample.abs() < f32::EPSILON));
-        assert!((out[100] - 0.0).abs() < f32::EPSILON);
-        assert!((out[101] - 0.001).abs() < 1e-6);
-        assert_eq!(progress.late_by_ns(), Some(0), "on time");
-        assert!(!progress.finished());
-        let mut out = vec![1.0; 480];
-        buffer.render(NS_PER_SECOND + frames_to_ns(380, RATE), &mut out);
-        assert!((out[0] - 0.38).abs() < 1e-6);
-        let mut out = vec![1.0; 480];
-        buffer.render(NS_PER_SECOND + frames_to_ns(860, RATE), &mut out);
-        assert!((out[139] - 0.999).abs() < 1e-6);
-        assert!(out[140..].iter().all(|sample| sample.abs() < f32::EPSILON));
-        assert!(progress.finished());
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn a_scheduled_buffer;
+
+        phase a_scheduled_buffer_starts_on_its_frame;
+        {
+            // 1000 frames of mono ramp, due at t = 1 s.
+            let samples = (0..1000).map(|index| index as f32 / 1000.0).collect();
+            let mut buffer = ScheduledBuffer::new(samples, 1, RATE, NS_PER_SECOND);
+            let progress = buffer.progress();
+            let mut out = vec![1.0; 480];
+            buffer.render(NS_PER_SECOND - frames_to_ns(100, RATE), &mut out);
+            assert!(out[..100].iter().all(|sample| sample.abs() < f32::EPSILON));
+            assert!((out[100] - 0.0).abs() < f32::EPSILON);
+            assert!((out[101] - 0.001).abs() < 1e-6);
+            assert_eq!(progress.late_by_ns(), Some(0), "on time");
+            assert!(!progress.finished());
+            let mut out = vec![1.0; 480];
+            buffer.render(NS_PER_SECOND + frames_to_ns(380, RATE), &mut out);
+            assert!((out[0] - 0.38).abs() < 1e-6);
+            let mut out = vec![1.0; 480];
+            buffer.render(NS_PER_SECOND + frames_to_ns(860, RATE), &mut out);
+            assert!((out[139] - 0.999).abs() < 1e-6);
+            assert!(out[140..].iter().all(|sample| sample.abs() < f32::EPSILON));
+            assert!(progress.finished());
+        }
+
+        phase a_scheduled_buffer_that_starts_late_says_so;
+        {
+            let mut buffer = ScheduledBuffer::new(vec![0.5; 2000], 2, RATE, NS_PER_SECOND);
+            let progress = buffer.progress();
+            let mut out = vec![0.0; 960];
+            buffer.render(NS_PER_SECOND + 10_000_000, &mut out);
+            assert_eq!(progress.late_by_ns(), Some(10_000_000));
+        }
     }
 
-    #[test]
-    fn a_scheduled_buffer_that_starts_late_says_so() {
-        let mut buffer = ScheduledBuffer::new(vec![0.5; 2000], 2, RATE, NS_PER_SECOND);
-        let progress = buffer.progress();
-        let mut out = vec![0.0; 960];
-        buffer.render(NS_PER_SECOND + 10_000_000, &mut out);
-        assert_eq!(progress.late_by_ns(), Some(10_000_000));
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn captured_audio_timeline_and_windows;
+
+        phase a_continuous_capture_stays_sample_continuous_through_jitter;
+        {
+            let mut timeline = CaptureTimeline::new(RATE);
+            let start = 10_000_000_000;
+            assert_eq!(timeline.stamp(start, 480), 480_000);
+            assert_eq!(timeline.stamp(start + 10_300_000, 480), 480_480);
+            assert_eq!(timeline.stamp(start + 19_900_000, 480), 480_960);
+            // A 50 ms hole (an xrun) re-anchors on the measured time, leaving a gap.
+            let after_gap = timeline.stamp(start + 80_000_000, 480);
+            assert_eq!(after_gap, 483_840);
+            assert_eq!(timeline.stamp(start + 90_000_000, 480), after_gap + 480);
+        }
+
+        phase a_window_is_cut_from_chunks_and_timed_by_its_first_frame;
+        {
+            let pcm = |frames: usize, value: i16| -> Vec<u8> {
+                (0..frames).flat_map(|_| value.to_le_bytes()).collect()
+            };
+            // Mono chunks at frames 48_000.. (t = 1 s), with a 10-frame gap.
+            let chunks = vec![
+                CaptureChunk {
+                    first_frame: 47_990,
+                    pcm_s16le: pcm(100, 7),
+                },
+                CaptureChunk {
+                    first_frame: 48_100,
+                    pcm_s16le: pcm(100, 9),
+                },
+            ];
+            let window =
+                assemble_window(&chunks, RATE, 1, NS_PER_SECOND, frames_to_ns(150, RATE)).unwrap();
+            assert_eq!(window.first_sample_ns, NS_PER_SECOND);
+            assert_eq!(window.samples.len(), 150);
+            assert!(window.samples[..90].iter().all(|sample| *sample == 7));
+            assert!(
+                window.samples[90..100].iter().all(|sample| *sample == 0),
+                "the gap is silent"
+            );
+            assert!(window.samples[100..].iter().all(|sample| *sample == 9));
+            let late = assemble_window(&chunks, RATE, 1, 0, 2 * NS_PER_SECOND).unwrap();
+            assert_eq!(late.first_sample_ns, frames_to_ns(47_990, RATE));
+            assert!(assemble_window(&chunks, RATE, 1, 0, NS_PER_SECOND / 2).is_none());
+        }
     }
 
-    #[test]
-    fn a_window_is_cut_from_chunks_and_timed_by_its_first_frame() {
-        let pcm = |frames: usize, value: i16| -> Vec<u8> {
-            (0..frames).flat_map(|_| value.to_le_bytes()).collect()
-        };
-        // Mono chunks at frames 48_000.. (t = 1 s), with a 10-frame gap.
-        let chunks = vec![
-            CaptureChunk {
-                first_frame: 47_990,
-                pcm_s16le: pcm(100, 7),
-            },
-            CaptureChunk {
-                first_frame: 48_100,
-                pcm_s16le: pcm(100, 9),
-            },
-        ];
-        let window =
-            assemble_window(&chunks, RATE, 1, NS_PER_SECOND, frames_to_ns(150, RATE)).unwrap();
-        assert_eq!(window.first_sample_ns, NS_PER_SECOND);
-        assert_eq!(window.samples.len(), 150);
-        assert!(window.samples[..90].iter().all(|sample| *sample == 7));
-        assert!(
-            window.samples[90..100].iter().all(|sample| *sample == 0),
-            "the gap is silent"
-        );
-        assert!(window.samples[100..].iter().all(|sample| *sample == 9));
-        let late = assemble_window(&chunks, RATE, 1, 0, 2 * NS_PER_SECOND).unwrap();
-        assert_eq!(late.first_sample_ns, frames_to_ns(47_990, RATE));
-        assert!(assemble_window(&chunks, RATE, 1, 0, NS_PER_SECOND / 2).is_none());
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn device_timing_and_frame_conversions;
+
+        phase raw_time_converts_graph_ticks_and_stream_frames;
+        {
+            // 480 ticks of a 1/48000 graph is 10 ms; 3840 queued bytes of stereo
+            // f32 are 480 frames, plus 16 in the resampler.
+            let timing = DeviceTiming::from_raw(5_000_000_000, 1, 48_000, 480, 3840, 16, 8);
+            assert_eq!(timing.delay_ns, 10_000_000);
+            assert_eq!(timing.queued_frames, 496);
+            let graph = DeviceTiming::from_raw(1, 1, 44_100, 441, 0, 0, 8);
+            assert_eq!(graph.delay_ns, 10_000_000);
+        }
+
+        phase frame_conversions_round_towards_earlier_frames;
+        {
+            assert_eq!(frames_to_ns(48_000, RATE), NS_PER_SECOND);
+            assert_eq!(ns_to_frames(NS_PER_SECOND, RATE), 48_000);
+            assert_eq!(ns_to_frames(20_833, RATE), 0);
+            assert_eq!(ns_to_frames(20_834, RATE), 1);
+            assert_eq!(ns_to_frames(-1, RATE), -1);
+            assert_eq!(whole_frames(&[1, 2, 3, 4, 5, 6], 4), &[1, 2, 3, 4]);
+        }
+
+        phase capture_is_timed_from_the_start_of_the_delivered_buffer;
+        {
+            // The cycle ends at 2 s; the device delay is 5 ms and the buffer holds 480 frames (10 ms).
+            let timing = DeviceTiming {
+                now_ns: 2 * NS_PER_SECOND,
+                delay_ns: 5_000_000,
+                queued_frames: 0,
+            };
+            assert_eq!(
+                timing.capture_origin_ns(480, RATE),
+                2 * NS_PER_SECOND - 15_000_000
+            );
+        }
     }
 
-    #[test]
-    fn capture_is_timed_from_the_start_of_the_delivered_buffer() {
-        // The cycle ends at 2 s; the device delay is 5 ms and the buffer holds 480 frames (10 ms).
-        let timing = DeviceTiming {
-            now_ns: 2 * NS_PER_SECOND,
-            delay_ns: 5_000_000,
-            queued_frames: 0,
-        };
-        assert_eq!(
-            timing.capture_origin_ns(480, RATE),
-            2 * NS_PER_SECOND - 15_000_000
-        );
-    }
+    tilo_test_env::scenario! {
+        fn stream_properties;
 
-    #[test]
-    fn a_targeted_playback_never_falls_back() {
-        let mut config = PlaybackConfig::for_role("n", "d", RATE, ChannelRole::Mono);
-        assert!(
-            config
-                .properties()
-                .iter()
-                .all(|(key, _)| *key != "target.object")
-        );
-        config.target_serial = Some(33);
-        let properties = config.properties();
-        assert!(properties.contains(&("target.object", "33".into())));
-        assert!(properties.contains(&("node.dont-fallback", "true".into())));
+        phase capture_properties_name_the_target_and_forbid_substitutes;
+        {
+            let config = CaptureConfig {
+                node_name: "tilo-capture\0x".into(),
+                target: CaptureTarget {
+                    serial: 812,
+                    monitor_sink: true,
+                },
+                rate: RATE,
+                channels: 2,
+                queue_chunks: 8,
+            };
+            let properties = config.properties();
+            let get = |key: &str| {
+                properties
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| value.as_str())
+            };
+            assert_eq!(get("target.object"), Some("812"));
+            assert_eq!(get("node.dont-fallback"), Some("true"));
+            assert_eq!(get("node.dont-reconnect"), Some("true"));
+            assert_eq!(get("node.dont-move"), Some("true"));
+            assert_eq!(get("stream.capture.sink"), Some("true"));
+            assert_eq!(get("node.name"), Some("tilo-capturex"));
+            let source = CaptureConfig {
+                target: CaptureTarget {
+                    serial: 5,
+                    monitor_sink: false,
+                },
+                ..config
+            };
+            assert!(
+                source
+                    .properties()
+                    .iter()
+                    .all(|(key, _)| *key != "stream.capture.sink")
+            );
+        }
+
+        phase playback_properties_carry_the_role_channels_and_quantum;
+        {
+            let config =
+                PlaybackConfig::for_role("tilo-member", "Speaker group", RATE, ChannelRole::Right);
+            assert_eq!(config.channels, 1);
+            let properties = config.properties();
+            assert!(properties.contains(&("node.latency", "480/48000".into())));
+            assert!(properties.contains(&("audio.channels", "1".into())));
+            let stereo =
+                PlaybackConfig::for_role("tilo-member", "Speaker group", RATE, ChannelRole::Stereo);
+            assert_eq!(stereo.channels, 2);
+        }
+
+        phase a_targeted_playback_never_falls_back;
+        {
+            let mut config = PlaybackConfig::for_role("n", "d", RATE, ChannelRole::Mono);
+            assert!(
+                config
+                    .properties()
+                    .iter()
+                    .all(|(key, _)| *key != "target.object")
+            );
+            config.target_serial = Some(33);
+            let properties = config.properties();
+            assert!(properties.contains(&("target.object", "33".into())));
+            assert!(properties.contains(&("node.dont-fallback", "true".into())));
+        }
     }
 
     #[test]

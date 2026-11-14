@@ -463,120 +463,124 @@ mod tests {
         ]
     }
 
-    #[test]
-    fn nodes_are_classified_by_which_queue_is_compressed() {
-        // Hantro G1: parsed H.264 slices in, NV12 out.
-        assert_eq!(
-            classify_node(&[(S264, true), (VP8F, true)], &[(NV12, false)]),
-            Some(V4l2Role::Decoder { stateless: true })
-        );
-        assert_eq!(
-            classify_node(&[(H264, true)], &[(NV12, false)]),
-            Some(V4l2Role::Decoder { stateless: false })
-        );
-        assert_eq!(
-            classify_node(&[(NM12, false)], &[(JPEG, true)]),
-            Some(V4l2Role::Encoder)
-        );
-        assert_eq!(
-            classify_node(&[(NV12, false)], &[(NV12, false)]),
-            Some(V4l2Role::Converter)
-        );
-        // A capture-only node (a camera, a loopback) is not memory-to-memory.
-        assert_eq!(classify_node(&[], &[(NV12, false)]), None);
-    }
+    tilo_test_env::scenario! {
+        fn v4l2_capabilities;
 
-    #[test]
-    fn compressed_fourccs_map_to_bitstreams_and_raw_ones_do_not() {
-        assert_eq!(coded_media_type(S264), Some((MEDIA_H264, true)));
-        assert_eq!(coded_media_type(H264), Some((MEDIA_H264, false)));
-        assert_eq!(coded_media_type(VP8F), Some((MEDIA_VP8, true)));
-        assert_eq!(coded_media_type(MG2S), Some((MEDIA_MPEG2, true)));
-        assert_eq!(coded_media_type(NV12), None);
-        assert_eq!(
-            coded_media_type(v4l2_fourcc(b'V', b'P', b'9', b'F')),
-            Some((MEDIA_VP9, true))
-        );
-        assert_eq!(
-            coded_media_type(v4l2_fourcc(b'S', b'2', b'6', b'5')),
-            Some((MEDIA_HEVC, true))
-        );
-        assert_eq!(
-            coded_media_type(v4l2_fourcc(b'A', b'V', b'1', b'F')),
-            Some((MEDIA_AV1, true))
-        );
-    }
-
-    #[test]
-    fn element_names_resolve_to_their_bitstream() {
-        for (name, want) in [
-            ("v4l2slh264dec0", Some(MEDIA_H264)),
-            ("v4l2slh265dec", Some(MEDIA_HEVC)),
-            ("vah265enc", Some(MEDIA_HEVC)),
-            ("openh264dec", Some(MEDIA_H264)),
-            ("avdec_h264-0", Some(MEDIA_H264)),
-            ("v4l2slvp8dec", Some(MEDIA_VP8)),
-            ("vp9dec0", Some(MEDIA_VP9)),
-            ("dav1ddec", Some(MEDIA_AV1)),
-            ("v4l2slav1dec", Some(MEDIA_AV1)),
-            ("v4l2slmpeg2dec", Some(MEDIA_MPEG2)),
-            ("v4l2jpegenc", Some(MEDIA_JPEG)),
-            ("videoconvert0", None),
-        ] {
-            assert_eq!(element_media_type(name), want, "{name}");
+        phase nodes_are_classified_by_which_queue_is_compressed;
+        {
+            // Hantro G1: parsed H.264 slices in, NV12 out.
+            assert_eq!(
+                classify_node(&[(S264, true), (VP8F, true)], &[(NV12, false)]),
+                Some(V4l2Role::Decoder { stateless: true })
+            );
+            assert_eq!(
+                classify_node(&[(H264, true)], &[(NV12, false)]),
+                Some(V4l2Role::Decoder { stateless: false })
+            );
+            assert_eq!(
+                classify_node(&[(NM12, false)], &[(JPEG, true)]),
+                Some(V4l2Role::Encoder)
+            );
+            assert_eq!(
+                classify_node(&[(NV12, false)], &[(NV12, false)]),
+                Some(V4l2Role::Converter)
+            );
+            // A capture-only node (a camera, a loopback) is not memory-to-memory.
+            assert_eq!(classify_node(&[], &[(NV12, false)]), None);
         }
-    }
 
-    #[test]
-    fn frame_size_limits_come_from_the_largest_reported_entry() {
-        assert_eq!(
-            max_frame_size(&[FrameSizeEntry::Range {
-                max_width: 1920,
-                max_height: 1088
-            }]),
-            Some((1920, 1088))
-        );
-        assert_eq!(
-            max_frame_size(&[
-                FrameSizeEntry::Discrete {
-                    width: 640,
-                    height: 480
-                },
-                FrameSizeEntry::Discrete {
-                    width: 1280,
-                    height: 720
-                },
-            ]),
-            Some((1280, 720))
-        );
-        assert_eq!(max_frame_size(&[]), None);
-    }
+        phase compressed_fourccs_map_to_bitstreams_and_raw_ones_do_not;
+        {
+            assert_eq!(coded_media_type(S264), Some((MEDIA_H264, true)));
+            assert_eq!(coded_media_type(H264), Some((MEDIA_H264, false)));
+            assert_eq!(coded_media_type(VP8F), Some((MEDIA_VP8, true)));
+            assert_eq!(coded_media_type(MG2S), Some((MEDIA_MPEG2, true)));
+            assert_eq!(coded_media_type(NV12), None);
+            assert_eq!(
+                coded_media_type(v4l2_fourcc(b'V', b'P', b'9', b'F')),
+                Some((MEDIA_VP9, true))
+            );
+            assert_eq!(
+                coded_media_type(v4l2_fourcc(b'S', b'2', b'6', b'5')),
+                Some((MEDIA_HEVC, true))
+            );
+            assert_eq!(
+                coded_media_type(v4l2_fourcc(b'A', b'V', b'1', b'F')),
+                Some((MEDIA_AV1, true))
+            );
+        }
 
-    #[test]
-    fn the_rk3566_limits_explain_which_streams_reach_hardware() {
-        let devices = rk3566();
-        let h264 = decoder_limit(&devices, MEDIA_H264).flatten().unwrap();
-        assert!(fits(h264, 1920, 1080), "1080p H.264 decodes on the G1");
-        assert!(fits(h264, 1080, 1920), "so does portrait 1080p");
-        assert!(!fits(h264, 3840, 2160), "4K H.264 does not");
-        assert_eq!(
-            decoder_limit(&devices, MEDIA_HEVC),
-            None,
-            "mainline has no HEVC decoder for the RK3566"
-        );
-        assert_eq!(decoder_limit(&devices, MEDIA_VP9), None);
-        assert_eq!(decoder_limit(&devices, MEDIA_AV1), None);
-        assert!(fits(
-            decoder_limit(&devices, MEDIA_VP8).flatten().unwrap(),
-            3840,
-            2160
-        ));
-        // An encoder that only produces JPEG is not an H.264 decoder.
-        assert_eq!(decoder_limit(&devices, MEDIA_JPEG), None);
-        assert_eq!(
-            devices[1].describe(),
-            "rockchip,rk3568-vpu-dec (hantro-vpu, stateless decoder): \
+        phase element_names_resolve_to_their_bitstream;
+        {
+            for (name, want) in [
+                ("v4l2slh264dec0", Some(MEDIA_H264)),
+                ("v4l2slh265dec", Some(MEDIA_HEVC)),
+                ("vah265enc", Some(MEDIA_HEVC)),
+                ("openh264dec", Some(MEDIA_H264)),
+                ("avdec_h264-0", Some(MEDIA_H264)),
+                ("v4l2slvp8dec", Some(MEDIA_VP8)),
+                ("vp9dec0", Some(MEDIA_VP9)),
+                ("dav1ddec", Some(MEDIA_AV1)),
+                ("v4l2slav1dec", Some(MEDIA_AV1)),
+                ("v4l2slmpeg2dec", Some(MEDIA_MPEG2)),
+                ("v4l2jpegenc", Some(MEDIA_JPEG)),
+                ("videoconvert0", None),
+            ] {
+                assert_eq!(element_media_type(name), want, "{name}");
+            }
+        }
+
+        phase frame_size_limits_come_from_the_largest_reported_entry;
+        {
+            assert_eq!(
+                max_frame_size(&[FrameSizeEntry::Range {
+                    max_width: 1920,
+                    max_height: 1088
+                }]),
+                Some((1920, 1088))
+            );
+            assert_eq!(
+                max_frame_size(&[
+                    FrameSizeEntry::Discrete {
+                        width: 640,
+                        height: 480
+                    },
+                    FrameSizeEntry::Discrete {
+                        width: 1280,
+                        height: 720
+                    },
+                ]),
+                Some((1280, 720))
+            );
+            assert_eq!(max_frame_size(&[]), None);
+        }
+
+        phase the_rk3566_limits_explain_which_streams_reach_hardware;
+        {
+            let devices = rk3566();
+            let h264 = decoder_limit(&devices, MEDIA_H264).flatten().unwrap();
+            assert!(fits(h264, 1920, 1080), "1080p H.264 decodes on the G1");
+            assert!(fits(h264, 1080, 1920), "so does portrait 1080p");
+            assert!(!fits(h264, 3840, 2160), "4K H.264 does not");
+            assert_eq!(
+                decoder_limit(&devices, MEDIA_HEVC),
+                None,
+                "mainline has no HEVC decoder for the RK3566"
+            );
+            assert_eq!(decoder_limit(&devices, MEDIA_VP9), None);
+            assert_eq!(decoder_limit(&devices, MEDIA_AV1), None);
+            assert!(fits(
+                decoder_limit(&devices, MEDIA_VP8).flatten().unwrap(),
+                3840,
+                2160
+            ));
+            // An encoder that only produces JPEG is not an H.264 decoder.
+            assert_eq!(decoder_limit(&devices, MEDIA_JPEG), None);
+            assert_eq!(
+                devices[1].describe(),
+                "rockchip,rk3568-vpu-dec (hantro-vpu, stateless decoder): \
              H.264 ≤1920x1088, MPEG-2 ≤1920x1088, VP8 ≤3840x2160"
-        );
+            );
+        }
     }
 }

@@ -314,55 +314,6 @@ mod tests {
         fn close(&mut self) {}
     }
 
-    #[test]
-    fn decoded_pcm_reaches_host_queue_before_its_pipeline_timestamp() {
-        crate::test_gst::shared_registry();
-        gst::init().expect("actual output bridge plugins available");
-        let (sink, bridge) = host_clocked_sink_bin("pacing-test", "pacing-gain")
-            .expect("actual output bridge constructed");
-        let (sent, received) = std::sync::mpsc::channel();
-        bridge.session.lock().expect("session").output = Some(Box::new(ObservedOutput(sent)));
-        let source = gst_app::AppSrc::builder()
-            .is_live(true)
-            .format(gst::Format::Time)
-            .caps(
-                &gst::Caps::builder("audio/x-raw")
-                    .field("format", "S16LE")
-                    .field("layout", "interleaved")
-                    .field("rate", 48_000_i32)
-                    .field("channels", 2_i32)
-                    .build(),
-            )
-            .build();
-        let pipeline = gst::Pipeline::new();
-        pipeline
-            .add_many([
-                source.upcast_ref::<gst::Element>(),
-                sink.upcast_ref::<gst::Element>(),
-            ])
-            .expect("pipeline");
-        source.link(&sink).expect("production audio bridge linked");
-        pipeline
-            .set_state(gst::State::Playing)
-            .expect("start pipeline");
-        let mut buffer = gst::Buffer::from_slice(vec![0x41_u8; 3840]);
-        let data = buffer.get_mut().expect("owned PCM buffer");
-        data.set_pts(gst::ClockTime::from_seconds(10));
-        data.set_duration(gst::ClockTime::from_mseconds(20));
-        source
-            .push_buffer(buffer)
-            .expect("submit future decoded PCM");
-        let delivered = received.recv_timeout(tilo_test_env::hang_bound());
-        pipeline.set_state(gst::State::Null).expect("stop pipeline");
-        drop(pipeline);
-        drop(bridge);
-        assert_eq!(
-            delivered.expect("the host queue, rather than the pipeline clock, paces output"),
-            vec![0x4141_i16; 1920],
-            "the production callback preserves every stereo PCM sample"
-        );
-    }
-
     struct PausingOutput {
         bridge: std::sync::Weak<Bridge>,
         paused: bool,
@@ -404,57 +355,110 @@ mod tests {
         fn close(&mut self) {}
     }
 
-    #[test]
-    fn pause_waits_for_the_current_decoded_buffer_to_reach_the_host() {
-        crate::test_gst::shared_registry();
-        gst::init().expect("actual output bridge plugins available");
-        let (_bin, bridge) =
-            sink_bin("pause-test", "pause-gain").expect("actual output bridge constructed");
-        let delivered = Arc::new(AtomicU64::new(0));
-        bridge.session.lock().expect("session").output = Some(Box::new(PausingOutput {
-            bridge: Arc::downgrade(&bridge),
-            paused: false,
-            delivered: delivered.clone(),
-        }));
-        bridge
-            .push(&vec![0x41; super::super::MAX_SAMPLES * 4])
-            .expect("pause cannot strand a partially submitted decoded buffer");
-        assert_eq!(
-            delivered.load(Ordering::Relaxed),
-            (super::super::MAX_SAMPLES * 2) as u64
-        );
-        assert!(
-            bridge.session.lock().expect("session").paused,
-            "pause takes effect at the complete decoded-buffer boundary"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_output_bridge_and_host_progress;
 
-    #[test]
-    fn decoder_backpressure_preserves_observed_host_progress() {
-        crate::test_gst::shared_registry();
-        gst::init().expect("actual output bridge plugins available");
-        let (_bin, bridge) =
-            sink_bin("progress-test", "progress-gain").expect("actual output bridge constructed");
-        let observed = Observation {
-            rendered_frames: 960,
-            queued_frames: 1920,
-            ready: true,
-        };
-        bridge
-            .session
-            .lock()
-            .expect("test output session available")
-            .observation = observed;
-        assert_eq!(bridge.observation(), observed);
-        let _decoder_rpc = bridge
-            .session
-            .lock()
-            .expect("test output session available");
-        assert_eq!(
-            bridge.observation(),
-            observed,
-            "an in-flight decoder write must not erase confirmed host progress"
-        );
+        phase decoded_pcm_reaches_host_queue_before_its_pipeline_timestamp;
+        {
+            crate::test_gst::shared_registry();
+            gst::init().expect("actual output bridge plugins available");
+            let (sink, bridge) = host_clocked_sink_bin("pacing-test", "pacing-gain")
+                .expect("actual output bridge constructed");
+            let (sent, received) = std::sync::mpsc::channel();
+            bridge.session.lock().expect("session").output = Some(Box::new(ObservedOutput(sent)));
+            let source = gst_app::AppSrc::builder()
+                .is_live(true)
+                .format(gst::Format::Time)
+                .caps(
+                    &gst::Caps::builder("audio/x-raw")
+                        .field("format", "S16LE")
+                        .field("layout", "interleaved")
+                        .field("rate", 48_000_i32)
+                        .field("channels", 2_i32)
+                        .build(),
+                )
+                .build();
+            let pipeline = gst::Pipeline::new();
+            pipeline
+                .add_many([
+                    source.upcast_ref::<gst::Element>(),
+                    sink.upcast_ref::<gst::Element>(),
+                ])
+                .expect("pipeline");
+            source.link(&sink).expect("production audio bridge linked");
+            pipeline
+                .set_state(gst::State::Playing)
+                .expect("start pipeline");
+            let mut buffer = gst::Buffer::from_slice(vec![0x41_u8; 3840]);
+            let data = buffer.get_mut().expect("owned PCM buffer");
+            data.set_pts(gst::ClockTime::from_seconds(10));
+            data.set_duration(gst::ClockTime::from_mseconds(20));
+            source
+                .push_buffer(buffer)
+                .expect("submit future decoded PCM");
+            let delivered = received.recv_timeout(tilo_test_env::hang_bound());
+            pipeline.set_state(gst::State::Null).expect("stop pipeline");
+            drop(pipeline);
+            drop(bridge);
+            assert_eq!(
+                delivered.expect("the host queue, rather than the pipeline clock, paces output"),
+                vec![0x4141_i16; 1920],
+                "the production callback preserves every stereo PCM sample"
+            );
+        }
+
+        phase pause_waits_for_the_current_decoded_buffer_to_reach_the_host;
+        {
+            crate::test_gst::shared_registry();
+            gst::init().expect("actual output bridge plugins available");
+            let (_bin, bridge) =
+                sink_bin("pause-test", "pause-gain").expect("actual output bridge constructed");
+            let delivered = Arc::new(AtomicU64::new(0));
+            bridge.session.lock().expect("session").output = Some(Box::new(PausingOutput {
+                bridge: Arc::downgrade(&bridge),
+                paused: false,
+                delivered: delivered.clone(),
+            }));
+            bridge
+                .push(&vec![0x41; super::super::MAX_SAMPLES * 4])
+                .expect("pause cannot strand a partially submitted decoded buffer");
+            assert_eq!(
+                delivered.load(Ordering::Relaxed),
+                (super::super::MAX_SAMPLES * 2) as u64
+            );
+            assert!(
+                bridge.session.lock().expect("session").paused,
+                "pause takes effect at the complete decoded-buffer boundary"
+            );
+        }
+
+        phase decoder_backpressure_preserves_observed_host_progress;
+        {
+            crate::test_gst::shared_registry();
+            gst::init().expect("actual output bridge plugins available");
+            let (_bin, bridge) =
+                sink_bin("progress-test", "progress-gain").expect("actual output bridge constructed");
+            let observed = Observation {
+                rendered_frames: 960,
+                queued_frames: 1920,
+                ready: true,
+            };
+            bridge
+                .session
+                .lock()
+                .expect("test output session available")
+                .observation = observed;
+            assert_eq!(bridge.observation(), observed);
+            let _decoder_rpc = bridge
+                .session
+                .lock()
+                .expect("test output session available");
+            assert_eq!(
+                bridge.observation(),
+                observed,
+                "an in-flight decoder write must not erase confirmed host progress"
+            );
+        }
     }
 
     #[test]

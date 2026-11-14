@@ -456,229 +456,237 @@ mod tests {
         )
     }
 
-    #[test]
-    fn decoded_nv12_goes_on_the_plane_that_takes_it() {
-        let (primary, planes) = vop2();
-        let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_LINEAR);
-        let req = VideoSurfaceRequest {
-            frame: &frame,
-            dst: Rect {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            },
-            ui_overlaps: false,
-        };
-        let Placement::Overlay(p) = place(&req, (1920, 1080), primary, &planes, &[]) else {
-            panic!("fullscreen linear NV12 belongs on the Esmart plane");
-        };
-        assert_eq!(p.plane_id, 41);
-        assert_eq!(p.src_16_16, [0, 0, 1920 << 16, 1080 << 16]);
-        assert_eq!(p.stacking, Stacking::Above);
-        // VOP2 has no COLOR_ENCODING property: BT.709 shows through BT.601.
-        assert!(!p.colour_exact);
-        assert_eq!(p.color_encoding, None);
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn video_plane_placement;
 
-        let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_INVALID);
-        let req = VideoSurfaceRequest {
-            frame: &frame,
-            ..req
-        };
-        assert!(matches!(
-            place(&req, (1920, 1080), primary, &planes, &[]),
-            Placement::Overlay(_)
-        ));
-
-        // Once the Esmart plane is taken, the AFBC-only cluster cannot help.
-        assert_eq!(
-            place(&req, (1920, 1080), primary, &planes, &[41]),
-            Placement::Composite(CompositeReason::Format {
-                fourcc: DRM_FORMAT_NV12,
-                modifier: DRM_FORMAT_MOD_INVALID
-            })
-        );
-    }
-
-    #[test]
-    fn placement_respects_scaling_stacking_and_memory() {
-        let (primary, planes) = vop2();
-        let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_LINEAR);
-
-        let tiny = VideoSurfaceRequest {
-            frame: &frame,
-            dst: Rect {
-                x: 10,
-                y: 10,
-                width: 120,
-                height: 67,
-            },
-            ui_overlaps: false,
-        };
-        assert_eq!(
-            place(&tiny, (1920, 1080), primary, &planes, &[]),
-            Placement::Composite(CompositeReason::Scale)
-        );
-
-        // Controls over the video: the plane must go below a hole. The Esmart
-        // plane's zpos (3) is immutable and above the primary (0), so it
-        // cannot, and the frame is composited.
-        let windowed = VideoSurfaceRequest {
-            frame: &frame,
-            dst: Rect {
-                x: 100,
-                y: 100,
-                width: 960,
-                height: 540,
-            },
-            ui_overlaps: true,
-        };
-        assert_eq!(
-            place(&windowed, (1920, 1080), primary, &planes, &[]),
-            Placement::Composite(CompositeReason::NeedsUnderlay)
-        );
-        let mut movable = planes.clone();
-        movable[0].zpos = Some(Zpos {
-            value: 3,
-            range: Some((0, 5)),
-        });
-        let primary_above = PrimaryPlane {
-            zpos: 2,
-            alpha: true,
-        };
-        let Placement::Overlay(p) = place(&windowed, (1920, 1080), primary_above, &movable, &[])
-        else {
-            panic!("a movable plane goes under the hole");
-        };
-        assert_eq!(p.stacking, Stacking::BelowHole);
-        // But not when the desktop has no alpha to cut the hole with.
-        assert_eq!(
-            place(
-                &windowed,
-                (1920, 1080),
-                PrimaryPlane {
-                    zpos: 2,
-                    alpha: false
+        phase decoded_nv12_goes_on_the_plane_that_takes_it;
+        {
+            let (primary, planes) = vop2();
+            let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_LINEAR);
+            let req = VideoSurfaceRequest {
+                frame: &frame,
+                dst: Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
                 },
-                &movable,
-                &[]
-            ),
-            Placement::Composite(CompositeReason::NeedsUnderlay)
-        );
+                ui_overlaps: false,
+            };
+            let Placement::Overlay(p) = place(&req, (1920, 1080), primary, &planes, &[]) else {
+                panic!("fullscreen linear NV12 belongs on the Esmart plane");
+            };
+            assert_eq!(p.plane_id, 41);
+            assert_eq!(p.src_16_16, [0, 0, 1920 << 16, 1080 << 16]);
+            assert_eq!(p.stacking, Stacking::Above);
+            // VOP2 has no COLOR_ENCODING property: BT.709 shows through BT.601.
+            assert!(!p.colour_exact);
+            assert_eq!(p.color_encoding, None);
 
-        // A picture in system memory is never a plane candidate.
-        let planar = Frame {
-            width: 2,
-            height: 2,
-            pts_ms: 0,
-            payload: FramePayload::Planar(Arc::new(PlanarImage {
-                format: PlanarFormat::Nv12,
-                planes: vec![],
-                colorimetry: Colorimetry::default(),
-            })),
-        };
-        let req = VideoSurfaceRequest {
-            frame: &planar,
-            ..tiny
-        };
-        assert_eq!(
-            place(&req, (1920, 1080), primary, &planes, &[]),
-            Placement::Composite(CompositeReason::NotDmabuf)
-        );
-    }
+            let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_INVALID);
+            let req = VideoSurfaceRequest {
+                frame: &frame,
+                ..req
+            };
+            assert!(matches!(
+                place(&req, (1920, 1080), primary, &planes, &[]),
+                Placement::Overlay(_)
+            ));
 
-    #[test]
-    fn a_window_hanging_off_the_output_crops_its_source_in_proportion() {
-        let (src, dst) = clip(
-            (1920, 1080),
-            Rect {
-                x: 1920 - 1920,
-                y: -100,
-                width: 3840,
-                height: 2160,
-            },
-            (1920, 1080),
-            true,
-        )
-        .unwrap();
-        assert_eq!(
-            dst,
-            Rect {
-                x: 0,
-                y: 0,
-                width: 1920,
-                height: 1080
-            }
-        );
-        assert_eq!(src, [0, 50, 960, 540]);
+            // Once the Esmart plane is taken, the AFBC-only cluster cannot help.
+            assert_eq!(
+                place(&req, (1920, 1080), primary, &planes, &[41]),
+                Placement::Composite(CompositeReason::Format {
+                    fourcc: DRM_FORMAT_NV12,
+                    modifier: DRM_FORMAT_MOD_INVALID
+                })
+            );
+        }
 
-        let (src, _) = clip(
-            (1920, 1080),
-            Rect {
-                x: -3,
-                y: 0,
-                width: 1920,
-                height: 1080,
-            },
-            (1920, 1080),
-            true,
-        )
-        .unwrap();
-        assert_eq!(src[0] % 2, 0, "even x for subsampled chroma");
-        assert_eq!(src[0], 2);
+        phase placement_respects_scaling_stacking_and_memory;
+        {
+            let (primary, planes) = vop2();
+            let frame = nv12_frame(1920, 1080, DRM_FORMAT_MOD_LINEAR);
 
-        assert!(
-            clip(
+            let tiny = VideoSurfaceRequest {
+                frame: &frame,
+                dst: Rect {
+                    x: 10,
+                    y: 10,
+                    width: 120,
+                    height: 67,
+                },
+                ui_overlaps: false,
+            };
+            assert_eq!(
+                place(&tiny, (1920, 1080), primary, &planes, &[]),
+                Placement::Composite(CompositeReason::Scale)
+            );
+
+            // Controls over the video: the plane must go below a hole. The Esmart
+            // plane's zpos (3) is immutable and above the primary (0), so it
+            // cannot, and the frame is composited.
+            let windowed = VideoSurfaceRequest {
+                frame: &frame,
+                dst: Rect {
+                    x: 100,
+                    y: 100,
+                    width: 960,
+                    height: 540,
+                },
+                ui_overlaps: true,
+            };
+            assert_eq!(
+                place(&windowed, (1920, 1080), primary, &planes, &[]),
+                Placement::Composite(CompositeReason::NeedsUnderlay)
+            );
+            let mut movable = planes.clone();
+            movable[0].zpos = Some(Zpos {
+                value: 3,
+                range: Some((0, 5)),
+            });
+            let primary_above = PrimaryPlane {
+                zpos: 2,
+                alpha: true,
+            };
+            let Placement::Overlay(p) = place(&windowed, (1920, 1080), primary_above, &movable, &[])
+            else {
+                panic!("a movable plane goes under the hole");
+            };
+            assert_eq!(p.stacking, Stacking::BelowHole);
+            // But not when the desktop has no alpha to cut the hole with.
+            assert_eq!(
+                place(
+                    &windowed,
+                    (1920, 1080),
+                    PrimaryPlane {
+                        zpos: 2,
+                        alpha: false
+                    },
+                    &movable,
+                    &[]
+                ),
+                Placement::Composite(CompositeReason::NeedsUnderlay)
+            );
+
+            // A picture in system memory is never a plane candidate.
+            let planar = Frame {
+                width: 2,
+                height: 2,
+                pts_ms: 0,
+                payload: FramePayload::Planar(Arc::new(PlanarImage {
+                    format: PlanarFormat::Nv12,
+                    planes: vec![],
+                    colorimetry: Colorimetry::default(),
+                })),
+            };
+            let req = VideoSurfaceRequest {
+                frame: &planar,
+                ..tiny
+            };
+            assert_eq!(
+                place(&req, (1920, 1080), primary, &planes, &[]),
+                Placement::Composite(CompositeReason::NotDmabuf)
+            );
+        }
+
+        phase a_window_hanging_off_the_output_crops_its_source_in_proportion;
+        {
+            let (src, dst) = clip(
                 (1920, 1080),
                 Rect {
-                    x: 2000,
-                    y: 0,
-                    width: 100,
-                    height: 100
+                    x: 1920 - 1920,
+                    y: -100,
+                    width: 3840,
+                    height: 2160,
                 },
                 (1920, 1080),
-                true
+                true,
             )
-            .is_none()
-        );
-    }
+            .unwrap();
+            assert_eq!(
+                dst,
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080
+                }
+            );
+            assert_eq!(src, [0, 50, 960, 540]);
 
-    #[test]
-    fn in_formats_blobs_parse_into_per_format_modifiers() {
-        // Two formats, NV12 linear only and XR24 linear + AFBC.
-        let mut blob = Vec::new();
-        let formats_offset = 24u32;
-        let modifiers_offset = formats_offset + 8;
-        for v in [1u32, 0, 2, formats_offset, 2, modifiers_offset] {
-            blob.extend_from_slice(&v.to_ne_bytes());
+            let (src, _) = clip(
+                (1920, 1080),
+                Rect {
+                    x: -3,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                (1920, 1080),
+                true,
+            )
+            .unwrap();
+            assert_eq!(src[0] % 2, 0, "even x for subsampled chroma");
+            assert_eq!(src[0], 2);
+
+            assert!(
+                clip(
+                    (1920, 1080),
+                    Rect {
+                        x: 2000,
+                        y: 0,
+                        width: 100,
+                        height: 100
+                    },
+                    (1920, 1080),
+                    true
+                )
+                .is_none()
+            );
         }
-        blob.extend_from_slice(&DRM_FORMAT_NV12.to_ne_bytes());
-        blob.extend_from_slice(&DRM_FORMAT_XRGB8888.to_ne_bytes());
-        blob.extend_from_slice(&0b11u64.to_ne_bytes());
-        blob.extend_from_slice(&0u32.to_ne_bytes());
-        blob.extend_from_slice(&0u32.to_ne_bytes());
-        blob.extend_from_slice(&DRM_FORMAT_MOD_LINEAR.to_ne_bytes());
-        // AFBC: XR24 only (bit 1).
-        blob.extend_from_slice(&0b10u64.to_ne_bytes());
-        blob.extend_from_slice(&0u32.to_ne_bytes());
-        blob.extend_from_slice(&0u32.to_ne_bytes());
-        blob.extend_from_slice(&AFBC.to_ne_bytes());
 
-        let parsed = parse_in_formats(&blob);
-        assert_eq!(
-            parsed,
-            vec![
-                PlaneFormat {
-                    fourcc: DRM_FORMAT_NV12,
-                    modifiers: vec![DRM_FORMAT_MOD_LINEAR]
-                },
-                PlaneFormat {
-                    fourcc: DRM_FORMAT_XRGB8888,
-                    modifiers: vec![DRM_FORMAT_MOD_LINEAR, AFBC]
-                },
-            ]
-        );
-        assert!(parse_in_formats(&blob[..30]).is_empty());
-        assert!(parse_in_formats(&[]).is_empty());
+        phase in_formats_blobs_parse_into_per_format_modifiers;
+        {
+            // Two formats, NV12 linear only and XR24 linear + AFBC.
+            let mut blob = Vec::new();
+            let formats_offset = 24u32;
+            let modifiers_offset = formats_offset + 8;
+            for v in [1u32, 0, 2, formats_offset, 2, modifiers_offset] {
+                blob.extend_from_slice(&v.to_ne_bytes());
+            }
+            blob.extend_from_slice(&DRM_FORMAT_NV12.to_ne_bytes());
+            blob.extend_from_slice(&DRM_FORMAT_XRGB8888.to_ne_bytes());
+            blob.extend_from_slice(&0b11u64.to_ne_bytes());
+            blob.extend_from_slice(&0u32.to_ne_bytes());
+            blob.extend_from_slice(&0u32.to_ne_bytes());
+            blob.extend_from_slice(&DRM_FORMAT_MOD_LINEAR.to_ne_bytes());
+            // AFBC: XR24 only (bit 1).
+            blob.extend_from_slice(&0b10u64.to_ne_bytes());
+            blob.extend_from_slice(&0u32.to_ne_bytes());
+            blob.extend_from_slice(&0u32.to_ne_bytes());
+            blob.extend_from_slice(&AFBC.to_ne_bytes());
+
+            let parsed = parse_in_formats(&blob);
+            assert_eq!(
+                parsed,
+                vec![
+                    PlaneFormat {
+                        fourcc: DRM_FORMAT_NV12,
+                        modifiers: vec![DRM_FORMAT_MOD_LINEAR]
+                    },
+                    PlaneFormat {
+                        fourcc: DRM_FORMAT_XRGB8888,
+                        modifiers: vec![DRM_FORMAT_MOD_LINEAR, AFBC]
+                    },
+                ]
+            );
+            assert!(parse_in_formats(&blob[..30]).is_empty());
+            assert!(parse_in_formats(&[]).is_empty());
+        }
     }
 }

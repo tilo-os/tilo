@@ -680,138 +680,142 @@ mod tests {
         }
     }
 
-    #[test]
-    fn bitrate_units_and_size_predictions_follow_the_chosen_encoder() {
+    tilo_test_env::scenario! {
+        fn bitrate_units_follow_the_encoder;
+
+        phase bitrate_units_and_size_predictions_follow_the_chosen_encoder;
         {
-            let target = 16_000_000u64; // 16 Mbit/s, the 1080p preset.
+            {
+                let target = 16_000_000u64; // 16 Mbit/s, the 1080p preset.
 
-            let openh264 = H264.iter().find(|s| s.element == "openh264enc").unwrap();
-            assert_eq!(
-                openh264.bitrate_arg(target),
-                "bitrate=16000000",
-                "openh264enc counts in bits per second",
-            );
-
-            let x264 = H264.iter().find(|s| s.element == "x264enc").unwrap();
-            assert_eq!(
-                x264.bitrate_arg(target),
-                "bitrate=16000",
-                "x264enc counts in kilobits — the same number would ask it for 16 Gbit/s",
-            );
-            assert_eq!(x264.launch_args(target), "bitrate=16000 bframes=0");
-            assert_eq!(openh264.launch_args(target), "bitrate=16000000");
-
-            let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
-            assert_eq!(
-                va.bitrate_arg(target),
-                "bitrate=16000",
-                "VA-API counts in kilobits"
-            );
-
-            let vp8 = VP8.iter().find(|s| s.element == "vp8enc").unwrap();
-            assert_eq!(
-                vp8.bitrate_arg(target),
-                "target-bitrate=16000000",
-                "libvpx spells the property differently and counts in bits",
-            );
-        }
-        {
-            let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
-            // 0 is the encoders' own "auto" and must survive as such.
-            assert_eq!(va.bitrate_value(0), 0);
-            // Anything genuinely requested must not become it.
-            for bps in [1u64, 500, 999] {
+                let openh264 = H264.iter().find(|s| s.element == "openh264enc").unwrap();
                 assert_eq!(
-                    va.bitrate_value(bps),
-                    1,
-                    "{bps} bit/s must ask for the smallest real rate, not auto",
+                    openh264.bitrate_arg(target),
+                    "bitrate=16000000",
+                    "openh264enc counts in bits per second",
+                );
+
+                let x264 = H264.iter().find(|s| s.element == "x264enc").unwrap();
+                assert_eq!(
+                    x264.bitrate_arg(target),
+                    "bitrate=16000",
+                    "x264enc counts in kilobits — the same number would ask it for 16 Gbit/s",
+                );
+                assert_eq!(x264.launch_args(target), "bitrate=16000 bframes=0");
+                assert_eq!(openh264.launch_args(target), "bitrate=16000000");
+
+                let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
+                assert_eq!(
+                    va.bitrate_arg(target),
+                    "bitrate=16000",
+                    "VA-API counts in kilobits"
+                );
+
+                let vp8 = VP8.iter().find(|s| s.element == "vp8enc").unwrap();
+                assert_eq!(
+                    vp8.bitrate_arg(target),
+                    "target-bitrate=16000000",
+                    "libvpx spells the property differently and counts in bits",
                 );
             }
-            assert_eq!(va.bitrate_value(8_000_000), 8_000);
+            {
+                let va = H264.iter().find(|s| s.element == "vah264enc").unwrap();
+                // 0 is the encoders' own "auto" and must survive as such.
+                assert_eq!(va.bitrate_value(0), 0);
+                // Anything genuinely requested must not become it.
+                for bps in [1u64, 500, 999] {
+                    assert_eq!(
+                        va.bitrate_value(bps),
+                        1,
+                        "{bps} bit/s must ask for the smallest real rate, not auto",
+                    );
+                }
+                assert_eq!(va.bitrate_value(8_000_000), 8_000);
 
-            // The highest export preset is far below the cap, so real requests pass
-            // through untouched.
-            assert_eq!(va.bitrate_value(45_000_000), 45_000);
+                // The highest export preset is far below the cap, so real requests pass
+                // through untouched.
+                assert_eq!(va.bitrate_value(45_000_000), 45_000);
+            }
+            {
+                let tracking = H264.iter().find(|s| s.element == "x264enc").unwrap();
+                let untracked = H264.iter().find(|s| s.element == "openh264enc").unwrap();
+                assert!(
+                    untracked.ignores_bitrate,
+                    "openh264enc is the measured exception"
+                );
+                assert!(
+                    !tracking.ignores_bitrate,
+                    "nothing has been observed about x264enc"
+                );
+
+                let sel = |spec: &'static EncoderSpec, confirmed: bool| Selection {
+                    spec,
+                    confirmed,
+                    passed_over: Vec::new(),
+                };
+                assert!(
+                    sel(tracking, true).bitrate_is_predictive(),
+                    "a confirmed rate-controlling encoder can be quoted a size",
+                );
+                assert!(
+                    !sel(untracked, true).bitrate_is_predictive(),
+                    "an encoder measured to ignore its bitrate must not be quoted a size",
+                );
+                // Unconfirmed is "nothing observed", never "probably fine".
+                assert!(
+                    !sel(tracking, false).bitrate_is_predictive(),
+                    "an unconfirmed encoder has not been observed, so nothing follows from it",
+                );
+            }
+            {
+                let empty = EncodeReport::default();
+                assert!(!empty.is_hardware());
+                assert!(
+                    empty.describe().contains("no video encoder selected"),
+                    "{}",
+                    empty.describe(),
+                );
+            }
         }
+
+        phase a_kilobit_rate_floors_to_whole_kilobits_and_a_bit_rate_passes_through;
         {
-            let tracking = H264.iter().find(|s| s.element == "x264enc").unwrap();
-            let untracked = H264.iter().find(|s| s.element == "openh264enc").unwrap();
-            assert!(
-                untracked.ignores_bitrate,
-                "openh264enc is the measured exception"
-            );
-            assert!(
-                !tracking.ignores_bitrate,
-                "nothing has been observed about x264enc"
-            );
-
-            let sel = |spec: &'static EncoderSpec, confirmed: bool| Selection {
-                spec,
-                confirmed,
-                passed_over: Vec::new(),
-            };
-            assert!(
-                sel(tracking, true).bitrate_is_predictive(),
-                "a confirmed rate-controlling encoder can be quoted a size",
-            );
-            assert!(
-                !sel(untracked, true).bitrate_is_predictive(),
-                "an encoder measured to ignore its bitrate must not be quoted a size",
-            );
-            // Unconfirmed is "nothing observed", never "probably fine".
-            assert!(
-                !sel(tracking, false).bitrate_is_predictive(),
-                "an unconfirmed encoder has not been observed, so nothing follows from it",
-            );
-        }
-        {
-            let empty = EncodeReport::default();
-            assert!(!empty.is_hardware());
-            assert!(
-                empty.describe().contains("no video encoder selected"),
-                "{}",
-                empty.describe(),
-            );
-        }
-    }
-
-    #[test]
-    fn a_kilobit_rate_floors_to_whole_kilobits_and_a_bit_rate_passes_through() {
-        // (bits per second asked for, what a kilobit encoder is given, what a bit one is)
-        let rows: [(u64, u64, u64); 8] = [
-            (0, 0, 0),
-            (1, 1, 1),
-            (999, 1, 999),
-            (1_000, 1, 1_000),
-            (1_001, 1, 1_001),
-            (1_999, 1, 1_999),
-            (2_000, 2, 2_000),
-            (u64::MAX, 18_446_744_073_709_551, u64::MAX),
-        ];
-        for (bits_per_second, kilobits, in_bits) in rows {
-            assert_eq!(
-                AV1_BASELINE.bitrate_value(bits_per_second),
-                kilobits,
-                "{bits_per_second} bit/s in kilobits: never rounded up past what was asked, \
+            // (bits per second asked for, what a kilobit encoder is given, what a bit one is)
+            let rows: [(u64, u64, u64); 8] = [
+                (0, 0, 0),
+                (1, 1, 1),
+                (999, 1, 999),
+                (1_000, 1, 1_000),
+                (1_001, 1, 1_001),
+                (1_999, 1, 1_999),
+                (2_000, 2, 2_000),
+                (u64::MAX, 18_446_744_073_709_551, u64::MAX),
+            ];
+            for (bits_per_second, kilobits, in_bits) in rows {
+                assert_eq!(
+                    AV1_BASELINE.bitrate_value(bits_per_second),
+                    kilobits,
+                    "{bits_per_second} bit/s in kilobits: never rounded up past what was asked, \
                  and never auto unless auto was asked",
+                );
+                assert_eq!(
+                    OPUS_BASELINE.bitrate_value(bits_per_second),
+                    in_bits,
+                    "{bits_per_second} bit/s in bits",
+                );
+            }
+            assert_eq!(
+                AV1_BASELINE.launch_args(16_000_000),
+                "target-bitrate=16000",
+                "svtav1enc spells the property as libvpx does and counts in kilobits",
             );
             assert_eq!(
-                OPUS_BASELINE.bitrate_value(bits_per_second),
-                in_bits,
-                "{bits_per_second} bit/s in bits",
+                VP9_BASELINE.launch_args(16_000_000),
+                "target-bitrate=16000000",
+                "vp9enc counts in bits",
             );
+            assert_eq!(OPUS_BASELINE.launch_args(128_000), "bitrate=128000");
         }
-        assert_eq!(
-            AV1_BASELINE.launch_args(16_000_000),
-            "target-bitrate=16000",
-            "svtav1enc spells the property as libvpx does and counts in kilobits",
-        );
-        assert_eq!(
-            VP9_BASELINE.launch_args(16_000_000),
-            "target-bitrate=16000000",
-            "vp9enc counts in bits",
-        );
-        assert_eq!(OPUS_BASELINE.launch_args(128_000), "bitrate=128000");
     }
 
     #[cfg(feature = "encode")]

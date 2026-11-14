@@ -575,64 +575,68 @@ mod native {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_devices_and_device_nodes_are_the_graph() {
-        let mut globals = DeviceGlobals::default();
-        assert!(globals.added(1, GlobalKind::Node, Some("Audio/Sink")));
-        assert!(globals.added(2, GlobalKind::Node, Some("Audio/Source")));
-        assert!(globals.added(3, GlobalKind::Device, Some("Audio/Device")));
-        assert!(
-            !globals.added(4, GlobalKind::Node, Some("Stream/Output/Audio")),
-            "an app playing a sound is not a device change"
-        );
-        assert!(
-            !globals.added(5, GlobalKind::Other, Some("Audio/Sink")),
-            "pw-dump's own client, ports and links are not the graph"
-        );
-        assert!(!globals.added(6, GlobalKind::Node, None));
-        assert!(!globals.added(7, GlobalKind::Device, Some("Video/Device")));
-    }
+    tilo_test_env::scenario! {
+        fn graph_and_capture_changes_worth_reporting;
 
-    #[test]
-    fn removing_a_device_is_a_change_and_removing_anything_else_is_not() {
-        let mut globals = DeviceGlobals::default();
-        globals.added(1, GlobalKind::Node, Some("Audio/Sink"));
-        globals.added(4, GlobalKind::Node, Some("Stream/Output/Audio"));
-        assert!(!globals.removed(4), "a stream ending");
-        assert!(!globals.removed(9), "a client disconnecting");
-        assert!(globals.removed(1), "headphones unplugged");
-        assert!(!globals.removed(1), "an id is removed once");
-    }
+        phase only_devices_and_device_nodes_are_the_graph;
+        {
+            let mut globals = DeviceGlobals::default();
+            assert!(globals.added(1, GlobalKind::Node, Some("Audio/Sink")));
+            assert!(globals.added(2, GlobalKind::Node, Some("Audio/Source")));
+            assert!(globals.added(3, GlobalKind::Device, Some("Audio/Device")));
+            assert!(
+                !globals.added(4, GlobalKind::Node, Some("Stream/Output/Audio")),
+                "an app playing a sound is not a device change"
+            );
+            assert!(
+                !globals.added(5, GlobalKind::Other, Some("Audio/Sink")),
+                "pw-dump's own client, ports and links are not the graph"
+            );
+            assert!(!globals.added(6, GlobalKind::Node, None));
+            assert!(!globals.added(7, GlobalKind::Device, Some("Video/Device")));
+        }
 
-    #[test]
-    fn only_the_default_device_keys_move_sound() {
-        assert!(is_default_device_key("default.audio.sink"));
-        assert!(is_default_device_key("default.audio.source"));
-        assert!(!is_default_device_key("default.video.source"));
-        assert!(!is_default_device_key("default.configured.audio.sink"));
-    }
+        phase removing_a_device_is_a_change_and_removing_anything_else_is_not;
+        {
+            let mut globals = DeviceGlobals::default();
+            globals.added(1, GlobalKind::Node, Some("Audio/Sink"));
+            globals.added(4, GlobalKind::Node, Some("Stream/Output/Audio"));
+            assert!(!globals.removed(4), "a stream ending");
+            assert!(!globals.removed(9), "a client disconnecting");
+            assert!(globals.removed(1), "headphones unplugged");
+            assert!(!globals.removed(1), "an id is removed once");
+        }
 
-    #[test]
-    fn only_recording_streams_are_capture() {
-        assert!(is_capture_class("Stream/Input/Audio"), "a microphone");
-        assert!(is_capture_class("Stream/Input/Video"), "a camera");
-        assert!(!is_capture_class("Stream/Output/Audio"), "playing a sound");
-        assert!(!is_capture_class("Audio/Source"), "the microphone device");
-    }
+        phase only_the_default_device_keys_move_sound;
+        {
+            assert!(is_default_device_key("default.audio.sink"));
+            assert!(is_default_device_key("default.audio.source"));
+            assert!(!is_default_device_key("default.video.source"));
+            assert!(!is_default_device_key("default.configured.audio.sink"));
+        }
 
-    #[test]
-    fn only_a_change_in_which_capture_streams_run_is_news() {
-        let mut streams = CaptureStreams::default();
-        assert!(!streams.state(7, false), "a stream created paused");
-        assert!(streams.state(7, true), "it starts recording");
-        assert!(!streams.state(7, true), "the same state reported again");
-        assert!(streams.state(8, true), "a second app records");
-        assert_eq!(streams.running(), 2);
-        assert!(streams.state(8, false), "it pauses");
-        assert!(!streams.removed(8), "a paused stream ending");
-        assert!(!streams.removed(9), "a client disconnecting");
-        assert!(streams.removed(7), "a recording app quits");
-        assert_eq!(streams.running(), 0);
+        phase only_recording_streams_are_capture;
+        {
+            assert!(is_capture_class("Stream/Input/Audio"), "a microphone");
+            assert!(is_capture_class("Stream/Input/Video"), "a camera");
+            assert!(!is_capture_class("Stream/Output/Audio"), "playing a sound");
+            assert!(!is_capture_class("Audio/Source"), "the microphone device");
+        }
+
+        phase only_a_change_in_which_capture_streams_run_is_news;
+        {
+            let mut streams = CaptureStreams::default();
+            assert!(!streams.state(7, false), "a stream created paused");
+            assert!(streams.state(7, true), "it starts recording");
+            assert!(!streams.state(7, true), "the same state reported again");
+            assert!(streams.state(8, true), "a second app records");
+            assert_eq!(streams.running(), 2);
+            assert!(streams.state(8, false), "it pauses");
+            assert!(!streams.removed(8), "a paused stream ending");
+            assert!(!streams.removed(9), "a client disconnecting");
+            assert!(streams.removed(7), "a recording app quits");
+            assert_eq!(streams.running(), 0);
+        }
     }
 
     #[cfg(not(all(feature = "pipewire", target_os = "linux")))]

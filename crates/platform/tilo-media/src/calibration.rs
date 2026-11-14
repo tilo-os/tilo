@@ -695,154 +695,170 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn responses_rebuild_from_their_db_values_and_average_by_weight() {
-        let sweep = sweep();
-        let measured = measure(&sweep, &room(&sweep, 150.0, -4.0, None, 3));
-        assert!(measured.snr_db > 20.0 * MIN_PEAK_TO_RMS.log10());
-        let db: Vec<f64> = measured.response.points.iter().map(|p| p.db).collect();
-        let rebuilt = MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db).unwrap();
-        for (a, b) in rebuilt.points.iter().zip(&measured.response.points) {
-            assert!((a.hz - b.hz).abs() < 1e-9 && a.db.to_bits() == b.db.to_bits());
-        }
-        assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db[1..]).is_none());
-        assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &[f64::NAN; 1]).is_none());
-        assert_eq!(
-            room_eq(&rebuilt, measured.level_db, RATE),
-            measured.eq,
-            "the same fit as measuring"
-        );
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn room_correction;
 
-    #[test]
-    fn the_inverse_filter_turns_the_sweep_into_a_flat_impulse() {
-        let sweep = sweep();
-        let capture = [
-            vec![0.0; 4_800].as_slice(),
-            sweep.signal(),
-            &vec![0.0; 24_000],
-        ]
-        .concat();
-        let m = measure(&sweep, &capture);
-        assert!(m.arrival_samples.abs() < 0.05, "{}", m.arrival_samples);
-        assert!(m.level_db.abs() < 0.1, "{}", m.level_db);
-        for point in &m.response.points {
-            let tolerance = match point.hz {
-                hz if (200.0..10_000.0).contains(&hz) => 0.5,
-                hz if (40.0..200.0).contains(&hz) => 1.0,
-                _ => continue,
+        phase responses_rebuild_from_their_db_values_and_average_by_weight;
+        {
+            let sweep = sweep();
+            let measured = measure(&sweep, &room(&sweep, 150.0, -4.0, None, 3));
+            assert!(measured.snr_db > 20.0 * MIN_PEAK_TO_RMS.log10());
+            let db: Vec<f64> = measured.response.points.iter().map(|p| p.db).collect();
+            let rebuilt = MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db).unwrap();
+            for (a, b) in rebuilt.points.iter().zip(&measured.response.points) {
+                assert!((a.hz - b.hz).abs() < 1e-9 && a.db.to_bits() == b.db.to_bits());
+            }
+            assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &db[1..]).is_none());
+            assert!(MagnitudeResponse::from_grid_db(20.0, 20_000.0, &[f64::NAN; 1]).is_none());
+            assert_eq!(
+                room_eq(&rebuilt, measured.level_db, RATE),
+                measured.eq,
+                "the same fit as measuring"
+            );
+        }
+
+        phase room_eq_cuts_an_80_hz_mode;
+        {
+            let sweep = sweep();
+            let mode = EqBand {
+                center_hz: 80.0,
+                gain_db: 10.0,
+                q: 5.0,
             };
-            assert!(point.db.abs() < tolerance, "{point:?}");
-        }
-        assert!(m.eq.is_empty(), "{:?}", m.eq);
-    }
-
-    #[test]
-    fn measures_delay_and_gain_through_a_room() {
-        let sweep = sweep();
-        for (delay, gain_db) in [(1_234.0, -6.0), (517.3, -17.5), (96.5, 3.0)] {
-            let m = measure(&sweep, &room(&sweep, delay, gain_db, None, 1));
+            let m = measure(&sweep, &room(&sweep, 700.0, -10.0, Some(mode), 2));
+            assert!((m.level_db + 10.0).abs() < 0.5, "{}", m.level_db);
+            assert!(!m.eq.is_empty() && m.eq.len() <= EQ_MAX_BANDS);
+            for band in &m.eq {
+                assert!(
+                    band.gain_db <= 0.0 && band.gain_db >= -EQ_MAX_CUT_DB,
+                    "{band:?}"
+                );
+                assert!(band.center_hz <= EQ_MAX_HZ, "{band:?}");
+                assert!((EQ_Q_RANGE.0..=EQ_Q_RANGE.1).contains(&band.q), "{band:?}");
+            }
             assert!(
-                (m.arrival_samples - delay).abs() < 0.25,
-                "delay {delay}: {}",
-                m.arrival_samples
+                m.eq.iter().any(|b| (70.0..90.0).contains(&b.center_hz)),
+                "{:?}",
+                m.eq
             );
-            let expected_ns = (delay / f64::from(RATE) * 1e9) as i64;
-            assert!((m.arrival_ns - expected_ns).abs() < 21_000);
-            assert!(
-                (m.level_db - gain_db).abs() < 0.5,
-                "gain {gain_db}: {}",
-                m.level_db
+            let excess = |with_eq: bool| {
+                m.response
+                    .points
+                    .iter()
+                    .filter(|p| (60.0..100.0).contains(&p.hz))
+                    .map(|p| {
+                        let eq = if with_eq {
+                            eq_db(&m.eq, p.hz, RATE)
+                        } else {
+                            0.0
+                        };
+                        p.db + eq - m.level_db
+                    })
+                    .fold(f64::MIN, f64::max)
+            };
+            let before = excess(false);
+            let after = excess(true);
+            assert!(before > 8.0, "mode not measured: {before} dB");
+            assert!(after < 2.0, "mode left at {after} dB (was {before} dB)");
+            assert!(m.response.db_at(80.0).unwrap() > m.level_db + 8.0);
+        }
+
+        phase alignment_delays_early_members_and_attenuates_loud_ones;
+        {
+            let sweep = sweep();
+            let near = measure(&sweep, &room(&sweep, 150.0, -4.0, None, 3));
+            let far = measure(&sweep, &room(&sweep, 900.0, -9.0, None, 4));
+            let result = CalibrationResult::align(&[near.clone(), far.clone()]);
+            let [near_trim, far_trim] = result.per_member.as_slice() else {
+                panic!("{result:?}");
+            };
+            assert_eq!(far_trim.delay_trim_ns, 0);
+            assert!(far_trim.gain_trim_db.abs() < f64::EPSILON);
+            let sample_ns = 1e9 / f64::from(RATE);
+            let expected_delay = (750.0 * sample_ns) as i64;
+            assert!((near_trim.delay_trim_ns - expected_delay).abs() < sample_ns as i64);
+            assert!((near_trim.gain_trim_db + 5.0).abs() < 0.5);
+            assert_eq!(
+                near.arrival_ns + near_trim.delay_trim_ns,
+                far.arrival_ns + far_trim.delay_trim_ns
             );
         }
     }
 
-    #[test]
-    fn room_eq_cuts_an_80_hz_mode() {
-        let sweep = sweep();
-        let mode = EqBand {
-            center_hz: 80.0,
-            gain_db: 10.0,
-            q: 5.0,
-        };
-        let m = measure(&sweep, &room(&sweep, 700.0, -10.0, Some(mode), 2));
-        assert!((m.level_db + 10.0).abs() < 0.5, "{}", m.level_db);
-        assert!(!m.eq.is_empty() && m.eq.len() <= EQ_MAX_BANDS);
-        for band in &m.eq {
-            assert!(
-                band.gain_db <= 0.0 && band.gain_db >= -EQ_MAX_CUT_DB,
-                "{band:?}"
-            );
-            assert!(band.center_hz <= EQ_MAX_HZ, "{band:?}");
-            assert!((EQ_Q_RANGE.0..=EQ_Q_RANGE.1).contains(&band.q), "{band:?}");
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "the lint exempts a test function's body, not the closure a phase is"
+        )]
+        fn sweep_measurement;
+
+        phase the_inverse_filter_turns_the_sweep_into_a_flat_impulse;
+        {
+            let sweep = sweep();
+            let capture = [
+                vec![0.0; 4_800].as_slice(),
+                sweep.signal(),
+                &vec![0.0; 24_000],
+            ]
+            .concat();
+            let m = measure(&sweep, &capture);
+            assert!(m.arrival_samples.abs() < 0.05, "{}", m.arrival_samples);
+            assert!(m.level_db.abs() < 0.1, "{}", m.level_db);
+            for point in &m.response.points {
+                let tolerance = match point.hz {
+                    hz if (200.0..10_000.0).contains(&hz) => 0.5,
+                    hz if (40.0..200.0).contains(&hz) => 1.0,
+                    _ => continue,
+                };
+                assert!(point.db.abs() < tolerance, "{point:?}");
+            }
+            assert!(m.eq.is_empty(), "{:?}", m.eq);
         }
-        assert!(
-            m.eq.iter().any(|b| (70.0..90.0).contains(&b.center_hz)),
-            "{:?}",
-            m.eq
-        );
-        let excess = |with_eq: bool| {
-            m.response
-                .points
-                .iter()
-                .filter(|p| (60.0..100.0).contains(&p.hz))
-                .map(|p| {
-                    let eq = if with_eq {
-                        eq_db(&m.eq, p.hz, RATE)
-                    } else {
-                        0.0
-                    };
-                    p.db + eq - m.level_db
-                })
-                .fold(f64::MIN, f64::max)
-        };
-        let before = excess(false);
-        let after = excess(true);
-        assert!(before > 8.0, "mode not measured: {before} dB");
-        assert!(after < 2.0, "mode left at {after} dB (was {before} dB)");
-        assert!(m.response.db_at(80.0).unwrap() > m.level_db + 8.0);
-    }
 
-    #[test]
-    fn alignment_delays_early_members_and_attenuates_loud_ones() {
-        let sweep = sweep();
-        let near = measure(&sweep, &room(&sweep, 150.0, -4.0, None, 3));
-        let far = measure(&sweep, &room(&sweep, 900.0, -9.0, None, 4));
-        let result = CalibrationResult::align(&[near.clone(), far.clone()]);
-        let [near_trim, far_trim] = result.per_member.as_slice() else {
-            panic!("{result:?}");
-        };
-        assert_eq!(far_trim.delay_trim_ns, 0);
-        assert!(far_trim.gain_trim_db.abs() < f64::EPSILON);
-        let sample_ns = 1e9 / f64::from(RATE);
-        let expected_delay = (750.0 * sample_ns) as i64;
-        assert!((near_trim.delay_trim_ns - expected_delay).abs() < sample_ns as i64);
-        assert!((near_trim.gain_trim_db + 5.0).abs() < 0.5);
-        assert_eq!(
-            near.arrival_ns + near_trim.delay_trim_ns,
-            far.arrival_ns + far_trim.delay_trim_ns
-        );
-    }
+        phase measures_delay_and_gain_through_a_room;
+        {
+            let sweep = sweep();
+            for (delay, gain_db) in [(1_234.0, -6.0), (517.3, -17.5), (96.5, 3.0)] {
+                let m = measure(&sweep, &room(&sweep, delay, gain_db, None, 1));
+                assert!(
+                    (m.arrival_samples - delay).abs() < 0.25,
+                    "delay {delay}: {}",
+                    m.arrival_samples
+                );
+                let expected_ns = (delay / f64::from(RATE) * 1e9) as i64;
+                assert!((m.arrival_ns - expected_ns).abs() < 21_000);
+                assert!(
+                    (m.level_db - gain_db).abs() < 0.5,
+                    "gain {gain_db}: {}",
+                    m.level_db
+                );
+            }
+        }
 
-    #[test]
-    fn rejects_unusable_input() {
-        assert_eq!(
-            LogSweep::new(RATE, 20.0, 30_000.0, 1.0).err(),
-            Some(CalibrationError::InvalidSweep)
-        );
-        let sweep = LogSweep::new(RATE, 50.0, 16_000.0, 0.5).unwrap();
-        let silence = vec![0.0; RATE as usize];
-        assert_eq!(
-            sweep.measure(&silence, 0, 1).err(),
-            Some(CalibrationError::NoArrival)
-        );
-        assert_eq!(
-            sweep.measure(&silence, 10, 0).err(),
-            Some(CalibrationError::CaptureStartedLate)
-        );
-        assert_eq!(
-            sweep.measure(&silence[..20_000], 0, 0).err(),
-            Some(CalibrationError::CaptureTooShort)
-        );
+        phase rejects_unusable_input;
+        {
+            assert_eq!(
+                LogSweep::new(RATE, 20.0, 30_000.0, 1.0).err(),
+                Some(CalibrationError::InvalidSweep)
+            );
+            let sweep = LogSweep::new(RATE, 50.0, 16_000.0, 0.5).unwrap();
+            let silence = vec![0.0; RATE as usize];
+            assert_eq!(
+                sweep.measure(&silence, 0, 1).err(),
+                Some(CalibrationError::NoArrival)
+            );
+            assert_eq!(
+                sweep.measure(&silence, 10, 0).err(),
+                Some(CalibrationError::CaptureStartedLate)
+            );
+            assert_eq!(
+                sweep.measure(&silence[..20_000], 0, 0).err(),
+                Some(CalibrationError::CaptureTooShort)
+            );
+        }
     }
 }

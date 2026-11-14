@@ -179,72 +179,80 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn within_a_process_only_a_change_rescans() {
-        let a = stamp(&[("extension-release.tilo-codecs", 1)]);
-        let b = stamp(&[("extension-release.tilo-codecs", 2)]);
-        assert!(
-            !needs_rescan(Some(&a), Some(&b), &a),
-            "persisted is ignored once seen"
-        );
-        assert!(needs_rescan(Some(&a), Some(&a), &b));
-        assert!(needs_rescan(Some(&a), None, &Vec::new()), "removal rescans");
+    tilo_test_env::scenario! {
+        fn a_rescan_follows_extension_changes;
+
+        phase within_a_process_only_a_change_rescans;
+        {
+            let a = stamp(&[("extension-release.tilo-codecs", 1)]);
+            let b = stamp(&[("extension-release.tilo-codecs", 2)]);
+            assert!(
+                !needs_rescan(Some(&a), Some(&b), &a),
+                "persisted is ignored once seen"
+            );
+            assert!(needs_rescan(Some(&a), Some(&a), &b));
+            assert!(needs_rescan(Some(&a), None, &Vec::new()), "removal rescans");
+        }
+
+        phase a_new_process_compares_with_what_the_cache_reflects;
+        {
+            let a = stamp(&[("extension-release.tilo-codecs", 1)]);
+            assert!(!needs_rescan(None, Some(&a), &a));
+            assert!(
+                needs_rescan(None, Some(&Vec::new()), &a),
+                "merged while no process ran"
+            );
+            assert!(
+                needs_rescan(None, Some(&a), &Vec::new()),
+                "unmerged while no process ran"
+            );
+        }
+
+        phase with_nothing_recorded_only_a_merged_extension_rescans;
+        {
+            assert!(!needs_rescan(None, None, &Vec::new()));
+            assert!(needs_rescan(
+                None,
+                None,
+                &stamp(&[("extension-release.tilo-codecs", 1)])
+            ));
+        }
     }
 
-    #[test]
-    fn a_new_process_compares_with_what_the_cache_reflects() {
-        let a = stamp(&[("extension-release.tilo-codecs", 1)]);
-        assert!(!needs_rescan(None, Some(&a), &a));
-        assert!(
-            needs_rescan(None, Some(&Vec::new()), &a),
-            "merged while no process ran"
-        );
-        assert!(
-            needs_rescan(None, Some(&a), &Vec::new()),
-            "unmerged while no process ran"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn the_extension_stamp;
 
-    #[test]
-    fn with_nothing_recorded_only_a_merged_extension_rescans() {
-        assert!(!needs_rescan(None, None, &Vec::new()));
-        assert!(needs_rescan(
-            None,
-            None,
-            &stamp(&[("extension-release.tilo-codecs", 1)])
-        ));
-    }
+        phase stamp_round_trips_and_rejects_garbage;
+        {
+            let s = stamp(&[
+                ("extension-release.tilo-codecs", 1_700_000_000_123_456_789),
+                ("extension-release.tilo-codecs-mesa", 0),
+            ]);
+            assert_eq!(decode_stamp(&encode_stamp(&s)), Some(s));
+            assert_eq!(decode_stamp(""), Some(Vec::new()));
+            assert_eq!(decode_stamp("no-tab-here"), None);
+            assert_eq!(decode_stamp("name\tnot-a-number"), None);
+        }
 
-    #[test]
-    fn stamp_round_trips_and_rejects_garbage() {
-        let s = stamp(&[
-            ("extension-release.tilo-codecs", 1_700_000_000_123_456_789),
-            ("extension-release.tilo-codecs-mesa", 0),
-        ]);
-        assert_eq!(decode_stamp(&encode_stamp(&s)), Some(s));
-        assert_eq!(decode_stamp(""), Some(Vec::new()));
-        assert_eq!(decode_stamp("no-tab-here"), None);
-        assert_eq!(decode_stamp("name\tnot-a-number"), None);
-    }
-
-    #[test]
-    fn stamp_reads_names_and_times_sorted() {
-        // Beside the test binary, not in a shared tmpfs.
-        let root = std::env::current_exe()
-            .unwrap()
-            .with_file_name(format!("media-ext-stamp-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::write(root.join("extension-release.b"), "ID=fedora\n").unwrap();
-        std::fs::write(root.join("extension-release.a"), "ID=fedora\n").unwrap();
-        let read = extension_stamp(&root);
-        let names: Vec<_> = read
-            .iter()
-            .map(|(n, _)| n.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["extension-release.a", "extension-release.b"]);
-        assert!(read.iter().all(|(_, modified)| *modified > 0));
-        assert!(extension_stamp(&root.join("missing")).is_empty());
-        let _ = std::fs::remove_dir_all(&root);
+        phase stamp_reads_names_and_times_sorted;
+        {
+            // Beside the test binary, not in a shared tmpfs.
+            let root = std::env::current_exe()
+                .unwrap()
+                .with_file_name(format!("media-ext-stamp-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("extension-release.b"), "ID=fedora\n").unwrap();
+            std::fs::write(root.join("extension-release.a"), "ID=fedora\n").unwrap();
+            let read = extension_stamp(&root);
+            let names: Vec<_> = read
+                .iter()
+                .map(|(n, _)| n.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(names, ["extension-release.a", "extension-release.b"]);
+            assert!(read.iter().all(|(_, modified)| *modified > 0));
+            assert!(extension_stamp(&root.join("missing")).is_empty());
+            let _ = std::fs::remove_dir_all(&root);
+        }
     }
 }

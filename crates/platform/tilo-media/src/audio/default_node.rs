@@ -118,38 +118,42 @@ fn run(args: &[&str]) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn only_the_dummy_output_counts_as_no_device() {
-        let dummy = "id 34, type PipeWire:Interface:Node\n    media.class = \"Audio/Sink\"\n  * node.description = \"Dummy Output\"\n  * node.name = \"auto_null\"\n";
-        let real = "id 52, type PipeWire:Interface:Node\n  * node.description = \"Built-in Audio Analog Stereo\"\n  * node.name = \"alsa_output.pci-0000_00_1f.3.analog-stereo\"\n";
-        assert!(is_dummy_sink(dummy));
-        assert!(!is_dummy_sink(real));
-        assert!(!is_dummy_sink(""));
-    }
+    tilo_test_env::scenario! {
+        fn default_node_inspection_and_volume_parsing;
 
-    #[test]
-    fn volume_lines_parse_level_and_mute_or_fail() {
-        let plain = parse_volume_state("Volume: 0.45\n").unwrap();
-        assert!((plain.level - 0.45).abs() < 1e-6);
-        assert!(!plain.muted);
-        // A muted device still reports the level it will return to.
-        let muted = parse_volume_state("Volume: 0.30 [MUTED]\n").unwrap();
-        assert!((muted.level - 0.30).abs() < 1e-6);
-        assert!(muted.muted);
-        assert!(parse_volume_state("not-a-line").is_err());
-    }
+        phase only_the_dummy_output_counts_as_no_device;
+        {
+            let dummy = "id 34, type PipeWire:Interface:Node\n    media.class = \"Audio/Sink\"\n  * node.description = \"Dummy Output\"\n  * node.name = \"auto_null\"\n";
+            let real = "id 52, type PipeWire:Interface:Node\n  * node.description = \"Built-in Audio Analog Stereo\"\n  * node.name = \"alsa_output.pci-0000_00_1f.3.analog-stereo\"\n";
+            assert!(is_dummy_sink(dummy));
+            assert!(!is_dummy_sink(real));
+            assert!(!is_dummy_sink(""));
+        }
 
-    #[test]
-    fn set_volume_clamps_out_of_range() {
-        assert_eq!(volume_arg(150.0), "1.00");
-        assert_eq!(volume_arg(-25.0), "0.00");
-        assert_eq!(volume_arg(50.0), "0.50");
-    }
+        phase volume_lines_parse_level_and_mute_or_fail;
+        {
+            let plain = parse_volume_state("Volume: 0.45\n").unwrap();
+            assert!((plain.level - 0.45).abs() < 1e-6);
+            assert!(!plain.muted);
+            // A muted device still reports the level it will return to.
+            let muted = parse_volume_state("Volume: 0.30 [MUTED]\n").unwrap();
+            assert!((muted.level - 0.30).abs() < 1e-6);
+            assert!(muted.muted);
+            assert!(parse_volume_state("not-a-line").is_err());
+        }
 
-    #[test]
-    fn object_serial_is_digits_only() {
-        let inspect = "id 52, type PipeWire:Interface:Node\n  * object.serial = \"314\"\n";
-        assert_eq!(parse_object_serial(inspect).as_deref(), Some("314"));
-        assert_eq!(parse_object_serial("object.serial = hacked"), None);
+        phase set_volume_clamps_out_of_range;
+        {
+            assert_eq!(volume_arg(150.0), "1.00");
+            assert_eq!(volume_arg(-25.0), "0.00");
+            assert_eq!(volume_arg(50.0), "0.50");
+        }
+
+        phase object_serial_is_digits_only;
+        {
+            let inspect = "id 52, type PipeWire:Interface:Node\n  * object.serial = \"314\"\n";
+            assert_eq!(parse_object_serial(inspect).as_deref(), Some("314"));
+            assert_eq!(parse_object_serial("object.serial = hacked"), None);
+        }
     }
 }

@@ -307,247 +307,255 @@ pub use realtime::{
 mod tests {
     use super::*;
 
-    #[test]
-    fn decoder_classification_reads_what_was_actually_plugged() {
-        {
-            assert_eq!(DecoderKind::classify("nvh264dec0"), DecoderKind::NvCodec);
-            assert_eq!(DecoderKind::classify("vah264dec0"), DecoderKind::Va);
-            assert_eq!(DecoderKind::classify("avdec_h264-0"), DecoderKind::Software);
-            assert_eq!(DecoderKind::classify("vaapih265dec"), DecoderKind::Va);
-            assert_eq!(DecoderKind::classify("v4l2h264dec"), DecoderKind::V4l2);
-            assert_eq!(DecoderKind::classify("v4l2slh264dec0"), DecoderKind::V4l2);
-            assert_eq!(DecoderKind::classify("v4l2slvp8dec"), DecoderKind::V4l2);
-            assert_eq!(DecoderKind::classify("v4l2slmpeg2dec"), DecoderKind::V4l2);
-            assert!(looks_like_video_decoder("v4l2slh264dec0"));
-            assert!(looks_like_video_decoder("v4l2slmpeg2dec0"));
-            assert_eq!(DecoderKind::classify("vulkanh264dec"), DecoderKind::Vulkan);
-            assert_eq!(DecoderKind::classify("d3d11h264dec"), DecoderKind::D3d);
-        }
-        {
-            // `vp8dec`/`vp9dec` are libvpx on the CPU but start with "v"; calling them
-            // VA-API would report hardware decode that never happened.
-            assert_eq!(DecoderKind::classify("vp9dec0"), DecoderKind::Software);
-            assert_eq!(DecoderKind::classify("vp8dec0"), DecoderKind::Software);
-            assert_eq!(DecoderKind::classify("dav1ddec0"), DecoderKind::Software);
-            assert_eq!(DecoderKind::classify("openh264dec0"), DecoderKind::Software);
-            assert!(!DecoderKind::classify("vp9dec0").is_hardware());
-        }
-        {
-            assert!(looks_like_video_decoder("nvh264dec0"));
-            assert!(looks_like_video_decoder("vah264dec0"));
-            assert!(looks_like_video_decoder("avdec_h264-0"));
-            assert!(
-                !looks_like_video_decoder("h264parse0"),
-                "a parser is not a decoder"
-            );
-            assert!(
-                !looks_like_video_decoder("decodebin3-0"),
-                "a bin is not a decoder"
-            );
-            assert!(!looks_like_video_decoder("uridecodebin3-0"));
-            assert!(!looks_like_video_decoder("parsebin0"));
-            assert!(
-                !looks_like_video_decoder("avdec_aac0"),
-                "audio decoder excluded"
-            );
-            assert!(!looks_like_video_decoder("opusdec0"));
-            assert!(
-                !looks_like_video_decoder("videoconvert0"),
-                "a converter is not a decoder"
-            );
-            assert!(!looks_like_video_decoder("qtdemux0"));
-        }
-        {
-            let mut r = HwReport::default();
-            assert!(!r.is_hardware(), "unknown is not hardware");
-            assert!(!r.is_dmabuf());
-            assert_eq!(r.describe(), "no decoder plugged yet");
+    tilo_test_env::scenario! {
+        fn decode_policy_ranking;
 
-            assert!(
-                r.note_element("nvh264dec0"),
-                "first video decoder is the chosen one"
-            );
-            assert!(r.is_hardware());
-            assert_eq!(r.decoder_kind, Some(DecoderKind::NvCodec));
-        }
+        phase decode_policy_ranks_hardware_families_against_software;
         {
-            let mut r = HwReport::default();
-            r.note_element("nvh264dec0");
-            // A second video track's decoder must not rewrite the report: the preview is
-            // showing the first stream.
-            assert!(!r.note_element("avdec_h264-1"));
-            assert_eq!(r.decoder_element.as_deref(), Some("nvh264dec0"));
-            assert!(r.is_hardware(), "still reporting the real primary decoder");
-            assert_eq!(r.decoder_candidates.len(), 2, "both kept for diagnostics");
+            {
+                assert!(
+                    rank_for(HwPolicy::Off, DecoderKind::NvCodec)
+                        < rank_for(HwPolicy::Off, DecoderKind::Software),
+                    "with hardware off, software must win autoplug"
+                );
+            }
+            {
+                for k in [
+                    DecoderKind::Va,
+                    DecoderKind::NvCodec,
+                    DecoderKind::V4l2,
+                    DecoderKind::Vulkan,
+                ] {
+                    assert!(
+                        rank_for(HwPolicy::Auto, k) > rank_for(HwPolicy::Auto, DecoderKind::Software),
+                        "{} must outrank software under auto",
+                        k.as_str()
+                    );
+                }
+            }
+            {
+                let p = HwPolicy::Force(DecoderKind::Va);
+                assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::NvCodec));
+                assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::Software));
+                // A forced family that cannot handle the stream must fall through to software,
+                // not to a different GPU family.
+                assert!(rank_for(p, DecoderKind::Software) > rank_for(p, DecoderKind::NvCodec));
+            }
+            {
+                let dav1d = 257;
+                let libaom = 256;
+                for p in [
+                    HwPolicy::Auto,
+                    HwPolicy::Off,
+                    HwPolicy::Force(DecoderKind::V4l2),
+                ] {
+                    assert!(
+                        effective_rank(p, DecoderKind::Software, dav1d)
+                            > effective_rank(p, DecoderKind::Software, libaom),
+                        "{p:?} must not flatten the software order"
+                    );
+                }
+                assert!(
+                    effective_rank(HwPolicy::Auto, DecoderKind::V4l2, 0)
+                        > effective_rank(HwPolicy::Auto, DecoderKind::Software, dav1d),
+                    "hardware still outranks the best software decoder"
+                );
+            }
+            {
+                for (v, want) in [
+                    ("auto", HwPolicy::Auto),
+                    ("", HwPolicy::Auto),
+                    ("ON", HwPolicy::Auto),
+                    ("off", HwPolicy::Off),
+                    ("software", HwPolicy::Off),
+                    (" va ", HwPolicy::Force(DecoderKind::Va)),
+                    ("vaapi", HwPolicy::Force(DecoderKind::Va)),
+                    ("nvcodec", HwPolicy::Force(DecoderKind::NvCodec)),
+                    ("nvdec", HwPolicy::Force(DecoderKind::NvCodec)),
+                    ("v4l2", HwPolicy::Force(DecoderKind::V4l2)),
+                    ("vulkan", HwPolicy::Force(DecoderKind::Vulkan)),
+                ] {
+                    assert_eq!(HwPolicy::parse(v), want, "TILO_MEDIA_HWDEC={v:?}");
+                }
+                assert_eq!(
+                    HwPolicy::parse("wat"),
+                    HwPolicy::Auto,
+                    "a typo must never silently disable hardware decode"
+                );
+            }
         }
-        {
-            let mut r = HwReport::default();
-            r.note_element("vah264dec0");
-            assert!(!r.is_dmabuf(), "hardware alone does not imply dmabuf");
-            r.negotiated_caps = Some("video/x-raw(memory:CUDAMemory), format=(string)NV12".into());
-            assert!(!r.is_dmabuf(), "CUDA memory is hardware but not dmabuf");
-            r.negotiated_caps =
-                Some("video/x-raw(memory:DMABuf), drm-format=(string)NV12:0x0".into());
-            assert!(r.is_dmabuf());
-        }
-    }
 
-    #[test]
-    fn decode_policy_ranks_hardware_families_against_software() {
+        phase a_policy_ranks_every_hardware_family_whatever_rank_it_shipped_with;
         {
-            assert!(
-                rank_for(HwPolicy::Off, DecoderKind::NvCodec)
-                    < rank_for(HwPolicy::Off, DecoderKind::Software),
-                "with hardware off, software must win autoplug"
-            );
-        }
-        {
-            for k in [
+            const HARDWARE: [DecoderKind; 6] = [
                 DecoderKind::Va,
                 DecoderKind::NvCodec,
                 DecoderKind::V4l2,
                 DecoderKind::Vulkan,
-            ] {
-                assert!(
-                    rank_for(HwPolicy::Auto, k) > rank_for(HwPolicy::Auto, DecoderKind::Software),
-                    "{} must outrank software under auto",
-                    k.as_str()
-                );
-            }
-        }
-        {
-            let p = HwPolicy::Force(DecoderKind::Va);
-            assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::NvCodec));
-            assert!(rank_for(p, DecoderKind::Va) > rank_for(p, DecoderKind::Software));
-            // A forced family that cannot handle the stream must fall through to software,
-            // not to a different GPU family.
-            assert!(rank_for(p, DecoderKind::Software) > rank_for(p, DecoderKind::NvCodec));
-        }
-        {
-            let dav1d = 257;
-            let libaom = 256;
-            for p in [
-                HwPolicy::Auto,
-                HwPolicy::Off,
-                HwPolicy::Force(DecoderKind::V4l2),
-            ] {
-                assert!(
-                    effective_rank(p, DecoderKind::Software, dav1d)
-                        > effective_rank(p, DecoderKind::Software, libaom),
-                    "{p:?} must not flatten the software order"
-                );
-            }
-            assert!(
-                effective_rank(HwPolicy::Auto, DecoderKind::V4l2, 0)
-                    > effective_rank(HwPolicy::Auto, DecoderKind::Software, dav1d),
-                "hardware still outranks the best software decoder"
-            );
-        }
-        {
-            for (v, want) in [
-                ("auto", HwPolicy::Auto),
-                ("", HwPolicy::Auto),
-                ("ON", HwPolicy::Auto),
-                ("off", HwPolicy::Off),
-                ("software", HwPolicy::Off),
-                (" va ", HwPolicy::Force(DecoderKind::Va)),
-                ("vaapi", HwPolicy::Force(DecoderKind::Va)),
-                ("nvcodec", HwPolicy::Force(DecoderKind::NvCodec)),
-                ("nvdec", HwPolicy::Force(DecoderKind::NvCodec)),
-                ("v4l2", HwPolicy::Force(DecoderKind::V4l2)),
-                ("vulkan", HwPolicy::Force(DecoderKind::Vulkan)),
-            ] {
-                assert_eq!(HwPolicy::parse(v), want, "TILO_MEDIA_HWDEC={v:?}");
-            }
-            assert_eq!(
-                HwPolicy::parse("wat"),
-                HwPolicy::Auto,
-                "a typo must never silently disable hardware decode"
-            );
-        }
-    }
+                DecoderKind::D3d,
+                DecoderKind::VideoToolbox,
+            ];
+            // `GStreamer`'s scale (none, marginal, secondary, primary), one above it as
+            // dav1d ships, and the most a plugin could claim.
+            const SHIPPED: [u32; 6] = [0, 64, 128, 256, 257, u32::MAX];
+            // The lowest and the highest rank a software decoder that autoplugs ships with.
+            const MARGINAL: u32 = 64;
+            const DAV1D: u32 = 257;
 
-    #[test]
-    fn a_policy_ranks_every_hardware_family_whatever_rank_it_shipped_with() {
-        const HARDWARE: [DecoderKind; 6] = [
-            DecoderKind::Va,
-            DecoderKind::NvCodec,
-            DecoderKind::V4l2,
-            DecoderKind::Vulkan,
-            DecoderKind::D3d,
-            DecoderKind::VideoToolbox,
-        ];
-        // `GStreamer`'s scale (none, marginal, secondary, primary), one above it as
-        // dav1d ships, and the most a plugin could claim.
-        const SHIPPED: [u32; 6] = [0, 64, 128, 256, 257, u32::MAX];
-        // The lowest and the highest rank a software decoder that autoplugs ships with.
-        const MARGINAL: u32 = 64;
-        const DAV1D: u32 = 257;
-
-        let mut policies = vec![HwPolicy::Auto, HwPolicy::Off];
-        policies.extend(HARDWARE.map(HwPolicy::Force));
-        for policy in &policies {
-            for shipped in SHIPPED {
-                assert_eq!(
-                    effective_rank(*policy, DecoderKind::Software, shipped),
-                    shipped,
-                    "{policy:?} must leave a software decoder at the rank it shipped with"
-                );
+            let mut policies = vec![HwPolicy::Auto, HwPolicy::Off];
+            policies.extend(HARDWARE.map(HwPolicy::Force));
+            for policy in &policies {
+                for shipped in SHIPPED {
+                    assert_eq!(
+                        effective_rank(*policy, DecoderKind::Software, shipped),
+                        shipped,
+                        "{policy:?} must leave a software decoder at the rank it shipped with"
+                    );
+                }
             }
-        }
-        for kind in HARDWARE {
-            assert!(kind.is_hardware(), "{}", kind.as_str());
-            for shipped in SHIPPED {
-                let row = format!("{} shipped at rank {shipped}", kind.as_str());
-                assert!(
-                    effective_rank(HwPolicy::Off, kind, shipped) < MARGINAL,
-                    "off: {row} must lose to every software decoder that autoplugs"
-                );
-                assert!(
-                    effective_rank(HwPolicy::Auto, kind, shipped) > DAV1D,
-                    "auto: {row} must still outrank the best software decoder"
-                );
-                assert!(
-                    effective_rank(HwPolicy::Force(kind), kind, shipped) > DAV1D,
-                    "forced: {row} must outrank the best software decoder"
-                );
-                for other in HARDWARE {
-                    if other != kind {
-                        assert!(
-                            effective_rank(HwPolicy::Force(other), kind, shipped) < MARGINAL,
-                            "{} forced: {row} must fall below every software decoder",
-                            other.as_str()
-                        );
+            for kind in HARDWARE {
+                assert!(kind.is_hardware(), "{}", kind.as_str());
+                for shipped in SHIPPED {
+                    let row = format!("{} shipped at rank {shipped}", kind.as_str());
+                    assert!(
+                        effective_rank(HwPolicy::Off, kind, shipped) < MARGINAL,
+                        "off: {row} must lose to every software decoder that autoplugs"
+                    );
+                    assert!(
+                        effective_rank(HwPolicy::Auto, kind, shipped) > DAV1D,
+                        "auto: {row} must still outrank the best software decoder"
+                    );
+                    assert!(
+                        effective_rank(HwPolicy::Force(kind), kind, shipped) > DAV1D,
+                        "forced: {row} must outrank the best software decoder"
+                    );
+                    for other in HARDWARE {
+                        if other != kind {
+                            assert!(
+                                effective_rank(HwPolicy::Force(other), kind, shipped) < MARGINAL,
+                                "{} forced: {row} must fall below every software decoder",
+                                other.as_str()
+                            );
+                        }
                     }
                 }
             }
         }
     }
 
-    #[test]
-    fn elements_that_are_not_video_decoders_leave_the_report_empty() {
-        let mut report = HwReport::default();
-        for name in [
-            "h264parse0",
-            "qtdemux0",
-            "videoconvert0",
-            "avdec_aac0",
-            "decodebin3-0",
-        ] {
-            assert!(!report.note_element(name), "{name} is not the decoder");
-        }
-        assert_eq!(
-            report,
-            HwReport::default(),
-            "nothing that passed by was recorded"
-        );
-        assert_eq!(report.describe(), "no decoder plugged yet");
+    tilo_test_env::scenario! {
+        fn decoder_classification;
 
-        // The decoder plugged after them is still the first, and so the chosen one.
-        assert!(report.note_element("vp9dec0"));
-        assert_eq!(report.decoder_element.as_deref(), Some("vp9dec0"));
-        assert_eq!(report.decoder_kind, Some(DecoderKind::Software));
-        assert!(!report.is_hardware());
-        assert_eq!(report.decoder_candidates, ["vp9dec0"]);
+        phase decoder_classification_reads_what_was_actually_plugged;
+        {
+            {
+                assert_eq!(DecoderKind::classify("nvh264dec0"), DecoderKind::NvCodec);
+                assert_eq!(DecoderKind::classify("vah264dec0"), DecoderKind::Va);
+                assert_eq!(DecoderKind::classify("avdec_h264-0"), DecoderKind::Software);
+                assert_eq!(DecoderKind::classify("vaapih265dec"), DecoderKind::Va);
+                assert_eq!(DecoderKind::classify("v4l2h264dec"), DecoderKind::V4l2);
+                assert_eq!(DecoderKind::classify("v4l2slh264dec0"), DecoderKind::V4l2);
+                assert_eq!(DecoderKind::classify("v4l2slvp8dec"), DecoderKind::V4l2);
+                assert_eq!(DecoderKind::classify("v4l2slmpeg2dec"), DecoderKind::V4l2);
+                assert!(looks_like_video_decoder("v4l2slh264dec0"));
+                assert!(looks_like_video_decoder("v4l2slmpeg2dec0"));
+                assert_eq!(DecoderKind::classify("vulkanh264dec"), DecoderKind::Vulkan);
+                assert_eq!(DecoderKind::classify("d3d11h264dec"), DecoderKind::D3d);
+            }
+            {
+                // `vp8dec`/`vp9dec` are libvpx on the CPU but start with "v"; calling them
+                // VA-API would report hardware decode that never happened.
+                assert_eq!(DecoderKind::classify("vp9dec0"), DecoderKind::Software);
+                assert_eq!(DecoderKind::classify("vp8dec0"), DecoderKind::Software);
+                assert_eq!(DecoderKind::classify("dav1ddec0"), DecoderKind::Software);
+                assert_eq!(DecoderKind::classify("openh264dec0"), DecoderKind::Software);
+                assert!(!DecoderKind::classify("vp9dec0").is_hardware());
+            }
+            {
+                assert!(looks_like_video_decoder("nvh264dec0"));
+                assert!(looks_like_video_decoder("vah264dec0"));
+                assert!(looks_like_video_decoder("avdec_h264-0"));
+                assert!(
+                    !looks_like_video_decoder("h264parse0"),
+                    "a parser is not a decoder"
+                );
+                assert!(
+                    !looks_like_video_decoder("decodebin3-0"),
+                    "a bin is not a decoder"
+                );
+                assert!(!looks_like_video_decoder("uridecodebin3-0"));
+                assert!(!looks_like_video_decoder("parsebin0"));
+                assert!(
+                    !looks_like_video_decoder("avdec_aac0"),
+                    "audio decoder excluded"
+                );
+                assert!(!looks_like_video_decoder("opusdec0"));
+                assert!(
+                    !looks_like_video_decoder("videoconvert0"),
+                    "a converter is not a decoder"
+                );
+                assert!(!looks_like_video_decoder("qtdemux0"));
+            }
+            {
+                let mut r = HwReport::default();
+                assert!(!r.is_hardware(), "unknown is not hardware");
+                assert!(!r.is_dmabuf());
+                assert_eq!(r.describe(), "no decoder plugged yet");
+
+                assert!(
+                    r.note_element("nvh264dec0"),
+                    "first video decoder is the chosen one"
+                );
+                assert!(r.is_hardware());
+                assert_eq!(r.decoder_kind, Some(DecoderKind::NvCodec));
+            }
+            {
+                let mut r = HwReport::default();
+                r.note_element("nvh264dec0");
+                // A second video track's decoder must not rewrite the report: the preview is
+                // showing the first stream.
+                assert!(!r.note_element("avdec_h264-1"));
+                assert_eq!(r.decoder_element.as_deref(), Some("nvh264dec0"));
+                assert!(r.is_hardware(), "still reporting the real primary decoder");
+                assert_eq!(r.decoder_candidates.len(), 2, "both kept for diagnostics");
+            }
+            {
+                let mut r = HwReport::default();
+                r.note_element("vah264dec0");
+                assert!(!r.is_dmabuf(), "hardware alone does not imply dmabuf");
+                r.negotiated_caps = Some("video/x-raw(memory:CUDAMemory), format=(string)NV12".into());
+                assert!(!r.is_dmabuf(), "CUDA memory is hardware but not dmabuf");
+                r.negotiated_caps =
+                    Some("video/x-raw(memory:DMABuf), drm-format=(string)NV12:0x0".into());
+                assert!(r.is_dmabuf());
+            }
+        }
+
+        phase elements_that_are_not_video_decoders_leave_the_report_empty;
+        {
+            let mut report = HwReport::default();
+            for name in [
+                "h264parse0",
+                "qtdemux0",
+                "videoconvert0",
+                "avdec_aac0",
+                "decodebin3-0",
+            ] {
+                assert!(!report.note_element(name), "{name} is not the decoder");
+            }
+            assert_eq!(
+                report,
+                HwReport::default(),
+                "nothing that passed by was recorded"
+            );
+            assert_eq!(report.describe(), "no decoder plugged yet");
+
+            // The decoder plugged after them is still the first, and so the chosen one.
+            assert!(report.note_element("vp9dec0"));
+            assert_eq!(report.decoder_element.as_deref(), Some("vp9dec0"));
+            assert_eq!(report.decoder_kind, Some(DecoderKind::Software));
+            assert!(!report.is_hardware());
+            assert_eq!(report.decoder_candidates, ["vp9dec0"]);
+        }
     }
 }

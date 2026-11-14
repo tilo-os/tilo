@@ -752,19 +752,20 @@ pub fn real_control() -> Arc<dyn GraphControl> {
 mod tests {
     use super::*;
 
-    #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each phase keeps one former test's body verbatim"
-    )]
-    fn audio_graph_parses_real_devices_streams_and_diffs_topology() {
+    const FIXTURE: &str = include_str!("audio_pw_dump_fixture.json");
+
+    tilo_test_env::scenario! {
+        fn pipewire_graph_parsing_and_control_arguments;
+
+        phase audio_graph_parses_real_devices_streams_and_diffs_topology;
         {
-            let volume = perceptual_from_channel_volumes(&[0.064, 0.512]).unwrap();
-            assert!((volume - 0.8).abs() < 0.001);
-        }
-        {
-            let g = parse_pw_dump(
-                r#"[{
+            {
+                let volume = perceptual_from_channel_volumes(&[0.064, 0.512]).unwrap();
+                assert!((volume - 0.8).abs() < 0.001);
+            }
+            {
+                let g = parse_pw_dump(
+                    r#"[{
               "id": 7, "type": "PipeWire:Interface:Device",
               "info": {"props":{"device.description":"USB headset"},"params":{
                 "Profile":[{"index":2}],
@@ -774,149 +775,147 @@ mod tests {
                   {"index":3,"name":"hfp","description":"Headset","available":"no"}
                 ]}}
             }]"#,
-            );
-            assert_eq!(g.hardware.len(), 1);
-            assert_eq!(g.hardware[0].active_profile, Some(2));
-            assert!(g.hardware[0].profiles[1].available);
-            assert!(!g.hardware[0].profiles[2].available);
-            assert_eq!(wpctl_set_profile_args(7, 2), ["set-profile", "7", "2"]);
-        }
-        {
-            let g = parse_pw_dump(FIXTURE);
-            assert_eq!(g.sinks.len(), 2, "two sinks: {:?}", g.sinks);
-            assert_eq!(g.sources.len(), 1, "one source");
-            let def = g.default_sink().expect("a default sink");
-            assert_eq!(def.name, "alsa_output.pci-0000_66_00.6.analog-stereo");
-            assert_eq!(def.description, "Ryzen HD Audio Controller Analoges Stereo");
-            assert!(def.is_default);
-            // The second sink is the routing target and is NOT the default.
-            let hp = g
-                .sink_by_description("Headphones")
-                .expect("headphones sink");
-            assert!(!hp.is_default);
-            assert_eq!(
-                hp.serial, 269,
-                "serial is the routing handle, distinct from id"
-            );
-            assert_eq!(hp.id, 91);
-        }
-        {
-            let g = parse_pw_dump(FIXTURE);
-            assert_eq!(g.playback_streams.len(), 2, "two playback streams");
-            let lw = g
-                .playback_streams
-                .iter()
-                .find(|s| s.app == "LibreWolf")
-                .expect("librewolf");
-            assert!(lw.playback);
-            assert_eq!(lw.target_id, Some(51));
-            assert!(lw.media_name.as_deref().unwrap().contains("YouTube"));
-            assert!(lw.label().contains("LibreWolf — "));
+                );
+                assert_eq!(g.hardware.len(), 1);
+                assert_eq!(g.hardware[0].active_profile, Some(2));
+                assert!(g.hardware[0].profiles[1].available);
+                assert!(!g.hardware[0].profiles[2].available);
+                assert_eq!(wpctl_set_profile_args(7, 2), ["set-profile", "7", "2"]);
+            }
+            {
+                let g = parse_pw_dump(FIXTURE);
+                assert_eq!(g.sinks.len(), 2, "two sinks: {:?}", g.sinks);
+                assert_eq!(g.sources.len(), 1, "one source");
+                let def = g.default_sink().expect("a default sink");
+                assert_eq!(def.name, "alsa_output.pci-0000_66_00.6.analog-stereo");
+                assert_eq!(def.description, "Ryzen HD Audio Controller Analoges Stereo");
+                assert!(def.is_default);
+                // The second sink is the routing target and is NOT the default.
+                let hp = g
+                    .sink_by_description("Headphones")
+                    .expect("headphones sink");
+                assert!(!hp.is_default);
+                assert_eq!(
+                    hp.serial, 269,
+                    "serial is the routing handle, distinct from id"
+                );
+                assert_eq!(hp.id, 91);
+            }
+            {
+                let g = parse_pw_dump(FIXTURE);
+                assert_eq!(g.playback_streams.len(), 2, "two playback streams");
+                let lw = g
+                    .playback_streams
+                    .iter()
+                    .find(|s| s.app == "LibreWolf")
+                    .expect("librewolf");
+                assert!(lw.playback);
+                assert_eq!(lw.target_id, Some(51));
+                assert!(lw.media_name.as_deref().unwrap().contains("YouTube"));
+                assert!(lw.label().contains("LibreWolf — "));
 
-            let pw = g
-                .playback_streams
-                .iter()
-                .find(|s| s.app == "pw-play")
-                .expect("pw-play");
-            assert_eq!(
-                pw.target_id,
-                Some(91),
-                "the moved stream reports its non-default sink"
-            );
-        }
-        {
-            let g = parse_pw_dump(FIXTURE);
-            let pw = g
-                .playback_streams
-                .iter()
-                .find(|s| s.app == "pw-play")
-                .unwrap();
-            assert!(
-                (pw.volume.unwrap() - 0.5).abs() < 1e-4,
-                "0.125.cbrt() == 0.5, got {:?}",
-                pw.volume
-            );
-            assert_eq!(pw.muted, Some(false));
-        }
-        {
-            assert_eq!(parse_pw_dump(""), AudioGraph::default());
-            assert_eq!(parse_pw_dump("not json"), AudioGraph::default());
-            assert_eq!(parse_pw_dump("[]"), AudioGraph::default());
-        }
-        {
-            let before = parse_pw_dump(FIXTURE);
-            // Drop the Headphones sink, as an unplug would. The "after" graph is built by
-            // hand from `before`, since filtering the fixture string is awkward.
-            let mut after = before.clone();
-            after.sinks.retain(|d| d.description != "Headphones");
-            let delta = AudioGraph::diff(&before, &after);
-            assert_eq!(delta.removed_sinks.len(), 1, "the headphones unplugged");
-            assert_eq!(delta.removed_sinks[0].description, "Headphones");
-            assert!(delta.added_sinks.is_empty());
+                let pw = g
+                    .playback_streams
+                    .iter()
+                    .find(|s| s.app == "pw-play")
+                    .expect("pw-play");
+                assert_eq!(
+                    pw.target_id,
+                    Some(91),
+                    "the moved stream reports its non-default sink"
+                );
+            }
+            {
+                let g = parse_pw_dump(FIXTURE);
+                let pw = g
+                    .playback_streams
+                    .iter()
+                    .find(|s| s.app == "pw-play")
+                    .unwrap();
+                assert!(
+                    (pw.volume.unwrap() - 0.5).abs() < 1e-4,
+                    "0.125.cbrt() == 0.5, got {:?}",
+                    pw.volume
+                );
+                assert_eq!(pw.muted, Some(false));
+            }
+            {
+                assert_eq!(parse_pw_dump(""), AudioGraph::default());
+                assert_eq!(parse_pw_dump("not json"), AudioGraph::default());
+                assert_eq!(parse_pw_dump("[]"), AudioGraph::default());
+            }
+            {
+                let before = parse_pw_dump(FIXTURE);
+                // Drop the Headphones sink, as an unplug would. The "after" graph is built by
+                // hand from `before`, since filtering the fixture string is awkward.
+                let mut after = before.clone();
+                after.sinks.retain(|d| d.description != "Headphones");
+                let delta = AudioGraph::diff(&before, &after);
+                assert_eq!(delta.removed_sinks.len(), 1, "the headphones unplugged");
+                assert_eq!(delta.removed_sinks[0].description, "Headphones");
+                assert!(delta.added_sinks.is_empty());
 
-            let replug = AudioGraph::diff(&after, &before);
-            assert_eq!(replug.added_sinks.len(), 1);
-            assert_eq!(replug.added_sinks[0].description, "Headphones");
-            assert!(
-                AudioGraph::diff(&before, &before).is_empty(),
-                "no change ⇒ empty delta"
-            );
+                let replug = AudioGraph::diff(&after, &before);
+                assert_eq!(replug.added_sinks.len(), 1);
+                assert_eq!(replug.added_sinks[0].description, "Headphones");
+                assert!(
+                    AudioGraph::diff(&before, &before).is_empty(),
+                    "no change ⇒ empty delta"
+                );
+            }
+            {
+                let g = parse_pw_dump(FIXTURE);
+                let sig = g.topology_signature();
+                // A volume change is not a topology change.
+                let mut vol = g.clone();
+                vol.playback_streams[0].volume = Some(0.1);
+                assert_eq!(
+                    sig,
+                    vol.topology_signature(),
+                    "volume drift is not structural"
+                );
+                let mut added = g.clone();
+                let mut ns = g.playback_streams[0].clone();
+                ns.id = 999;
+                ns.app = "music".into();
+                added.playback_streams.push(ns);
+                assert_ne!(
+                    sig,
+                    added.topology_signature(),
+                    "a new app changes the topology"
+                );
+            }
         }
-        {
-            let g = parse_pw_dump(FIXTURE);
-            let sig = g.topology_signature();
-            // A volume change is not a topology change.
-            let mut vol = g.clone();
-            vol.playback_streams[0].volume = Some(0.1);
-            assert_eq!(
-                sig,
-                vol.topology_signature(),
-                "volume drift is not structural"
-            );
-            let mut added = g.clone();
-            let mut ns = g.playback_streams[0].clone();
-            ns.id = 999;
-            ns.app = "music".into();
-            added.playback_streams.push(ns);
-            assert_ne!(
-                sig,
-                added.topology_signature(),
-                "a new app changes the topology"
-            );
-        }
-    }
 
-    const FIXTURE: &str = include_str!("audio_pw_dump_fixture.json");
+        phase audio_control_args_target_the_right_keys;
+        {
+            {
+                assert_eq!(
+                    pw_metadata_route_args(84, 269),
+                    vec!["-n", "default", "84", "target.object", "269"],
+                );
+            }
+            {
+                assert_eq!(
+                    pw_metadata_unroute_args(84),
+                    vec!["-n", "default", "-d", "84", "target.object"],
+                );
+            }
+            {
+                assert_eq!(
+                    wpctl_set_volume_args(84, 0.5),
+                    vec!["set-volume", "84", "0.50"]
+                );
+                assert_eq!(wpctl_set_mute_args(84, true), vec!["set-mute", "84", "1"]);
+                assert_eq!(wpctl_set_mute_args(84, false), vec!["set-mute", "84", "0"]);
+                assert_eq!(wpctl_set_default_args(91), vec!["set-default", "91"]);
+            }
+        }
 
-    #[test]
-    fn audio_control_args_target_the_right_keys() {
+        phase echo_cancelled_microphone_nodes_are_neither_devices_nor_apps;
         {
-            assert_eq!(
-                pw_metadata_route_args(84, 269),
-                vec!["-n", "default", "84", "target.object", "269"],
-            );
-        }
-        {
-            assert_eq!(
-                pw_metadata_unroute_args(84),
-                vec!["-n", "default", "-d", "84", "target.object"],
-            );
-        }
-        {
-            assert_eq!(
-                wpctl_set_volume_args(84, 0.5),
-                vec!["set-volume", "84", "0.50"]
-            );
-            assert_eq!(wpctl_set_mute_args(84, true), vec!["set-mute", "84", "1"]);
-            assert_eq!(wpctl_set_mute_args(84, false), vec!["set-mute", "84", "0"]);
-            assert_eq!(wpctl_set_default_args(91), vec!["set-default", "91"]);
-        }
-    }
-
-    #[test]
-    fn echo_cancelled_microphone_nodes_are_neither_devices_nor_apps() {
-        let g = parse_pw_dump(
-            r#"[
+            let g = parse_pw_dump(
+                r#"[
             {"id":10,"type":"PipeWire:Interface:Node","info":{"props":{
               "media.class":"Audio/Source","node.name":"alsa_input.usb-mic","object.serial":110}}},
             {"id":11,"type":"PipeWire:Interface:Node","info":{"props":{
@@ -927,49 +926,50 @@ mod tests {
             {"id":13,"type":"PipeWire:Interface:Node","info":{"props":{
               "media.class":"Stream/Input/Audio","node.name":"tilo_echo_cancel_reference","object.serial":113}}}
         ]"#,
-        );
-        let sources: Vec<_> = g.sources.iter().map(|d| d.name.as_str()).collect();
-        assert_eq!(sources, ["alsa_input.usb-mic"]);
-        assert!(g.record_streams.is_empty(), "{:?}", g.record_streams);
-    }
+            );
+            let sources: Vec<_> = g.sources.iter().map(|d| d.name.as_str()).collect();
+            assert_eq!(sources, ["alsa_input.usb-mic"]);
+            assert!(g.record_streams.is_empty(), "{:?}", g.record_streams);
+        }
 
-    #[test]
-    fn exact_audio_source_requires_a_real_bounded_serial() {
-        for class in ["Audio/Source", "Audio/Sink"] {
-            let missing = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
-                "info": {"props": {"media.class": class}}}]);
-            let graph = parse_pw_dump(&missing.to_string());
-            assert!(graph.sources.is_empty() && graph.sinks.is_empty());
-            for serial in [
-                serde_json::Value::Null,
-                serde_json::json!(4_294_967_296u64),
-                serde_json::json!("4294967296"),
-                serde_json::json!(-1),
-                serde_json::json!(1.5),
-            ] {
-                let input = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
-                    "info": {"props": {"media.class": class, "object.serial": serial}}}]);
-                let graph = parse_pw_dump(&input.to_string());
-                assert!(
-                    graph.sources.is_empty() && graph.sinks.is_empty(),
-                    "a reusable node ID cannot replace missing/invalid object.serial: {input}"
-                );
-            }
-            for serial in [
-                serde_json::json!(246),
-                serde_json::json!("246"),
-                serde_json::json!(u32::MAX),
-            ] {
-                let input = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
-                    "info": {"props": {"media.class": class, "object.serial": serial}}}]);
-                let graph = parse_pw_dump(&input.to_string());
-                let device = graph
-                    .sources
-                    .first()
-                    .or_else(|| graph.sinks.first())
-                    .unwrap();
-                assert_eq!(device.id, 42);
-                assert_eq!(device.serial, as_u32(&serial).unwrap());
+        phase exact_audio_source_requires_a_real_bounded_serial;
+        {
+            for class in ["Audio/Source", "Audio/Sink"] {
+                let missing = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
+                    "info": {"props": {"media.class": class}}}]);
+                let graph = parse_pw_dump(&missing.to_string());
+                assert!(graph.sources.is_empty() && graph.sinks.is_empty());
+                for serial in [
+                    serde_json::Value::Null,
+                    serde_json::json!(4_294_967_296u64),
+                    serde_json::json!("4294967296"),
+                    serde_json::json!(-1),
+                    serde_json::json!(1.5),
+                ] {
+                    let input = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"media.class": class, "object.serial": serial}}}]);
+                    let graph = parse_pw_dump(&input.to_string());
+                    assert!(
+                        graph.sources.is_empty() && graph.sinks.is_empty(),
+                        "a reusable node ID cannot replace missing/invalid object.serial: {input}"
+                    );
+                }
+                for serial in [
+                    serde_json::json!(246),
+                    serde_json::json!("246"),
+                    serde_json::json!(u32::MAX),
+                ] {
+                    let input = serde_json::json!([{"id": 42, "type": "PipeWire:Interface:Node",
+                        "info": {"props": {"media.class": class, "object.serial": serial}}}]);
+                    let graph = parse_pw_dump(&input.to_string());
+                    let device = graph
+                        .sources
+                        .first()
+                        .or_else(|| graph.sinks.first())
+                        .unwrap();
+                    assert_eq!(device.id, 42);
+                    assert_eq!(device.serial, as_u32(&serial).unwrap());
+                }
             }
         }
     }

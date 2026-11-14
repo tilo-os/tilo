@@ -887,111 +887,115 @@ mod tests {
         }
     }
 
-    #[test]
-    fn echo_cancellation_is_one_session_that_follows_the_preference() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
-        let graph = AudioGraph {
-            sinks: vec![sink("speakers", true, 0.8)],
-            sources: vec![microphone()],
-            ..AudioGraph::default()
-        };
-        let on = PersistentAudioPreferences::default();
-        assert!(
-            on.echo_cancellation,
-            "calls get echo cancellation by default"
-        );
-        policy.reconcile(on, &graph).unwrap();
-        policy.reconcile(on, &graph).unwrap();
-        assert!(policy.echo_cancellation_active());
-        let off = PersistentAudioPreferences {
-            echo_cancellation: false,
-            ..on
-        };
-        policy.reconcile(off, &graph).unwrap();
-        assert!(!policy.echo_cancellation_active());
-        policy.reconcile(on, &graph).unwrap();
-        let echo: Vec<String> = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|call| call.starts_with("echo"))
-            .cloned()
-            .collect();
-        assert_eq!(echo, ["echo", "echo-drop", "echo"]);
-    }
+    tilo_test_env::scenario! {
+        fn echo_cancellation_session;
 
-    #[test]
-    fn echo_cancellation_waits_for_a_microphone_and_ends_with_the_policy() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
-        let prefs = PersistentAudioPreferences::default();
-        policy.reconcile(prefs, &AudioGraph::default()).unwrap();
-        assert!(calls.lock().unwrap().is_empty());
-        let with_mic = AudioGraph {
-            sources: vec![microphone()],
-            ..AudioGraph::default()
-        };
-        policy.reconcile(prefs, &with_mic).unwrap();
-        policy.reconcile(prefs, &AudioGraph::default()).unwrap();
-        policy.reconcile(prefs, &with_mic).unwrap();
-        drop(policy);
-        let recorded = calls.lock().unwrap().clone();
-        assert_eq!(recorded, ["echo", "echo-drop", "echo", "echo-drop"]);
-    }
+        phase echo_cancellation_is_one_session_that_follows_the_preference;
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+            let graph = AudioGraph {
+                sinks: vec![sink("speakers", true, 0.8)],
+                sources: vec![microphone()],
+                ..AudioGraph::default()
+            };
+            let on = PersistentAudioPreferences::default();
+            assert!(
+                on.echo_cancellation,
+                "calls get echo cancellation by default"
+            );
+            policy.reconcile(on, &graph).unwrap();
+            policy.reconcile(on, &graph).unwrap();
+            assert!(policy.echo_cancellation_active());
+            let off = PersistentAudioPreferences {
+                echo_cancellation: false,
+                ..on
+            };
+            policy.reconcile(off, &graph).unwrap();
+            assert!(!policy.echo_cancellation_active());
+            policy.reconcile(on, &graph).unwrap();
+            let echo: Vec<String> = calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|call| call.starts_with("echo"))
+                .cloned()
+                .collect();
+            assert_eq!(echo, ["echo", "echo-drop", "echo"]);
+        }
 
-    #[test]
-    fn a_dead_echo_cancellation_client_is_restarted_after_a_backoff() {
-        struct DyingRuntime(Arc<Mutex<Vec<String>>>);
-        impl AudioRuntimeControl for DyingRuntime {
-            fn capabilities(&self) -> RuntimeCapabilities {
-                RuntimeCapabilities {
-                    echo_cancellation: true,
-                    ..RuntimeCapabilities::default()
+        phase echo_cancellation_waits_for_a_microphone_and_ends_with_the_policy;
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+            let prefs = PersistentAudioPreferences::default();
+            policy.reconcile(prefs, &AudioGraph::default()).unwrap();
+            assert!(calls.lock().unwrap().is_empty());
+            let with_mic = AudioGraph {
+                sources: vec![microphone()],
+                ..AudioGraph::default()
+            };
+            policy.reconcile(prefs, &with_mic).unwrap();
+            policy.reconcile(prefs, &AudioGraph::default()).unwrap();
+            policy.reconcile(prefs, &with_mic).unwrap();
+            drop(policy);
+            let recorded = calls.lock().unwrap().clone();
+            assert_eq!(recorded, ["echo", "echo-drop", "echo", "echo-drop"]);
+        }
+
+        phase a_dead_echo_cancellation_client_is_restarted_after_a_backoff;
+        {
+            struct DyingRuntime(Arc<Mutex<Vec<String>>>);
+            impl AudioRuntimeControl for DyingRuntime {
+                fn capabilities(&self) -> RuntimeCapabilities {
+                    RuntimeCapabilities {
+                        echo_cancellation: true,
+                        ..RuntimeCapabilities::default()
+                    }
+                }
+                fn set_balance(&self, _: &str, _: f32, _: f32) -> Result<(), String> {
+                    Ok(())
+                }
+                fn start_mono(&self, _: &str) -> Result<Box<dyn BoundedSession>, String> {
+                    unreachable!()
+                }
+                fn start_channel_test(
+                    &self,
+                    _: &str,
+                    _: bool,
+                ) -> Result<Box<dyn BoundedSession>, String> {
+                    unreachable!()
+                }
+                fn start_microphone_meter(
+                    &self,
+                    _: &str,
+                    _: Duration,
+                ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
+                    unreachable!()
+                }
+                fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
+                    self.0.lock().unwrap().push("echo".into());
+                    Ok(Box::new(TestSession {
+                        calls: self.0.clone(),
+                        label: "echo",
+                        alive: Arc::new(Mutex::new(false)),
+                    }))
                 }
             }
-            fn set_balance(&self, _: &str, _: f32, _: f32) -> Result<(), String> {
-                Ok(())
-            }
-            fn start_mono(&self, _: &str) -> Result<Box<dyn BoundedSession>, String> {
-                unreachable!()
-            }
-            fn start_channel_test(
-                &self,
-                _: &str,
-                _: bool,
-            ) -> Result<Box<dyn BoundedSession>, String> {
-                unreachable!()
-            }
-            fn start_microphone_meter(
-                &self,
-                _: &str,
-                _: Duration,
-            ) -> Result<Box<dyn MicrophoneMeterSession>, String> {
-                unreachable!()
-            }
-            fn start_echo_cancellation(&self) -> Result<Box<dyn BoundedSession>, String> {
-                self.0.lock().unwrap().push("echo".into());
-                Ok(Box::new(TestSession {
-                    calls: self.0.clone(),
-                    label: "echo",
-                    alive: Arc::new(Mutex::new(false)),
-                }))
-            }
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut policy = PersistentAudioPolicy::new(Arc::new(DyingRuntime(calls.clone())));
+            let graph = AudioGraph {
+                sources: vec![microphone()],
+                ..AudioGraph::default()
+            };
+            let prefs = PersistentAudioPreferences::default();
+            policy.reconcile(prefs, &graph).unwrap();
+            policy.reconcile(prefs, &graph).unwrap();
+            policy.reconcile(prefs, &graph).unwrap();
+            let recorded = calls.lock().unwrap().clone();
+            assert_eq!(recorded, ["echo", "echo-drop"]);
+            assert!(!policy.echo_cancellation_active());
         }
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut policy = PersistentAudioPolicy::new(Arc::new(DyingRuntime(calls.clone())));
-        let graph = AudioGraph {
-            sources: vec![microphone()],
-            ..AudioGraph::default()
-        };
-        let prefs = PersistentAudioPreferences::default();
-        policy.reconcile(prefs, &graph).unwrap();
-        policy.reconcile(prefs, &graph).unwrap();
-        policy.reconcile(prefs, &graph).unwrap();
-        let recorded = calls.lock().unwrap().clone();
-        assert_eq!(recorded, ["echo", "echo-drop"]);
-        assert!(!policy.echo_cancellation_active());
     }
 
     fn sink(name: &str, default: bool, volume: f32) -> AudioDevice {
@@ -1007,136 +1011,149 @@ mod tests {
             codec: None,
         }
     }
-    #[test]
-    fn balance_preserves_loud_side_and_attenuates_other() {
-        assert_eq!(balance_channel_percent(0.8, 0.5), (40.0, 80.0));
-        assert_eq!(balance_channel_percent(0.8, -0.5), (80.0, 40.0));
-    }
-    #[test]
-    fn channel_test_is_stereo_and_isolated() {
-        let p = channel_test_pcm(true, 1000, Duration::from_millis(100));
-        assert_eq!(p.len(), 400);
-        assert!(p.chunks_exact(4).all(|f| f[2] == 0 && f[3] == 0));
-    }
-    #[test]
-    fn peak_reads_signed_pcm_without_storing_audio() {
-        assert!((pcm_peak(&i16::MAX.to_le_bytes()) - 1.0).abs() < 0.001);
-    }
-    #[test]
-    fn mono_module_is_bound_to_explicit_physical_sink() {
-        let a = mono_load_args("alsa_output.card.stereo");
-        assert!(a.contains(&"master=alsa_output.card.stereo".to_string()));
-        assert!(a.contains(&"channel_map=mono,mono".to_string()));
-    }
-    #[test]
-    fn persistent_policy_is_idempotent_and_owns_one_mono_session() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
-        let graph = AudioGraph {
-            sinks: vec![sink("speakers", true, 0.8)],
-            ..AudioGraph::default()
-        };
-        let prefs = PersistentAudioPreferences {
-            balance: 0.75,
-            mono_output: true,
-            ..PersistentAudioPreferences::default()
-        };
-        policy.reconcile(prefs, &graph).unwrap();
-        policy.reconcile(prefs, &graph).unwrap();
-        assert!(policy.mono_active());
-        assert_eq!(
-            calls.lock().unwrap().as_slice(),
-            ["mono:speakers", "balance:speakers:0.80:0.50"]
-        );
-        policy
-            .reconcile(
-                PersistentAudioPreferences {
-                    mono_output: false,
-                    ..prefs
-                },
-                &graph,
-            )
-            .unwrap();
-        assert_eq!(calls.lock().unwrap().last().unwrap(), "mono-drop");
+    tilo_test_env::scenario! {
+        fn balance_channel_test_and_peak_arithmetic;
+
+        phase balance_preserves_loud_side_and_attenuates_other;
+        {
+            assert_eq!(balance_channel_percent(0.8, 0.5), (40.0, 80.0));
+            assert_eq!(balance_channel_percent(0.8, -0.5), (80.0, 40.0));
+        }
+
+        phase channel_test_is_stereo_and_isolated;
+        {
+            let p = channel_test_pcm(true, 1000, Duration::from_millis(100));
+            assert_eq!(p.len(), 400);
+            assert!(p.chunks_exact(4).all(|f| f[2] == 0 && f[3] == 0));
+        }
+
+        phase peak_reads_signed_pcm_without_storing_audio;
+        {
+            assert!((pcm_peak(&i16::MAX.to_le_bytes()) - 1.0).abs() < 0.001);
+        }
     }
 
-    #[test]
-    fn virtual_default_does_not_replace_the_physical_mono_master() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
-        let prefs = PersistentAudioPreferences {
-            mono_output: true,
-            ..PersistentAudioPreferences::default()
-        };
-        policy
-            .reconcile(
-                prefs,
-                &AudioGraph {
-                    sinks: vec![sink("speakers", true, 0.8)],
-                    ..AudioGraph::default()
-                },
-            )
-            .unwrap();
-        policy
-            .reconcile(
-                prefs,
-                &AudioGraph {
-                    sinks: vec![
-                        sink(ACCESSIBILITY_MONO_SINK_NAME, true, 0.8),
-                        sink("speakers", false, 0.8),
-                    ],
-                    ..AudioGraph::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            calls
+    tilo_test_env::scenario! {
+        fn mono_output_route;
+
+        phase mono_module_is_bound_to_explicit_physical_sink;
+        {
+            let a = mono_load_args("alsa_output.card.stereo");
+            assert!(a.contains(&"master=alsa_output.card.stereo".to_string()));
+            assert!(a.contains(&"channel_map=mono,mono".to_string()));
+        }
+
+        phase persistent_policy_is_idempotent_and_owns_one_mono_session;
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+            let graph = AudioGraph {
+                sinks: vec![sink("speakers", true, 0.8)],
+                ..AudioGraph::default()
+            };
+            let prefs = PersistentAudioPreferences {
+                balance: 0.75,
+                mono_output: true,
+                ..PersistentAudioPreferences::default()
+            };
+            policy.reconcile(prefs, &graph).unwrap();
+            policy.reconcile(prefs, &graph).unwrap();
+            assert!(policy.mono_active());
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                ["mono:speakers", "balance:speakers:0.80:0.50"]
+            );
+            policy
+                .reconcile(
+                    PersistentAudioPreferences {
+                        mono_output: false,
+                        ..prefs
+                    },
+                    &graph,
+                )
+                .unwrap();
+            assert_eq!(calls.lock().unwrap().last().unwrap(), "mono-drop");
+        }
+
+        phase virtual_default_does_not_replace_the_physical_mono_master;
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+            let prefs = PersistentAudioPreferences {
+                mono_output: true,
+                ..PersistentAudioPreferences::default()
+            };
+            policy
+                .reconcile(
+                    prefs,
+                    &AudioGraph {
+                        sinks: vec![sink("speakers", true, 0.8)],
+                        ..AudioGraph::default()
+                    },
+                )
+                .unwrap();
+            policy
+                .reconcile(
+                    prefs,
+                    &AudioGraph {
+                        sinks: vec![
+                            sink(ACCESSIBILITY_MONO_SINK_NAME, true, 0.8),
+                            sink("speakers", false, 0.8),
+                        ],
+                        ..AudioGraph::default()
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|call| call.starts_with("mono:"))
+                    .count(),
+                1
+            );
+        }
+
+        phase a_new_physical_default_migrates_the_owned_mono_route;
+        {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
+            let prefs = PersistentAudioPreferences {
+                mono_output: true,
+                ..PersistentAudioPreferences::default()
+            };
+            policy
+                .reconcile(
+                    prefs,
+                    &AudioGraph {
+                        sinks: vec![sink("speakers", true, 0.8)],
+                        ..AudioGraph::default()
+                    },
+                )
+                .unwrap();
+            let mut old = sink("speakers", false, 0.8);
+            old.id = 1;
+            let mut new = sink("headphones", true, 0.6);
+            new.id = 2;
+            policy
+                .reconcile(
+                    prefs,
+                    &AudioGraph {
+                        sinks: vec![old, new],
+                        ..AudioGraph::default()
+                    },
+                )
+                .unwrap();
+            let mono: Vec<_> = calls
                 .lock()
                 .unwrap()
                 .iter()
                 .filter(|call| call.starts_with("mono:"))
-                .count(),
-            1
-        );
-    }
-    #[test]
-    fn a_new_physical_default_migrates_the_owned_mono_route() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut policy = PersistentAudioPolicy::new(Arc::new(RecordingRuntime(calls.clone())));
-        let prefs = PersistentAudioPreferences {
-            mono_output: true,
-            ..PersistentAudioPreferences::default()
-        };
-        policy
-            .reconcile(
-                prefs,
-                &AudioGraph {
-                    sinks: vec![sink("speakers", true, 0.8)],
-                    ..AudioGraph::default()
-                },
-            )
-            .unwrap();
-        let mut old = sink("speakers", false, 0.8);
-        old.id = 1;
-        let mut new = sink("headphones", true, 0.6);
-        new.id = 2;
-        policy
-            .reconcile(
-                prefs,
-                &AudioGraph {
-                    sinks: vec![old, new],
-                    ..AudioGraph::default()
-                },
-            )
-            .unwrap();
-        let mono: Vec<_> = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|call| call.starts_with("mono:"))
-            .cloned()
-            .collect();
-        assert_eq!(mono, ["mono:speakers", "mono:headphones"]);
+                .cloned()
+                .collect();
+            assert_eq!(mono, ["mono:speakers", "mono:headphones"]);
+        }
     }
     #[cfg(unix)]
     #[test]
