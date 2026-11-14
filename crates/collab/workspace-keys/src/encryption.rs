@@ -580,6 +580,10 @@ pub struct WorkspaceKeys {
     /// backoff that has doubled past what the caller waits
     /// ([`Self::ask_waiting_now`]).
     policy_epoch: Option<u64>,
+    /// The keys of the group state this machine was copied with, which names the device it was
+    /// copied from: the copy opens what it holds with them until the workspace admits it, then
+    /// forgets the state and joins as itself. It never seals with them.
+    copied: HashMap<WorkspaceId, ContentKeys>,
 }
 
 impl WorkspaceKeys {
@@ -594,6 +598,7 @@ impl WorkspaceKeys {
         self.unopened.remove(&workspace);
         self.registered.remove(&workspace);
         self.groups_seen.remove(&workspace);
+        self.copied.remove(&workspace);
         self.store
             .as_ref()
             .map_or(Ok(()), |store| store.state.forget(workspace))
@@ -645,6 +650,7 @@ impl WorkspaceKeys {
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
             policy_epoch: None,
+            copied: HashMap::new(),
         }
     }
 
@@ -804,6 +810,18 @@ impl WorkspaceKeys {
             return None;
         }
         Some(Err("this device holds no group keys yet".into()))
+    }
+
+    /// [`Self::record_keys`], or the keys of the state this machine was copied with while the
+    /// workspace has not admitted this device: what opens sealed history, never what seals it.
+    pub(crate) fn history_keys(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<Result<ContentKeys, String>> {
+        match (self.existing_keys(workspace), self.copied.get(&workspace)) {
+            (None, Some(copied)) => Some(Ok(copied.clone())),
+            _ => self.record_keys(workspace),
+        }
     }
 
     fn device(&self) -> Option<Ed25519PublicKey> {
@@ -1576,15 +1594,24 @@ impl WorkspaceKeys {
         ) {
             // A machine copied from another re-keyed its device: the state
             // names the device it was copied from, whose member it is, and
-            // can never act for this one. It is dropped, never used, so this
-            // device takes no leaf of its source's; it then joins as itself,
-            // as any further device of the member does.
+            // can never act for this one, so this device takes no leaf of its
+            // source's. Until the workspace admits this device, its keys
+            // open what the copy holds; then the state is dropped and the
+            // device joins as itself, as any further device of the member
+            // does.
             Err(key_group::Error::OtherDevice) => {
-                tracing::info!(
-                    %workspace,
-                    "group state named the device this machine was copied from; joining as this device"
-                );
-                store.state.peers().forget(workspace)?;
+                if takes_part(&*self.directory, self.device(), workspace) {
+                    tracing::info!(
+                        %workspace,
+                        "group state named the device this machine was copied from; joining as this device"
+                    );
+                    store.state.peers().forget(workspace)?;
+                    self.copied.remove(&workspace);
+                } else if let Some(keys) =
+                    GroupPeer::kept_keys(&*store.state.peers(), workspace, &store.vault)?
+                {
+                    self.copied.insert(workspace, keys);
+                }
                 return Ok(false);
             }
             // State in a format this build does not write: authentic and this

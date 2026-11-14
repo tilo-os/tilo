@@ -1356,6 +1356,71 @@ fn a_branched_device_rejoins_as_itself_beside_its_source() {
     }
 }
 
+/// A copy the workspace has not admitted yet opens what the copied state's keys open and seals
+/// nothing with them; once it is admitted, the state is dropped and it joins as itself.
+#[test]
+fn a_copy_awaiting_admission_reads_with_the_copied_keys_and_seals_nothing() {
+    let workspace = Arc::new(Workspace::default());
+    let workspace_id = WorkspaceId::new();
+    let artifact = collab_types::ArtifactId::new();
+    let policy = Policy::readers([20]);
+    let (source_dir, branch_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let mut now = Instant::now();
+    let mut source = device(&workspace, workspace_id, 0, 20, &policy, source_dir.path());
+    let KeyAccess::Ready(keys) = create(&mut source, workspace_id, now) else {
+        panic!("the source's keys");
+    };
+    let before = keys
+        .seal_content(artifact, ContentRetention::Delta, b"before the copy")
+        .unwrap();
+
+    copy_tree(source_dir.path(), branch_dir.path());
+    let copied = branch_dir
+        .path()
+        .join("groups")
+        .join(format!("{workspace_id}.peer"));
+    let mut branch = sealed_device(
+        &workspace,
+        workspace_id,
+        1,
+        (20, 21),
+        &policy,
+        branch_dir.path(),
+    );
+    assert!(copied.exists(), "the copied state stays until admission");
+    let opened = branch
+        .service
+        .history_keys(workspace_id)
+        .unwrap()
+        .unwrap()
+        .open_content(artifact, &before.0, &before.1)
+        .unwrap();
+    assert_eq!(opened.as_slice(), b"before the copy");
+    assert!(matches!(
+        branch.service.access(workspace_id, now),
+        KeyAccess::Unavailable
+    ));
+    assert!(
+        !matches!(branch.service.record_keys(workspace_id), Some(Ok(_))),
+        "nothing seals with the copied keys"
+    );
+
+    policy.allowed.lock().unwrap().insert(public(21));
+    assert!(matches!(
+        branch.service.access(workspace_id, now),
+        KeyAccess::Waiting
+    ));
+    assert!(
+        branch
+            .service
+            .history_keys(workspace_id)
+            .is_none_or(|keys| keys.is_err()),
+        "the copied keys are dropped once it is admitted"
+    );
+    run(&mut [&mut source, &mut branch], &mut now, 5);
+    assert!(ready_epoch(&branch.service.access(workspace_id, now)).is_some());
+}
+
 fn sealed_op(
     artifact: collab_types::ArtifactId,
     (metadata, payload): (EncryptionMetadata, Vec<u8>),

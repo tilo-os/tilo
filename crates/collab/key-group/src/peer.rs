@@ -563,28 +563,8 @@ impl GroupPeer {
         bytes: &[u8],
         vault: &VaultKey,
     ) -> Result<Self> {
-        if bytes.len() > MAX_PEER_STATE {
-            return Err(Error::InvalidState("sealed peer state is too large".into()));
-        }
-        let plaintext = tilo_seal::envelope::open(
-            &vault.0,
-            Context::new(Label::GroupMlsState, PEER_RECORD),
-            bytes,
-        )
-        .map_err(|_| Error::StateCrypto("state authentication failed"))?;
-        // The first byte names the format; this build writes and reads one.
-        if plaintext.first() != Some(&PEER_VERSION) {
-            return Err(Error::OtherFormat);
-        }
-        let file: PeerFile = postcard::from_bytes(&plaintext)
-            .map_err(|error| Error::Serialization(error.to_string()))?;
-        if file.workspace != workspace {
-            return Err(Error::InvalidState(
-                "peer state is of another workspace".into(),
-            ));
-        }
+        let (file, record) = open_file(workspace, bytes, vault)?;
         let device = Ed25519PublicKey::from_bytes(signer.device_public_key());
-        let record = MemberRecord::open_sealed(&file.record, vault)?;
         let owner = match &record {
             MemberRecord::Waiting(key) => Some(key.name()),
             MemberRecord::Joined(group) => {
@@ -622,6 +602,27 @@ impl GroupPeer {
             states: None,
             issued: file.issued,
             unsaved: false,
+        })
+    }
+
+    /// The content keys of the state `states` keeps for `workspace`, whichever device it names:
+    /// what a machine copied from another device opens what it holds with until the workspace
+    /// admits it. Nothing acts with that state.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::restore`], but for state naming another device.
+    pub fn kept_keys(
+        states: &dyn PeerStates,
+        workspace: WorkspaceId,
+        vault: &VaultKey,
+    ) -> Result<Option<ContentKeys>> {
+        let Some(bytes) = states.read(workspace)? else {
+            return Ok(None);
+        };
+        Ok(match open_file(workspace, &bytes, vault)?.1 {
+            MemberRecord::Joined(group) => group.content_keys().ok(),
+            MemberRecord::Waiting(_) | MemberRecord::Removed => None,
         })
     }
 
@@ -1801,6 +1802,36 @@ impl std::fmt::Debug for GroupPeer {
     }
 }
 
+/// The state `bytes` seals for `workspace`, and its member record.
+fn open_file(
+    workspace: WorkspaceId,
+    bytes: &[u8],
+    vault: &VaultKey,
+) -> Result<(PeerFile, MemberRecord)> {
+    if bytes.len() > MAX_PEER_STATE {
+        return Err(Error::InvalidState("sealed peer state is too large".into()));
+    }
+    let plaintext = tilo_seal::envelope::open(
+        &vault.0,
+        Context::new(Label::GroupMlsState, PEER_RECORD),
+        bytes,
+    )
+    .map_err(|_| Error::StateCrypto("state authentication failed"))?;
+    // The first byte names the format; this build writes and reads one.
+    if plaintext.first() != Some(&PEER_VERSION) {
+        return Err(Error::OtherFormat);
+    }
+    let file: PeerFile =
+        postcard::from_bytes(&plaintext).map_err(|error| Error::Serialization(error.to_string()))?;
+    if file.workspace != workspace {
+        return Err(Error::InvalidState(
+            "peer state is of another workspace".into(),
+        ));
+    }
+    let record = MemberRecord::open_sealed(&file.record, vault)?;
+    Ok((file, record))
+}
+
 #[cfg(test)]
 #[path = "peer_welcome_tests.rs"]
 mod welcome_tests;
@@ -1832,3 +1863,4 @@ mod format_tests {
         );
     }
 }
+

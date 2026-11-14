@@ -59,29 +59,15 @@ impl MlsVault {
     ///
     /// # Errors
     /// The launcher named no state directory, or the vault material cannot be opened.
-    /// `device` is the device key this session runs on: group state made for another device is
-    /// not opened as this one's ([`claim_for_device`]).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_for_session(device: &[u8; 32]) -> Result<Self, String> {
+    pub fn open_for_session() -> Result<Self, String> {
         let state = tilo_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             "the launcher did not provide XDG_STATE_HOME for MLS state".to_owned()
         })?;
-        Self::open_at(&state.join("tilo/collaboration/mls"), device)
-    }
-
-    /// The vault at `root`, for the device `device` names.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn open_at(root: &std::path::Path, device: &[u8; 32]) -> Result<Self, String> {
-        if claim_for_device(root, device)? {
-            tracing::info!(
-                "the group state here was made for the device this machine was copied from; \
-                 this device joins its workspaces' groups as itself"
-            );
-        }
-        let locator = master_key_locator(root);
+        let root = state.join("tilo/collaboration/mls");
         Self::open(
             Arc::new(tilo_workspace_keys::KeyDir::new(root.join("groups"))),
-            &locator,
+            &master_key_locator(&root),
         )
     }
 
@@ -104,46 +90,6 @@ impl MlsVault {
         hash.update(self.master_key.as_slice());
         hash.finalize().into()
     }
-}
-
-/// The file beside the group state naming the device it was made for.
-#[cfg(not(target_arch = "wasm32"))]
-const DEVICE_FILE: &str = "device";
-
-/// Make the group state under `root` the state of `device`, the device key this session runs on:
-/// state another device made is dropped. Every group in it names that device as its member, so no
-/// re-seal makes it this one's; kept, a machine copied from another would open its groups as the
-/// device it was copied from, and read nothing either of them writes after the first change of
-/// keys. Dropped, this device joins its workspaces' groups as itself, admitted by their
-/// participants, as a relay does when its machine is re-keyed. The master key stays: it seals
-/// nothing that names a device. State from before the file named its device is taken as this
-/// device's. Answers whether state was dropped.
-#[cfg(not(target_arch = "wasm32"))]
-fn claim_for_device(root: &std::path::Path, device: &[u8; 32]) -> Result<bool, String> {
-    let named = root.join(DEVICE_FILE);
-    let held = match std::fs::read(&named) {
-        Ok(held) => Some(held),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(format!("{}: {error}", named.display())),
-    };
-    if held.as_deref() == Some(device.as_slice()) {
-        return Ok(false);
-    }
-    let dropped = held.is_some();
-    if dropped {
-        let groups = root.join("groups");
-        match std::fs::remove_dir_all(&groups) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("{}: {error}", groups.display())),
-        }
-    }
-    std::fs::create_dir_all(root).map_err(|error| format!("{}: {error}", root.display()))?;
-    let staged = root.join(".device.new");
-    std::fs::write(&staged, device)
-        .and_then(|()| std::fs::rename(&staged, &named))
-        .map_err(|error| format!("{}: {error}", named.display()))?;
-    Ok(dropped)
 }
 
 /// Where the secret store keeps a vault's master key, named for the directory it seals: the one
@@ -248,43 +194,6 @@ mod tests {
         assert!(
             MlsVault::open(state, &master_key_locator(&root)).is_err(),
             "a new key would open none of the state sealed under the lost one"
-        );
-    }
-
-    /// A machine copied from another carries the group state made for the source's device: the
-    /// copy, re-keyed, drops it and joins as itself, and keeps what it makes from then on.
-    #[test]
-    fn group_state_made_for_another_device_is_not_opened_as_this_ones() {
-        let dir = tempfile::tempdir().expect("a directory");
-        let root = dir.path().join("mls");
-        let (_, _, _secrets) = seeded(&root, [6; 32]);
-        let (source, copy) = ([1_u8; 32], [2_u8; 32]);
-
-        MlsVault::open_at(&root, &source).expect("the source's vault opens");
-        fs::create_dir_all(root.join("groups")).expect("the group state");
-        fs::write(root.join("groups/group.sealed"), [6]).expect("the source's group");
-        MlsVault::open_at(&root, &source).expect("the source's vault opens again");
-        assert!(
-            root.join("groups/group.sealed").exists(),
-            "the source keeps its own state"
-        );
-
-        let vault = MlsVault::open_at(&root, &copy).expect("the copy's vault opens");
-        assert!(
-            !root.join("groups/group.sealed").exists(),
-            "the copy does not open the source's groups as its own"
-        );
-        fs::create_dir_all(root.join("groups")).expect("the copy's group state");
-        fs::write(root.join("groups/group.sealed"), [7]).expect("the copy's group");
-        let reopened = MlsVault::open_at(&root, &copy).expect("the copy's vault opens again");
-        assert!(
-            root.join("groups/group.sealed").exists(),
-            "and keeps what it made itself"
-        );
-        assert_eq!(
-            reopened.group_state_key_bytes(),
-            vault.group_state_key_bytes(),
-            "the master key stays"
         );
     }
 }

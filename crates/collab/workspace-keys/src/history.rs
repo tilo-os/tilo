@@ -56,7 +56,8 @@ impl SharedKeys {
     /// [`Err`] when it does and holds none yet.
     #[must_use]
     pub fn history_keys(&self, workspace: WorkspaceId) -> Option<Result<HistoryKeys, String>> {
-        self.record_keys(workspace)
+        self.run(|service| service.history_keys(workspace))
+            .unwrap_or_else(|| Some(Err("the key service is unavailable".into())))
             .map(|keys| keys.map(HistoryKeys))
     }
 

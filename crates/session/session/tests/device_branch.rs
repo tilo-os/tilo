@@ -149,17 +149,16 @@ fn a_workspace_made_on_another_device_arrives_without_taking_the_front() {
 }
 
 /// The copy takes the workspace up again as Ada's own further device: the
-/// channel state it was copied with names its source and is dropped, never
-/// used; the site admits the copy as a device of Ada's without an
+/// group state it was copied with names its source, and is dropped once the
+/// copy is admitted; the site admits the copy as a device of Ada's without an
 /// invitation; the copy keeps the workspace on its desk throughout; and Ada
 /// stays the member she was, her laptop holding the workspace too.
 #[test]
 fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
     let (site, ada, laptop, copy) = laptop_and_its_copy();
-    // The channel state on the copied disk names the device it was made for: the copy's session
-    // drops all of it as it opens its vault on a device key of its own, before it opens any
-    // workspace's channel.
-    let dropped = "the channel state here was made for the device this machine was copied from";
+    // The group state on the copied disk names the device it was made for: once the workspace
+    // admits the copy, the copy drops it and joins the workspace's key group as itself.
+    let dropped = "group state named the device this machine was copied from";
     let admitted = format!(
         "the host admitted this device and the workspace is held here workspace={}",
         site.workspace

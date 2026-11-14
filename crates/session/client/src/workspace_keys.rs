@@ -98,9 +98,7 @@ impl KeyService {
     ) -> std::io::Result<Self> {
         let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
         let gates: Arc<dyn GateRegistry> = Arc::new(BrokerGates(broker));
-        let service = match MlsVault::open_for_session(
-            &engine.identity().device_cert.device_public_key,
-        ) {
+        let service = match MlsVault::open_for_session() {
             Ok(vault) => WorkspaceKeys::open(
                 KeysConfig {
                     state: vault.group_state(),

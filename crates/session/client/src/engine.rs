@@ -163,6 +163,33 @@ pub struct Hosting {
     pub admitted: bool,
 }
 
+/// Whether a workspace admitted this device, as this device's copy of it says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Admission {
+    Admitted,
+    /// This machine was copied from another device, and the workspace has not admitted it yet:
+    /// its copy still names `copied_from`. It reads what the copy holds as that device could, and
+    /// writes nothing until it is admitted.
+    Awaiting { copied_from: [u8; 32] },
+}
+
+impl Admission {
+    fn of(view: &tilo_peer_state::owner::NativeCommittedView, own: [u8; 32]) -> Self {
+        match view.device().device_public_key {
+            held if held == own => Self::Admitted,
+            copied_from => Self::Awaiting { copied_from },
+        }
+    }
+
+    /// The device whose permissions decide what this device reads of the workspace.
+    fn reader(self, own: [u8; 32]) -> [u8; 32] {
+        match self {
+            Self::Admitted => own,
+            Self::Awaiting { copied_from } => copied_from,
+        }
+    }
+}
+
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
     owner: NativeWorkspaceOwner,
@@ -464,7 +491,7 @@ impl Engine {
                         .map(|hint| hint.host.device_label.clone())
                         .unwrap_or_default(),
                     here: hint.is_some_and(|hint| hint.host.device_public_key == own),
-                    admitted: view.device().device_public_key == own,
+                    admitted: Admission::of(view, own) == Admission::Admitted,
                 })
             })
             .ok()
@@ -601,12 +628,12 @@ impl Engine {
         if self.own_writes(workspace, app, record).is_some() {
             return Ok(None);
         }
-        let reader = self.identity.device_cert.device_public_key;
+        let own = self.identity.device_cert.device_public_key;
         Ok(self
             .opened(workspace, (app, record), &mut |workspace, open, kept| {
                 self.owner.with_current(workspace, |view| {
                     view.document_revision(
-                        reader,
+                        Admission::of(view, own).reader(own),
                         (app, record),
                         tilo_clock::wall(),
                         History { open, kept },
@@ -669,8 +696,12 @@ impl Engine {
         read: &mut dyn FnMut(WorkspaceId, OpenSealed<'_>, &mut KeptRecord) -> Result<T, String>,
     ) -> Result<Option<T>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let sealed = self.owner.with_current(workspace, |view| {
-            Ok(view.peer().publication().is_sealed_record(app, record))
+        let own = self.identity.device_cert.device_public_key;
+        let (sealed, admission) = self.owner.with_current(workspace, |view| {
+            Ok((
+                view.peer().publication().is_sealed_record(app, record),
+                Admission::of(view, own),
+            ))
         })?;
         let keys: Option<tilo_workspace_keys::HistoryKeys> = if sealed {
             match self.route_access(workspace) {
@@ -691,6 +722,9 @@ impl Engine {
                         "this device has no secret store, so it holds no channel keys".to_owned(),
                     );
                 }
+                // A copy the workspace has not admitted takes part in none of its key groups yet:
+                // the keys it was copied with, among the history keys, open what it holds.
+                Some(KeyAccess::Unavailable) if admission != Admission::Admitted => None,
                 Some(KeyAccess::Unavailable) => {
                     return Err("this device takes part in no channel of the record".to_owned());
                 }
@@ -764,11 +798,11 @@ impl Engine {
         maximum: usize,
         history: History<'_>,
     ) -> Result<RecordReading, String> {
-        let reader = self.identity.device_cert.device_public_key;
+        let own = self.identity.device_cert.device_public_key;
         self.owner
             .with_current(workspace, |view| {
                 view.read_document_with_history(
-                    reader,
+                    Admission::of(view, own).reader(own),
                     (app, record),
                     holding,
                     maximum,
@@ -994,6 +1028,9 @@ impl Engine {
         let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
             if founding && view.peer().document(app, record).is_some() {
                 return Err(format!("{record} of {app} is in the workspace already"));
+            }
+            if Admission::of(view, device) != Admission::Admitted {
+                return Err("the workspace has not admitted this device yet".to_owned());
             }
             author = Some(
                 view.peer()
@@ -1897,8 +1934,13 @@ mod tests {
     /// A device of a person, certified for their root, with `capabilities`,
     /// and the person's root key.
     fn identity(capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+        device_of(tilo_test_env::node_key(), capabilities)
+    }
+
+    /// The person's device whose key is `device`.
+    fn device_of(device: [u8; 32], capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
         let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
-        let device = ed25519_dalek::SigningKey::from_bytes(&tilo_test_env::node_key());
+        let device = ed25519_dalek::SigningKey::from_bytes(&device);
         let root = person.verifying_key().to_bytes();
         let mut cert = DeviceCert {
             user_public_key: root,
@@ -2145,5 +2187,76 @@ mod tests {
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));
+    }
+
+    /// A machine copied from a device, before the workspace admits it, reads what the copy holds,
+    /// nothing it does not hold, and writes nothing.
+    #[test]
+    fn a_copy_awaiting_its_host_reads_what_it_holds_and_writes_nothing() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (laptop, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&laptop);
+        let workspace = WorkspaceId::new();
+        let mut note = automerge::AutoCommit::new();
+        automerge::transaction::Transactable::put(&mut note, automerge::ROOT, "title", "Kept")
+            .expect("a note");
+        let written = note.save();
+        let keys = key_group::KeyGroup::create(
+            collab_types::WorkspaceId::parse(&workspace.to_string()).expect("a workspace id"),
+            key_group::MemberKey::generate("laptop").expect("a member key"),
+        )
+        .and_then(|group| group.content_keys())
+        .expect("the group's keys");
+        {
+            let engine = engine(state.path(), laptop);
+            pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+            engine.hand_keys(workspace, keys.clone());
+            pollster::block_on(engine.write_record(
+                workspace,
+                ("so.tilo.notes", "note"),
+                &written,
+                true,
+                Some(&keys),
+            ))
+            .expect("the laptop writes its note");
+        }
+
+        let (copy, _) = device_of([0x44; 32], DeviceCapabilities::member());
+        let copy = engine(state.path(), copy);
+        // The keys the copy holds of the workspace.
+        copy.hand_keys(workspace, keys.clone());
+        let id = workspace.to_string();
+        assert!(
+            copy.awaited_host(workspace).is_some(),
+            "the copy waits for the workspace to admit it"
+        );
+        let read = copy
+            .record(&id, "so.tilo.notes", "note")
+            .expect("the copy reads the note it holds")
+            .expect("the note is here");
+        let read = automerge::AutoCommit::load(&read).expect("a note");
+        assert_eq!(
+            automerge::ReadDoc::get(&read, automerge::ROOT, "title")
+                .expect("a title")
+                .map(|(value, _)| value.to_string()),
+            Some("\"Kept\"".to_owned())
+        );
+        assert!(
+            !matches!(copy.record(&id, "so.tilo.notes", "other"), Ok(Some(_))),
+            "what the copy does not hold reads as nothing"
+        );
+        automerge::transaction::Transactable::put(&mut note, automerge::ROOT, "title", "Changed")
+            .expect("a change");
+        let refused = pollster::block_on(copy.write_record(
+            workspace,
+            ("so.tilo.notes", "note"),
+            &note.save_incremental(),
+            false,
+            Some(&keys),
+        ));
+        assert!(
+            refused.is_err_and(|error| error.contains("not admitted this device")),
+            "the copy writes nothing before it is admitted"
+        );
     }
 }
