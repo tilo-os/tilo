@@ -207,6 +207,7 @@ fn rendered(replica: &Replica, view: &ViewInstance) -> tilo_ui_host::UiNode {
             tilolang_tilo::instance::preview(&replica.host, &names, reference, &mut Vec::new())
         },
         link: &|at| tilolang_tilo::instance::link_of(&replica.host, at),
+        published: &|at| tilolang_tilo::instance::published_of(&replica.host, at),
     };
     convert.node(view.tree())
 }

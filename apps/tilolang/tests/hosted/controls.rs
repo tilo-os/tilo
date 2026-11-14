@@ -481,18 +481,9 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     let editing = |id: &str| {
         shown
             .iter()
-            .filter_map(|control| control.doing.as_deref())
-            .filter_map(ui::tilo_actions::ActionAddress::parse)
+            .filter_map(|control| ui::tilo_actions::ActionAddress::parse(control.doing.as_ref()?))
             .find(|address| address.action == id)
-            .unwrap_or_else(|| {
-                panic!(
-                    "the window shows no control that edits {id}: {:?}",
-                    shown
-                        .iter()
-                        .map(|control| (&control.name, &control.doing))
-                        .collect::<Vec<_>>()
-                )
-            })
+            .unwrap_or_else(|| panic!("the window shows no control that edits {id}: {shown:?}"))
     };
     let done = editing(&session.field_id("done"));
     assert_eq!(
@@ -506,6 +497,13 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
         (titled.resource.as_str(), titled.item.as_deref()),
         "the box names the record the field's own entry names, the same way"
     );
+    let published = format!("tl:{}:", session.app);
+    // Named as an action on the record is: by the kind and the id the app publishes.
+    let named = |address: &ui::tilo_actions::ActionAddress| {
+        let item = address.item.as_deref().unwrap_or_default();
+        (address.resource.clone(), item.starts_with(&published))
+    };
+    assert_eq!(named(&done), (session.kind("Page"), true), "{done:?}");
     assert!(
         session
             .window
@@ -554,6 +552,7 @@ fn a_field_bound_checkbox_says_which_field_it_edits_and_marks_it_by_that_identit
     let address = ui::tilo_actions::ActionAddress::parse(&boxed)
         .unwrap_or_else(|| panic!("{boxed} names a record and a field"));
     assert_eq!(address.action, session.field_id("checked"));
+    assert_eq!(named(&address), (session.kind("Task"), true), "{address:?}");
     assert!(
         session
             .window

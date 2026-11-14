@@ -124,11 +124,17 @@ impl Workspace {
             .as_ref()
             .and_then(|binding| binding.field())
             .expect("the field is bound");
+        // The control names the note by the id the app publishes it under: `tl:<app>:<id>`.
+        let id = field
+            .0
+            .splitn(3, ':')
+            .nth(2)
+            .expect("a published resource id");
         let host = self.window.current_host().expect("the host started");
-        let probe = ResourceRef::parse_id(field.0, String::new()).expect("a resource id");
+        let probe = ResourceRef::parse_id(id, String::new()).expect("a resource id");
         let ty = tilolang_tilo::runtime::store::Store::type_of(host.store(), &probe)
             .expect("the note's type");
-        ResourceRef::parse_id(field.0, ty).expect("a resource id")
+        ResourceRef::parse_id(id, ty).expect("a resource id")
     }
 }
 

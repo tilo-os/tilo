@@ -1732,63 +1732,31 @@ impl Hosted {
         }
     }
 
-    /// The edit a control that names a field asks for: `address` names a record of this app — by
-    /// the kind its binding carries, the record it stands for (the first of that kind where it
-    /// names none), and in place of an action the declared id of a flag field. A press of such a
-    /// control (a box a view binds to a field and gives no action of its own) marks the field the
-    /// other way, so the record's own edit of it runs with the value a press gives. `None` where
-    /// `address` names an action, or a field that holds no flag.
-    fn toggled(&self, address: &ActionAddress) -> Option<(ActionAddress, String)> {
+    /// What a press of a control that names a flag field asks the record's own edit of it, found
+    /// as `edit` (a box a view binds to a field and gives no action of its own): to mark the field
+    /// the other way. `None` where `edit` names no record, or `field` is not a flag of it.
+    fn toggled(&self, edit: &ActionAddress, field: &str) -> Option<String> {
         let host = self.instance.host()?;
+        let read = host.read_content(Some(&edit.resource)).ok()?;
         let package = host.package(&self.spec.app)?;
-        // A control names the record it stands for by the id its binding carries, or by the one
-        // the app publishes it under.
-        let published = |id: &str| {
-            if id.starts_with("tl:") {
-                id.to_owned()
-            } else {
-                tilolang_tilo::publish::resource_id(&self.spec.app, id)
-            }
-        };
-        let read = |resource: &str| host.read_content(Some(resource)).ok();
-        let resource = if let Some(item) = address.item.as_deref() {
-            published(item)
-        } else {
-            // An address that names no record names the first of the kind, as any other operation
-            // on a kind does.
-            let held = host.read_content(None).ok()?;
-            held.get("records")?
-                .as_array()?
-                .iter()
-                .filter_map(|record| record.get("item")?.as_str())
-                .find(|item| read(item).is_some_and(|read| names(&package, &read, address)))?
-                .to_owned()
-        };
-        let read = read(&resource)?;
-        if !names(&package, &read, address) {
-            return None;
-        }
-        let shown = |name: &str| read.get(name).and_then(serde_json::Value::as_str);
         let field = package
             .meta
-            .type_named(shown("type")?)?
+            .type_named(read.get("type")?.as_str()?)?
             .fields
             .iter()
-            .find(|field| field.id == address.action)?;
-        // A flag is marked the other way by a press; a field that holds anything else is no
-        // control's to press, and its own edit is the one the caller names with a value.
+            .find(|declared| declared.id == field)?;
         let on = read.get("fields")?.get(&field.name)?.as_bool()?;
         let arguments = serde_json::json!({ "field": field.id, "value": !on });
-        Some((
-            ActionAddress::new(resource, tilolang_tilo::action::EDIT_FLAG_ACTION),
-            format!("{}{arguments}", tilo_actions::ARGUMENTS_JSON_PREFIX),
+        Some(format!(
+            "{}{arguments}",
+            tilo_actions::ARGUMENTS_JSON_PREFIX
         ))
     }
 
     /// The action `address` runs, built through the specs the window publishes: the one it names,
     /// whichever way a caller named it, or — where it names a field of a record instead (a box the
     /// view binds to the field and gives no action of its own) — the record's own edit of that
-    /// field, with the value a press of it gives.
+    /// field, found as any action on the record is, with the value a press of it gives.
     fn encode_named(
         &self,
         surface: &Surface,
@@ -1808,10 +1776,15 @@ impl Hosted {
         if encoded
             .as_ref()
             .is_err_and(|error| matches!(error, tilo_actions::DoorError::Unknown(_)))
-            && let Some((edit, arguments)) = self.toggled(&named)
         {
-            let (addressed, edit) = named_of(&edit);
-            if let Ok(run) = encode(&addressed, &edit, Some(&arguments)) {
+            let edit = ActionAddress {
+                action: tilolang_tilo::action::EDIT_FLAG_ACTION.to_owned(),
+                ..address.clone()
+            };
+            let (resources, edit) = named_of(&edit);
+            if let Some(arguments) = self.toggled(&edit, &address.action)
+                && let Ok(run) = encode(&resources, &edit, Some(&arguments))
+            {
                 return (edit, Ok(run));
             }
         }
@@ -2328,20 +2301,6 @@ fn packages_of<'a>(
 /// Where the runtime sends what a view or an action changes of another app's resources: queued
 /// for [`Hosted::send_asks`], and done here; the change comes back as the resource's next reading.
 struct Doors(Rc<RefCell<Vec<tilolang_tilo::runtime::delegate::Invocation>>>);
-
-/// Whether `read` is a reading of the record `address` names, by the kind the address carries: the
-/// kind the app publishes, or the id its binding gives it.
-fn names(
-    package: &tilolang_tilo::host::Package,
-    read: &serde_json::Value,
-    address: &ActionAddress,
-) -> bool {
-    let shown = |name: &str| read.get(name).and_then(serde_json::Value::as_str);
-    let Some(declared) = shown("type").and_then(|ty| package.meta.type_named(ty)) else {
-        return false;
-    };
-    shown("kind") == Some(address.resource.as_str()) || declared.id == address.resource
-}
 
 impl tilolang_tilo::runtime::delegate::Invoker for Doors {
     fn invoke(

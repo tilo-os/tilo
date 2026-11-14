@@ -56,6 +56,9 @@ pub struct Convert<'a> {
     /// The catalogue's reference to a record, and how it reads for the person reading: what a
     /// component offered it as a link shows.
     pub link: &'a dyn Fn(&ResourceRef) -> (String, String),
+    /// The kind of a record and the id its app publishes it under: what a control that edits or
+    /// toggles a field of it names it by, as an action on it is named.
+    pub published: &'a dyn Fn(&ResourceRef) -> Option<(String, String)>,
 }
 
 impl Convert<'_> {
@@ -94,7 +97,7 @@ impl Convert<'_> {
                 .keys()
                 .map(|event| {
                     let toggles = (self.toggles)(&node.key, event)
-                        .map(|(target, field)| (target.id_string(), field));
+                        .and_then(|(target, field)| Some(((self.published)(&target)?.1, field)));
                     let invokes =
                         (self.invokes)(&node.key, event).map(|invoked| wire::Invocation {
                             resource: invoked.resource.id_string(),
@@ -149,11 +152,12 @@ impl Convert<'_> {
     /// The window's binding of `binding`.
     #[must_use]
     pub fn binding(&self, binding: &Binding) -> wire::Binding {
+        let edits = binding
+            .field()
+            .and_then(|(target, field)| Some(((self.published)(target)?, field.clone())));
         wire::Binding {
-            field: binding
-                .field()
-                .map(|(target, field)| (target.id_string(), field.clone())),
-            kind: binding.field().map(|(target, _)| target.ty.clone()),
+            kind: edits.as_ref().map(|((kind, _), _)| kind.clone()),
+            field: edits.map(|((_, id), field)| (id, field)),
             name: (self.field_name)(binding),
         }
     }

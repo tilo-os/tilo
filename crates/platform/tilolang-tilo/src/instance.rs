@@ -31,7 +31,8 @@ mod shown;
 mod views;
 
 pub use convert::{
-    PREVIEW_CHARS, inline_title, inline_view, link_of, preview, shown_values, window_tree,
+    PREVIEW_CHARS, inline_title, inline_view, link_of, preview, published_of, shown_values,
+    window_tree,
 };
 pub(crate) use convert::{bound_values, convert_with, referenced_resource, rows_message};
 pub mod wire;

@@ -45,6 +45,7 @@ pub(crate) fn convert_with<T>(
     let cases = |id: &str| cases(host, id);
     let embeds = |reference: &crate::runtime::rich::Reference| inline_view(host, names, reference);
     let link = |target: &ResourceRef| link_of(host, target);
+    let published = |target: &ResourceRef| published_of(host, target);
     let (rendered, reads) = {
         let instance = view.borrow();
         let toggles = |key: &str, event: &str| toggles(host, &instance, key, event);
@@ -63,6 +64,7 @@ pub(crate) fn convert_with<T>(
                 embeds: &embeds,
                 preview: &preview,
                 link: &link,
+                published: &published,
             },
             &instance,
         );
@@ -101,22 +103,27 @@ pub fn link_of(host: &Host, target: &ResourceRef) -> (String, String) {
     let title = host.label_at(&target);
     let reference = host
         .find_in_packages(|package| {
-            package
-                .meta
-                .types
-                .iter()
-                .find(|declared| declared.id == target.ty)
-                .map(|declared| {
-                    crate::runtime::rich::resource_reference(
-                        &package.meta.app,
-                        &declared.name,
-                        &target,
-                    )
-                    .mark_value()
-                })
+            let declared = package.meta.type_named(&target.ty)?;
+            let app = &package.meta.app;
+            Some(
+                crate::runtime::rich::resource_reference(app, &declared.name, &target).mark_value(),
+            )
         })
         .unwrap_or_default();
     (reference, title)
+}
+
+/// The kind of record `target` is and the id it is published under, as its app publishes them:
+/// what a control that edits or toggles a field of it names it by, as an action on it is named.
+/// `None` for a record of a type no package here declares.
+#[must_use]
+pub fn published_of(host: &Host, target: &ResourceRef) -> Option<(String, String)> {
+    use crate::meta::MetaExt as _;
+    host.find_in_packages(|package| {
+        let declared = package.meta.type_named(&target.ty)?;
+        let id = crate::publish::resource_id(&package.meta.app, &target.id_string());
+        Some((package.meta.kind_of(&declared.name), id))
+    })
 }
 
 /// How a reference in rich text reads for the viewer: a person by what the workspace calls them; a
