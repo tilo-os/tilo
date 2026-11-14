@@ -100,6 +100,13 @@
       "module": "feeds"
     },
     {
+      "id": "so.tilo.file-explorer",
+      "name": "Files",
+      "category": "System",
+      "version": "0.1.0",
+      "module": "file_explorer"
+    },
+    {
       "id": "so.tilo.hex-editor",
       "name": "Hex Editor",
       "category": "Development",

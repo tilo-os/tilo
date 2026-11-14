@@ -22,6 +22,7 @@ pub(crate) fn register() {
     diffmerge_split::register();
     ebook_split::register();
     feeds_split::register();
+    file_explorer_split::register();
     hex_editor_split::register();
     maps_split::register();
     messages_split::register();
@@ -537,6 +538,41 @@ mod feeds_split {
 
     pub(super) fn register() {
         registry::defer_arriving(APP, "Feeds", SkeletonShape::Ground, open);
+    }
+}
+
+mod file_explorer_split {
+    use std::ffi::c_void;
+
+    use ui::application::ApplicationDefinition;
+    use ui::application::registry::{self, Loading};
+    use ui::widget::SkeletonShape;
+
+    use crate::split::Callback;
+
+    const APP: &str = "so.tilo.file-explorer";
+
+    #[link(wasm_import_module = "./__wasm_split.js")]
+    #[allow(improper_ctypes, reason = "the definition only passes between Rust")]
+    unsafe extern "C" {
+        #[link_name = "__wasm_split_load_file_explorer_eff2a92347af8340_definition"]
+        fn load(callback: Callback, data: *const c_void);
+        #[link_name = "__wasm_split_00___file_explorer___00_import_eff2a92347af8340_definition"]
+        fn definition() -> *const ApplicationDefinition;
+    }
+
+    #[unsafe(export_name = "__wasm_split_00___file_explorer___00_export_eff2a92347af8340_definition")]
+    #[allow(improper_ctypes_definitions, reason = "called only from Rust")]
+    extern "C" fn export() -> *const ApplicationDefinition {
+        file_explorer::definition()
+    }
+
+    fn open() -> Loading {
+        Box::pin(crate::split::definition(load, definition))
+    }
+
+    pub(super) fn register() {
+        registry::defer_arriving(APP, "Files", SkeletonShape::Ground, open);
     }
 }
 

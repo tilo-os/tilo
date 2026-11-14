@@ -18,8 +18,10 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
-platforms = ["linux", "macos"]
-platform-reason = "Browses the local file system by path."
+# On a computer it browses the local file system by path; in a page it shows
+# the workspace's own files, the record every member holds (`src/tree.rs`).
+platforms = ["linux", "macos", "web"]
+platform-reason = "Browses the local file system by path on a computer, and the workspace's Files record in a page."
 
 [package.names]
 de = "Dateien"

@@ -58,6 +58,7 @@ contacts = { path = "../../../apps/contacts" }
 diffmerge = { path = "../../../apps/diffmerge" }
 ebook = { path = "../../../apps/ebook" }
 feeds = { path = "../../../apps/feeds" }
+file-explorer = { path = "../../../apps/file-explorer" }
 hex-editor = { path = "../../../apps/hex-editor" }
 maps = { path = "../../../apps/maps" }
 messages = { path = "../../../apps/messages" }

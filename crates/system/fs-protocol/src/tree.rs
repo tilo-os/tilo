@@ -101,6 +101,9 @@ pub struct TreeEntry {
     pub size: u64,
     /// When its content last changed, in milliseconds since the epoch.
     pub mtime: u64,
+    /// Who last changed it, as the device that wrote the node named them: a
+    /// tree nobody has written yet names nobody.
+    pub author: Option<String>,
     pub record_id: Option<FileRecordId>,
 }
 
@@ -217,6 +220,7 @@ fn entry_of(doc: &Doc, node: &ObjId) -> TreeEntry {
         hash: doc.str_at(node, HASH_KEY),
         size: doc.uint_at(node, SIZE_KEY).unwrap_or_default(),
         mtime: doc.uint_at(node, MTIME_KEY).unwrap_or_default(),
+        author: doc.str_at(node, AUTHOR_KEY).filter(|name| !name.is_empty()),
         record_id: record_of(doc, node, RECORD_ID_KEY),
     }
 }

@@ -21,6 +21,7 @@ pub fn web_apps() -> Vec<&'static ApplicationDefinition> {
         diffmerge::definition(),
         ebook::definition(),
         feeds::definition(),
+        file_explorer::definition(),
         hex_editor::definition(),
         maps::definition(),
         messages::definition(),

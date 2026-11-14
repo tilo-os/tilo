@@ -668,3 +668,11 @@ files-folder-compress-here = Einträge hier in ein Archiv packen
 files-folder-extract-here = Archiv in diesen Ordner entpacken
 files-folder-add-current-bookmark = Diesen Ordner zu Favoriten hinzufügen
 files-folder-remove-current-bookmark = Diesen Ordner aus Favoriten entfernen
+
+# The workspace's files in a page: the tree the workspace holds, which no
+# mount of this device shows.
+files-workspace-window = Dateienfenster
+files-tree-up = Übergeordneter Ordner
+files-tree-empty = Dieser Arbeitsbereich hat noch keine Dateien
+files-tree-open = Öffnen
+files-tree-open-detail = Die Datei in der App öffnen, die sie liest

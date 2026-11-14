@@ -32,23 +32,39 @@ thin = ["dep:runtime-dylib"]
 # engine library links only through tools/ci/rustc-thin-app-wrapper.sh.
 runtime-engine = ["thin", "tilo-pdf-engine/thin", "tilo-archive-engine/thin"]
 
+# The app keeps two surfaces of the one Files app: the file manager on a
+# computer, which browses the mounts of the device, and the workspace's files
+# in a page, which are the Files record a workspace holds (`src/tree.rs`).
+# Only what both use is declared here; the manager's crates are below, under
+# the architectures it runs on.
 [dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
+tilo-actions = { path = "../../crates/collab/actions" }
+# File records: the tree a workspace's files are, and the kinds of node in it.
+fs-protocol = { path = "../../crates/system/fs-protocol" }
+# Which app opens what a file's bytes are, as the workspace's landing decides it.
+tilo-content-types = { path = "../../crates/system/content-types" }
+# The id a workspace's tree record has on every device.
+collab-types = { path = "../../crates/collab/collab-types" }
+chrono = { workspace = true, default-features = true }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+hex.workspace = true
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-pdf-engine = { path = "../../crates/runtime/engines/pdf", optional = true }
 tilo-archive-engine = { path = "../../crates/runtime/engines/archive", optional = true }
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-tilo-actions = { path = "../../crates/collab/actions" }
 tilo-automation = { path = "../../crates/collab/automation" }
 accounts = { path = "../../crates/system/accounts" }
 # Remote account folders are named exactly as the storage daemon's cloud
 # service names its mounts (`cloud_source::tree::mount_names`).
 cloud-source = { path = "../../crates/system/cloud-source" }
-# Source of truth for which extensions are editable documents (so the file
-# manager and the codecs agree on what opens in the word processor).
-# File records, the share/recipient control protocols and their canonical
-# encoding; the app needs nothing else from the collaboration core.
-fs-protocol = { path = "../../crates/system/fs-protocol" }
 tilo-user-identity = { path = "../../crates/collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
@@ -57,17 +73,11 @@ tilo-cloud-files = { path = "../../crates/platform/tilo-cloud-files" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 # Share- and recipient-control frames.
 wire-frame = { path = "../../crates/system/wire-frame", features = ["tokio"] }
-uuid.workspace = true
-hex.workspace = true
 sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews come from the PDF engine
 # (tilo-pdf), which Files hands to it; video remains a badge in this crate.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-mime = { path = "../../crates/platform/tilo-mime" }
-chrono = { workspace = true, default-features = true }
-# CLDR-backed date/time and decimal formatting. Keep these scoped to Files:
-# ICU4X's compiled data provides deterministic locale fallback without relying
-# on host libc locale installation.
 # Reads the Tilo FUSE driver's `user.tilo.sync` extended attribute so the file
 # manager can show each workspace file's sync/hydration state, and performs
 # no-replace renames, private staging and trash management.
@@ -85,10 +95,7 @@ tilo-paths = { path = "../../crates/platform/tilo-paths" }
 # Change notification for the open directory (inotify, FSEvents), so an idle
 # window re-reads nothing on a timer.
 tilo-files = { path = "../../crates/platform/tilo-files", features = ["watch"] }
-tracing.workspace = true
 tracing-subscriber.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
 automerge.workspace = true
@@ -97,10 +104,6 @@ cap-fs-ext = "3.4.6"
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The workspace-hack's native feature set does not build for wasm32.
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests build their image fixtures.
