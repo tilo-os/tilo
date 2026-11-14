@@ -1,11 +1,15 @@
 // Adapted from wasm-split-cli 0.7.10 (Dioxus, https://github.com/DioxusLabs/dioxus,
 // MIT OR Apache-2.0); see ../PROVENANCE.md for what changed.
 
+use crate::analysis::{Analysis, AnalysisCache, Body, STRUCTURE_LEN, hash_body};
 use crate::cache::{EmitCache, Key};
 use crate::data::{Claimant, DataLayout, DataPlan};
 use anyhow::{Context, Result};
 use itertools::Itertools;
-use rayon::prelude::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
+use rayon::prelude::{
+    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
+    IntoParallelRefMutIterator, ParallelIterator,
+};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     hash::Hash,
@@ -54,6 +58,12 @@ pub struct Splitter<'a> {
     parent_graph: HashMap<Node, HashSet<Node>>,
     /// Each defined data symbol's size, by its symbol index.
     data_sizes: HashMap<usize, usize>,
+    /// The imported functions' count, before the module's own in index order.
+    imported: usize,
+    /// What each of the module's own functions calls and the immediates its
+    /// code holds, in index order among them (analysis.rs): the bodies this
+    /// run walked, and the ones a run before it did.
+    bodies: Vec<Body>,
 }
 
 /// What every emission's key starts from (`Splitter::emit_key_base`), and
@@ -182,9 +192,59 @@ impl<'a> Splitter<'a> {
     /// It's important to compile the wasm with --emit-relocs such that the relocations are available
     /// to construct the callgraph.
     pub fn new(original: &'a [u8], bindgened: &'a [u8]) -> Result<Self> {
+        Self::with_analysis(original, bindgened, None)
+    }
+
+    /// [`Self::new`], reading back from `cache` what an earlier run of this
+    /// module's bodies read of them, and keeping this run's there
+    /// (analysis.rs).
+    pub fn with_analysis(
+        original: &'a [u8],
+        bindgened: &'a [u8],
+        cache: Option<&AnalysisCache>,
+    ) -> Result<Self> {
         let started = std::time::Instant::now();
         let (module, ids, fns_to_ids) = parse_module_with_ids(bindgened)?;
         took("parsed the bindgened module", started);
+
+        // Which body bytes this module has, and whether they are the ones an
+        // earlier run's answers belong to: its sections other than the code,
+        // and the two counts the indices follow.
+        let started = std::time::Instant::now();
+        let code = code_section(bindgened)?;
+        let hashes: Vec<u64> = match &code {
+            Some(code) => code
+                .bodies
+                .par_iter()
+                .map(|body| hash_body(&bindgened[body.clone()]))
+                .collect(),
+            None => Vec::new(),
+        };
+        let imported = code
+            .as_ref()
+            .map_or(0, |code| module.funcs.iter().count() - code.bodies.len());
+        let mut structure = Key::new();
+        match &code {
+            Some(code) => structure
+                .add(&bindgened[..code.start])
+                .add(&bindgened[code.end..]),
+            None => structure.add(bindgened),
+        };
+        structure.add(&imported).add(&hashes.len());
+        let structure = structure.finish();
+        assert_eq!(structure.len(), STRUCTURE_LEN);
+        let bodies = cache
+            .and_then(AnalysisCache::load)
+            .and_then(|analysis| analysis.matching(&structure, &hashes))
+            .unwrap_or_default();
+        if cache.is_some() {
+            eprintln!(
+                "wasm-split: read {} of {} function bodies from the last split",
+                bodies.len(),
+                hashes.len()
+            );
+        }
+        took("read the bodies' hashes", started);
 
         let split_points = accumulate_split_points(&module, &lazy_exports(original)?)?;
         let entry_slots = split_points.iter().map(|split| split.entries.len()).sum();
@@ -206,15 +266,23 @@ impl<'a> Splitter<'a> {
             parent_graph: Default::default(),
             shared_symbols: Default::default(),
             data_sizes: Default::default(),
+            imported,
+            bodies: Vec::new(),
         };
 
         let started = std::time::Instant::now();
-        module.build_call_graph()?;
+        module.build_call_graph(&hashes, bodies)?;
         took("built the call graph", started);
         let started = std::time::Instant::now();
         module.build_split_chunks()?;
         took("grouped the shared code", started);
 
+        if let Some(cache) = cache {
+            cache.store(&Analysis {
+                structure,
+                bodies: module.bodies.clone(),
+            })?;
+        }
         Ok(module)
     }
 
@@ -239,13 +307,22 @@ impl<'a> Splitter<'a> {
         // What each split module holds is settled while the whole program is
         // parsed. The main module is emitted next and takes that parse with
         // it, so the split modules are emitted without it in memory.
+        // Each module's part is its own: settled at once, one module a thread.
         let started = std::time::Instant::now();
-        let chunk_parts = (0..self.chunks.len())
-            .map(|idx| self.split_chunk_parts(idx))
-            .collect::<Vec<_>>();
-        let module_parts = (0..self.split_points.len())
-            .map(|idx| self.split_module_parts(idx))
-            .collect::<Vec<_>>();
+        let (chunk_parts, module_parts) = rayon::join(
+            || {
+                (0..self.chunks.len())
+                    .into_par_iter()
+                    .map(|idx| self.split_chunk_parts(idx))
+                    .collect::<Vec<_>>()
+            },
+            || {
+                (0..self.split_points.len())
+                    .into_par_iter()
+                    .map(|idx| self.split_module_parts(idx))
+                    .collect::<Vec<_>>()
+            },
+        );
         took("settled what each module holds", started);
 
         // Which static data each module reaches is read from the code it
@@ -253,7 +330,20 @@ impl<'a> Splitter<'a> {
         // pruned.
         let started = std::time::Instant::now();
         let data_layout = DataLayout::new(self.original)?;
-        let data_refs = data_layout.function_refs(&self.source_module);
+        // What each of the module's own functions' code holds, as the walk
+        // that built the call graph read it (analysis.rs).
+        let held: Vec<(FunctionId, &[u32])> = self
+            .bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| {
+                (
+                    self._ids_to_fns[self.imported + index],
+                    body.values.as_slice(),
+                )
+            })
+            .collect();
+        let data_refs = data_layout.function_refs(&held);
         let data_claimants = self.data_claimants(&chunk_parts, &module_parts);
         let loaded = loaded_with(&module_parts, chunk_parts.len());
         took("read the static data's references", started);
@@ -1480,8 +1570,11 @@ impl<'a> Splitter<'a> {
 
     /// Accumulate the relocations from the original module, create a relocation map, and then convert
     /// that to our *new* module's symbols.
-    fn build_call_graph(&mut self) -> Result<()> {
+    fn build_call_graph(&mut self, hashes: &[u64], known: HashMap<usize, Body>) -> Result<()> {
+        let mut step = std::time::Instant::now();
         let original = ModuleWithRelocations::new(self.original)?;
+        took("read the linked module's relocations", step);
+        step = std::time::Instant::now();
         self.data_sizes = original
             .data_symbols
             .iter()
@@ -1494,17 +1587,17 @@ impl<'a> Splitter<'a> {
         // ones of its name: that over-approximates the call graph, which only
         // keeps more in the main module, while mapping it to one of them
         // loses edges and the main module then calls functions moved out.
-        let mut old_names: HashMap<String, Vec<FunctionId>> = HashMap::new();
+        let mut old_names: HashMap<&str, Vec<FunctionId>> = HashMap::new();
         for f in original.module.funcs.iter() {
             if let Some(name) = &f.name {
-                old_names.entry(name.clone()).or_default().push(f.id());
+                old_names.entry(name.as_str()).or_default().push(f.id());
             }
         }
 
-        let mut new_names: HashMap<String, Vec<FunctionId>> = HashMap::new();
+        let mut new_names: HashMap<&str, Vec<FunctionId>> = HashMap::new();
         for f in self.source_module.funcs.iter() {
             if let Some(name) = &f.name {
-                new_names.entry(name.clone()).or_default().push(f.id());
+                new_names.entry(name.as_str()).or_default().push(f.id());
             }
         }
 
@@ -1606,7 +1699,7 @@ impl<'a> Splitter<'a> {
                 Node::Function(id) => {
                     let func = original.module.funcs.get(id);
                     let name = func.name.as_ref().unwrap();
-                    for entry in new_names.get(name).into_iter().flatten() {
+                    for entry in new_names.get(name.as_str()).into_iter().flatten() {
                         recovered_children.insert(Node::Function(*entry));
                     }
                 }
@@ -1635,8 +1728,7 @@ impl<'a> Splitter<'a> {
         // function the code calls or exports is reached from its caller or
         // as an export (the walk below), so a lazy export's shims go with its
         // module.
-        let in_table: HashSet<FunctionId> =
-            table_slots(&self.source_module).into_values().collect();
+        let in_table: HashSet<FunctionId> = new_slots.values().copied().collect();
         for (name, new) in new_names.iter() {
             if !old_names.contains_key(name) {
                 main_fn_entry.extend(
@@ -1650,29 +1742,104 @@ impl<'a> Splitter<'a> {
             self.call_graph.entry(node).or_default().extend(children);
         }
 
+        took("paired the linked functions with the bound ones", step);
+        step = std::time::Instant::now();
+
         // Walk the functions and try to disconnect any holes manually
         // This will attempt to resolve any of the new symbols like the shim functions
-        for func in self.source_module.funcs.iter() {
-            struct CallGrapher<'a> {
-                cur: FunctionId,
-                call_graph: &'a mut HashMap<Node, HashSet<Node>>,
-            }
-            impl<'a> Visitor<'a> for CallGrapher<'a> {
-                fn visit_function_id(&mut self, function: &walrus::FunctionId) {
-                    self.call_graph
-                        .entry(Node::Function(self.cur))
-                        .or_default()
-                        .insert(Node::Function(*function));
+        //
+        // Each body is walked on its own, so every body is walked at once, and
+        // a body an earlier run walked with the same bytes is read back
+        // instead (analysis.rs): the answers are what that body's code says,
+        // whatever the rest of the module holds.
+        let ids = &self._ids_to_fns;
+        let fns_to_ids = &self.fns_to_ids;
+        let module = &self.source_module;
+        let imported = self.imported;
+        let locals: Vec<FunctionId> = ids[imported..].to_vec();
+        let bodies: Vec<Body> = locals
+            .par_iter()
+            .enumerate()
+            .map(|(index, id)| {
+                if let Some(body) = known.get(&index) {
+                    return body.clone();
                 }
-            }
-            if let FunctionKind::Local(local) = &func.kind {
-                let mut call_grapher = CallGrapher {
-                    cur: func.id(),
-                    call_graph: &mut self.call_graph,
+                let FunctionKind::Local(local) = &module.funcs.get(*id).kind else {
+                    unreachable!("a module's own functions are its local ones")
                 };
-                dfs_in_order(&mut call_grapher, local, local.entry_block());
+                let mut found = Vec::new();
+                let mut values = Vec::new();
+                struct Walk<'a> {
+                    found: &'a mut Vec<FunctionId>,
+                    values: &'a mut Vec<u32>,
+                }
+                impl<'i> Visitor<'i> for Walk<'_> {
+                    fn visit_function_id(&mut self, function: &walrus::FunctionId) {
+                        self.found.push(*function);
+                    }
+                    // The immediates that can name an address, as data.rs
+                    // reads them from a bound body.
+                    fn visit_instr(&mut self, instr: &'i ir::Instr, _: &'i ir::InstrLocId) {
+                        let arg = match instr {
+                            ir::Instr::Const(ir::Const {
+                                value: ir::Value::I32(value),
+                            }) => {
+                                self.values.push(*value as u32);
+                                return;
+                            }
+                            ir::Instr::Load(ir::Load { arg, .. })
+                            | ir::Instr::Store(ir::Store { arg, .. })
+                            | ir::Instr::AtomicRmw(ir::AtomicRmw { arg, .. })
+                            | ir::Instr::Cmpxchg(ir::Cmpxchg { arg, .. })
+                            | ir::Instr::AtomicNotify(ir::AtomicNotify { arg, .. })
+                            | ir::Instr::AtomicWait(ir::AtomicWait { arg, .. })
+                            | ir::Instr::LoadSimd(ir::LoadSimd { arg, .. }) => arg,
+                            _ => return,
+                        };
+                        self.values.push(arg.offset);
+                    }
+                }
+                dfs_in_order(
+                    &mut Walk {
+                        found: &mut found,
+                        values: &mut values,
+                    },
+                    local,
+                    local.entry_block(),
+                );
+                let mut seen = HashSet::with_capacity(found.len());
+                let callees = found
+                    .iter()
+                    .filter_map(|id| fns_to_ids.get(id).copied())
+                    .filter(|index| seen.insert(*index))
+                    .map(|index| index as u32)
+                    .collect();
+                values.sort_unstable();
+                values.dedup();
+                Body {
+                    hash: hashes[index],
+                    callees,
+                    values,
+                }
+            })
+            .collect();
+        for (index, body) in bodies.iter().enumerate() {
+            if body.callees.is_empty() {
+                continue;
             }
+            self.call_graph
+                .entry(Node::Function(locals[index]))
+                .or_default()
+                .extend(
+                    body.callees
+                        .iter()
+                        .map(|index| Node::Function(ids[*index as usize])),
+                );
         }
+        self.bodies = bodies;
+
+        took("walked every bound function's body", step);
+        step = std::time::Instant::now();
 
         for (parnet, children) in self.call_graph.iter() {
             for child in children {
@@ -1682,17 +1849,27 @@ impl<'a> Splitter<'a> {
 
         // Now go fill in the reachability graph for each of the split points
         // We want to be as narrow as possible since we've reparented any new symbols to the main module
-        self.split_points.iter_mut().for_each(|split| {
-            let roots: HashSet<_> = split
-                .entries
-                .iter()
-                .map(|entry| Node::Function(entry.func))
-                .collect();
-            split.reachable_graph = reachable_graph(&self.call_graph, &roots);
-        });
-
+        // Each point's walk reads the graph and writes its own set: walked
+        // one point a thread.
+        let roots = self.main_roots();
+        let (call_graph, split_points) = (&self.call_graph, &mut self.split_points);
+        let (main, ()) = rayon::join(
+            || reachable_graph(call_graph, &roots),
+            || {
+                split_points.par_iter_mut().for_each(|split| {
+                    let roots: HashSet<_> = split
+                        .entries
+                        .iter()
+                        .map(|entry| Node::Function(entry.func))
+                        .collect();
+                    split.reachable_graph = reachable_graph(call_graph, &roots);
+                });
+            },
+        );
         // And then the reachability graph for main
-        self.main_graph = reachable_graph(&self.call_graph, &self.main_roots());
+        self.main_graph = main;
+        took("walked the call graph from every split point", step);
+        step = std::time::Instant::now();
         // WASM_SPLIT_WHY=name,name prints why each function stays in the main
         // module (its path from a root) and stops: the way to find the next cut.
         if let Ok(targets) = std::env::var("WASM_SPLIT_WHY") {
@@ -1722,6 +1899,7 @@ impl<'a> Splitter<'a> {
             shared_funcs.into_iter().collect()
         };
 
+        took("found the shared symbols", step);
         Ok(())
     }
 
@@ -2481,14 +2659,6 @@ impl Splitter<'_> {
     /// that main still references breaks the module, while keeping one only
     /// costs its bytes.
     fn keep_referenced(&self, unused: &mut HashSet<Node>) {
-        struct Refs<'a> {
-            found: &'a mut Vec<FunctionId>,
-        }
-        impl<'a> Visitor<'a> for Refs<'a> {
-            fn visit_function_id(&mut self, function: &FunctionId) {
-                self.found.push(*function);
-            }
-        }
         let module = &self.source_module;
         let split_exports = self.entry_funcs();
         // Walk from everything main keeps, through both the code's own
@@ -2514,10 +2684,19 @@ impl Splitter<'_> {
                 .copied()
                 .collect();
             if let Node::Function(id) = node {
-                if let FunctionKind::Local(local) = &module.funcs.get(id).kind {
-                    let mut found = Vec::new();
-                    dfs_in_order(&mut Refs { found: &mut found }, local, local.entry_block());
-                    next.extend(found.into_iter().map(Node::Function));
+                // What the body calls, as the walk that built the call graph
+                // read it (analysis.rs).
+                if let Some(body) = self
+                    .fns_to_ids
+                    .get(&id)
+                    .and_then(|index| index.checked_sub(self.imported))
+                    .and_then(|index| self.bodies.get(index))
+                {
+                    next.extend(
+                        body.callees
+                            .iter()
+                            .map(|index| Node::Function(self._ids_to_fns[*index as usize])),
+                    );
                 }
             }
             for child in next {

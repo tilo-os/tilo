@@ -74,12 +74,15 @@ impl EmitCache {
         let used = self.used.lock().expect("cache lock");
         for entry in std::fs::read_dir(&self.dir)? {
             let path = entry?.path();
+            // Only this cache's modules: the directory holds the analysis
+            // too (analysis.rs), which is not this cache's to prune.
+            if !path.extension().is_some_and(|e| e == "wasm") {
+                continue;
+            }
             let keep = path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
-                .is_some_and(|stem| {
-                    path.extension().is_some_and(|e| e == "wasm") && used.contains(stem)
-                });
+                .is_some_and(|stem| used.contains(stem));
             if !keep {
                 remove(&path)?;
             }

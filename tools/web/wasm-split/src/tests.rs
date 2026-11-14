@@ -10,6 +10,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail, ensure};
 use wasmparser::{Linking, LinkingSectionReader, Payload, SymbolInfo};
 
+use crate::analysis::AnalysisCache;
 use crate::cache::EmitCache;
 use crate::split::{OutputModules, Splitter};
 
@@ -37,6 +38,22 @@ struct Fixture {
     blobs: HashMap<&'static str, Vec<u8>>,
 }
 
+/// A directory under the test environment's temporary directory, this
+/// process's own, named `name`: a run that leaves one behind never hands it
+/// to the next, and two builds a test wants at one path share it.
+fn scratch(name: &str) -> std::path::PathBuf {
+    use std::sync::OnceLock;
+    static RUN: OnceLock<u64> = OnceLock::new();
+    let run = *RUN.get_or_init(|| {
+        let mut bytes = [0u8; 8];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut random| std::io::Read::read_exact(&mut random, &mut bytes))
+            .map(|()| u64::from_le_bytes(bytes))
+            .unwrap_or_else(|_| std::process::id() as u64)
+    });
+    std::env::temp_dir().join(format!("wasm-split-{name}-{run:x}"))
+}
+
 /// Compile the fixture with the toolchain running the tests, in a
 /// directory of its own per test (`test`).
 fn build_fixture(test: &str) -> Result<Fixture> {
@@ -45,7 +62,10 @@ fn build_fixture(test: &str) -> Result<Fixture> {
 
 /// [`build_fixture`] from `source`, the fixture as a test changed it.
 fn build_fixture_from(test: &str, source_text: &str) -> Result<Fixture> {
-    let dir = std::env::temp_dir().join(format!("wasm-split-{test}-{}", std::process::id()));
+    // One path per test name: a test that builds the same fixture again with
+    // a change needs both at one path, since the module's static data holds
+    // the source's path.
+    let dir = scratch(test);
     std::fs::create_dir_all(&dir)?;
     let result = (|| {
         let source = dir.join("data_split.rs");
@@ -56,9 +76,9 @@ fn build_fixture_from(test: &str, source_text: &str) -> Result<Fixture> {
             std::fs::write(dir.join(format!("{name}.bin")), &bytes)?;
             blobs.insert(*name, bytes);
         }
-        let output = dir.join("data_split.wasm");
+        let module = dir.join("data_split.wasm");
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-        let status = Command::new(rustc)
+        let output = Command::new(rustc)
             .args([
                 "--edition=2024",
                 "--crate-type=cdylib",
@@ -69,16 +89,17 @@ fn build_fixture_from(test: &str, source_text: &str) -> Result<Fixture> {
                 "-Clink-arg=--emit-relocs",
                 "-o",
             ])
-            .arg(&output)
+            .arg(&module)
             .arg(&source)
-            .status()
+            .output()
             .context("running rustc")?;
         ensure!(
-            status.success(),
-            "compiling the fixture failed (it needs the wasm32-unknown-unknown target)"
+            output.status.success(),
+            "compiling the fixture failed (it needs the wasm32-unknown-unknown target): {}",
+            String::from_utf8_lossy(&output.stderr)
         );
         Ok(Fixture {
-            linked: std::fs::read(&output)?,
+            linked: std::fs::read(&module)?,
             blobs,
         })
     })();
@@ -251,7 +272,7 @@ fn a_split_from_the_cache_writes_what_emitting_writes() -> Result<()> {
         without_link_sections(&before)?,
         without_link_sections(&after)?,
     );
-    let dir = std::env::temp_dir().join(format!("wasm-split-cache-{}", std::process::id()));
+    let dir = scratch("emit-cache");
     std::fs::remove_dir_all(&dir).ok();
     let result = (|| -> Result<()> {
         let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
@@ -290,6 +311,71 @@ fn a_split_from_the_cache_writes_what_emitting_writes() -> Result<()> {
             reused > 0 && reused < count,
             "a change to one module's code emitted {} of {count} modules again",
             count - reused
+        );
+        Ok(())
+    })();
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// A split that reads the per-body analysis back (analysis.rs) writes exactly
+/// what a split that reads every body writes: for the input it was filled
+/// from, and after a change to one module's code.
+#[test]
+fn a_split_from_the_analysis_cache_writes_what_emitting_writes() -> Result<()> {
+    let source = include_str!("../fixtures/data_split.rs");
+    // A constant in `later_step`, which only the `later` module's code holds.
+    let changed = source.replace("0x5bd1_e995", "0x5bd1_e996");
+    assert_ne!(source, changed);
+    let before = build_fixture("analysis")?.linked;
+    let after = build_fixture_from("analysis", &changed)?.linked;
+    let (before_bound, after_bound) = (
+        without_link_sections(&before)?,
+        without_link_sections(&after)?,
+    );
+    let dir = scratch("analysis-cache");
+    std::fs::remove_dir_all(&dir).ok();
+    let result = (|| -> Result<()> {
+        let fresh = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            Ok(written_modules(
+                Splitter::new(linked, bound)?.emit_with(None)?,
+            ))
+        };
+        // The same directory for both caches, as a local build gives them.
+        let cached = |linked: &[u8], bound: &[u8]| -> Result<_> {
+            let analysis = AnalysisCache::at(&dir);
+            let outputs = Splitter::with_analysis(linked, bound, Some(&analysis))?
+                .emit_with(Some(&EmitCache::at(&dir)?))?;
+            Ok(written_modules(outputs))
+        };
+        let first = cached(&before, &before_bound)?;
+        assert!(
+            first == fresh(&before, &before_bound)?,
+            "a split filling the analysis cache wrote other modules"
+        );
+        assert!(
+            cached(&before, &before_bound)? == first,
+            "a split reading every body back wrote other modules"
+        );
+        let after_split = cached(&after, &after_bound)?;
+        assert!(
+            after_split == fresh(&after, &after_bound)?,
+            "after a change, the analysis cache gave other modules than reading every body does"
+        );
+        assert!(after_split != first, "the change reached no module");
+        // A cache filled from one module is never read for another whose
+        // bodies are not the ones it holds: the structure says which bodies
+        // the answers belong to.
+        let other = build_fixture("analysis-other")?.linked;
+        let other_bound = without_link_sections(&other)?;
+        let dir_other = dir.join("other");
+        let _ = AnalysisCache::at(&dir_other).store(&AnalysisCache::at(&dir).load().unwrap());
+        let read =
+            Splitter::with_analysis(&other, &other_bound, Some(&AnalysisCache::at(&dir_other)))?
+                .emit_with(None)?;
+        assert!(
+            written_modules(read) == fresh(&other, &other_bound)?,
+            "another module's answers were read for this one"
         );
         Ok(())
     })();

@@ -67,11 +67,12 @@
 //! the range holds zeros that nothing reads.
 
 use anyhow::{Context, Result};
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use walrus::{
-    ConstExpr, DataKind, FunctionId, FunctionKind, GlobalKind, Module,
-    ir::{self, Instr, InstrLocId, Visitor, dfs_in_order},
+    ConstExpr, DataKind, FunctionId, GlobalKind, Module,
+    ir::{self},
 };
 use wasmparser::{
     BinaryReader, Linking, LinkingSectionReader, Payload, RelocSectionReader, RelocationType,
@@ -542,71 +543,42 @@ impl DataLayout {
     /// linked code's plain numbers. One more occurrence than that could be
     /// an address wasm-bindgen's glue holds, so the value then counts for
     /// every static it falls inside.
-    pub(crate) fn function_refs(&self, module: &Module) -> HashMap<FunctionId, Vec<u32>> {
-        struct Immediates<'a> {
-            values: &'a mut Vec<u32>,
-        }
-        impl<'instr> Visitor<'instr> for Immediates<'_> {
-            fn visit_instr(&mut self, instr: &'instr Instr, _: &'instr InstrLocId) {
-                let arg = match instr {
-                    Instr::Const(ir::Const {
-                        value: ir::Value::I32(value),
-                    }) => {
-                        self.values.push(*value as u32);
-                        return;
+    pub(crate) fn function_refs(
+        &self,
+        functions: &[(FunctionId, &[u32])],
+    ) -> HashMap<FunctionId, Vec<u32>> {
+        // Every value the code holds that no relocation produced, sorted: how
+        // often the code holds one across all bodies is the width of its run,
+        // which decides whether it is a plain number.
+        let mut held: Vec<u32> = functions
+            .iter()
+            .flat_map(|(_, values)| values.iter().copied())
+            .filter(|value| !self.code_addresses.contains_key(value))
+            .collect();
+        held.sort_unstable();
+        let occurrences = |value: u32| -> u32 {
+            let start = held.partition_point(|seen| *seen < value);
+            let end = held.partition_point(|seen| *seen <= value);
+            (end - start) as u32
+        };
+        // Each body's values are its own: they resolve on their own too.
+        functions
+            .par_iter()
+            .filter_map(|(function, values)| {
+                let (function, values) = (*function, *values);
+                let mut symbols = Vec::new();
+                for value in values {
+                    let plain = !self.code_addresses.contains_key(value)
+                        && occurrences(*value) <= self.plain.get(value).copied().unwrap_or(0);
+                    if !plain {
+                        self.referenced_by(*value, &mut symbols);
                     }
-                    Instr::Load(ir::Load { arg, .. })
-                    | Instr::Store(ir::Store { arg, .. })
-                    | Instr::AtomicRmw(ir::AtomicRmw { arg, .. })
-                    | Instr::Cmpxchg(ir::Cmpxchg { arg, .. })
-                    | Instr::AtomicNotify(ir::AtomicNotify { arg, .. })
-                    | Instr::AtomicWait(ir::AtomicWait { arg, .. })
-                    | Instr::LoadSimd(ir::LoadSimd { arg, .. }) => arg,
-                    _ => return,
-                };
-                self.values.push(arg.offset);
-            }
-        }
-        let mut functions = Vec::new();
-        let mut occurrences: HashMap<u32, u32> = HashMap::new();
-        for function in module.funcs.iter() {
-            let FunctionKind::Local(local) = &function.kind else {
-                continue;
-            };
-            let mut values = Vec::new();
-            dfs_in_order(
-                &mut Immediates {
-                    values: &mut values,
-                },
-                local,
-                local.entry_block(),
-            );
-            for value in &values {
-                if !self.code_addresses.contains_key(value) {
-                    *occurrences.entry(*value).or_default() += 1;
                 }
-            }
-            values.sort_unstable();
-            values.dedup();
-            functions.push((function.id(), values));
-        }
-        let mut refs = HashMap::new();
-        for (function, values) in functions {
-            let mut symbols = Vec::new();
-            for value in values {
-                let plain = !self.code_addresses.contains_key(&value)
-                    && occurrences[&value] <= self.plain.get(&value).copied().unwrap_or(0);
-                if !plain {
-                    self.referenced_by(value, &mut symbols);
-                }
-            }
-            symbols.sort_unstable();
-            symbols.dedup();
-            if !symbols.is_empty() {
-                refs.insert(function, symbols);
-            }
-        }
-        refs
+                symbols.sort_unstable();
+                symbols.dedup();
+                (!symbols.is_empty()).then_some((function, symbols))
+            })
+            .collect()
     }
 
     /// Decide where each static goes. `claimants` lists every module with

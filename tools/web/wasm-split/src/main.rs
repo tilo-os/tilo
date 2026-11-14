@@ -29,6 +29,7 @@
 //! exports the page calls once it loaded the module, which the linked
 //! module names in its `tilo_split_exports` section (`split::LAZY_EXPORTS`).
 
+mod analysis;
 mod cache;
 mod data;
 mod dedupe;
@@ -63,7 +64,14 @@ fn main() -> Result<()> {
     let bindgened = std::fs::read(bindgened).with_context(|| format!("reading {bindgened}"))?;
     let out = PathBuf::from(out);
 
-    let outputs = split::Splitter::new(&original, &bindgened)?.emit()?;
+    // What an earlier split of this module read of its bodies, and where
+    // this one keeps its own (analysis.rs).
+    let analysis = analysis::AnalysisCache::from_env();
+    let splitter = match &analysis {
+        Some(cache) => split::Splitter::with_analysis(&original, &bindgened, Some(cache))?,
+        None => split::Splitter::new(&original, &bindgened)?,
+    };
+    let outputs = splitter.emit()?;
 
     let main_file = format!("{name}_bg.wasm");
     std::fs::write(out.join(&main_file), &outputs.main.bytes)?;
