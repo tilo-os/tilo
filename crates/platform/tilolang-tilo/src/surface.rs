@@ -15,6 +15,7 @@ use tilo_actions::surface::{
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilo_resource::Resource as _;
+use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
 use crate::action::{CREATE_ACTION, DIRECT_EDITS};
@@ -466,9 +467,9 @@ fn field_surfaces(
     stack.pop();
 }
 
-/// The surface resources of one package.
+/// The surface resources of one package, named in the language `words` reads.
 #[must_use]
-pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
+pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
         let mut types = TypeSet::new();
@@ -501,7 +502,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
         .collect();
     surfaces.push(Surface {
         kind: meta.package_kind(),
-        label: meta.title.clone(),
+        label: crate::publish::app_name(words, meta),
         version: VERSION,
         person: false,
         verbs: loose,
@@ -562,8 +563,8 @@ struct SurfaceFile<'a> {
 /// The `surface.toml` bytes of the host with these packages.
 ///
 /// The host resource comes first: it is the host record's own kind.
-pub fn surface_toml(packages: &[&Meta]) -> Result<Vec<u8>, toml::ser::Error> {
-    surface_toml_reading(packages, &[])
+pub fn surface_toml(packages: &[&Meta], words: &dyn Words) -> Result<Vec<u8>, toml::ser::Error> {
+    surface_toml_reading(packages, &[], words)
 }
 
 /// The `surface.toml` bytes of an app of `packages` that reads the records of the packages
@@ -572,15 +573,16 @@ pub fn surface_toml(packages: &[&Meta]) -> Result<Vec<u8>, toml::ser::Error> {
 pub fn surface_toml_reading(
     packages: &[&Meta],
     reads: &[Meta],
+    words: &dyn Words,
 ) -> Result<Vec<u8>, toml::ser::Error> {
     let mut resources = vec![host_surface(), crate::personal::Personal::surface()];
     for meta in packages {
-        resources.extend(package_surfaces(meta));
+        resources.extend(package_surfaces(meta, words));
     }
     let reads = reads
         .iter()
         .flat_map(|meta| {
-            package_surfaces(meta)
+            package_surfaces(meta, words)
                 .into_iter()
                 .map(|surface| surface.kind)
         })

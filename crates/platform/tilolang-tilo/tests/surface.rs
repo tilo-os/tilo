@@ -26,7 +26,7 @@ tilo_test_env::scenario! {
     phase the_surface_names_a_kind_per_type_and_a_verb_per_action;
     {
         let meta = counter();
-        let surfaces = package_surfaces(&meta);
+        let surfaces = package_surfaces(&meta, &SourceWords);
         let kinds: Vec<&str> = surfaces
             .iter()
             .map(|surface| surface.kind.as_str())
@@ -65,7 +65,7 @@ tilo_test_env::scenario! {
         replica.host.root_of(&meta.app).unwrap();
         let committed = replica.host.take_committed_from(first);
         assert!(!committed.is_empty(), "creating the root commits a change");
-        let surfaces = package_surfaces(meta);
+        let surfaces = package_surfaces(meta, &SourceWords);
         for entry in committed {
             let action = &entry.action;
             let surface = surfaces
@@ -101,7 +101,7 @@ tilo_test_env::scenario! {
         // the workspace commits.
         let committed = replica.host.take_committed_from(first);
         assert_eq!(committed.len(), 1, "the keystroke commits one change");
-        let surfaces = package_surfaces(&meta);
+        let surfaces = package_surfaces(&meta, &SourceWords);
         let action = &committed[0].action;
         let surface = surfaces
             .iter()
@@ -157,7 +157,7 @@ tilo_test_env::scenario! {
     // set from the verb itself.
     {
         let (meta, _) = note_package();
-        let surfaces = package_surfaces(&meta);
+        let surfaces = package_surfaces(&meta, &SourceWords);
         let note = surfaces
             .iter()
             .find(|surface| surface.kind == tilolang_tilo::meta::MetaExt::kind_of(&meta, "Note"))
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
     {
         let (_, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
         let meta = &packages[0].meta;
-        let surfaces = package_surfaces(meta);
+        let surfaces = package_surfaces(meta, &SourceWords);
         let list = surfaces
             .iter()
             .find(|surface| surface.kind.ends_with(".TodoList"))
@@ -308,7 +308,7 @@ tilo_test_env::scenario! {
     phase the_surface_file_parses;
     {
         let meta = counter();
-        let bytes = surface_toml(&[&meta]).unwrap();
+        let bytes = surface_toml(&[&meta], &SourceWords).unwrap();
         let value: toml::Value = toml::from_str(std::str::from_utf8(&bytes).unwrap()).unwrap();
         let kinds: Vec<&str> = value["resources"]
             .as_array()
@@ -342,7 +342,7 @@ tilo_test_env::scenario! {
             .find(|action| action.scenario)
             .expect("the scenario's action is in the metadata");
         assert_eq!(meta.scenarios[0].action, scenario.id);
-        for surface in package_surfaces(meta) {
+        for surface in package_surfaces(meta, &SourceWords) {
             assert!(surface.verb(&scenario.id).is_none(), "{}", surface.kind);
         }
         let planner: Arc<dyn Planner> = Arc::new(Recording);
@@ -878,7 +878,7 @@ action attach(b: Board, list: todo.TodoList) {
             .clone();
         let root = replica.host.root_of(&meta.app).unwrap().id_string();
         replica.commit();
-        collaboration::app_surface::register_package(&meta.app, &surface_toml(&[&meta]).unwrap());
+        collaboration::app_surface::register_package(&meta.app, &surface_toml(&[&meta], &SourceWords).unwrap());
         let record = collab_types::Record {
             workspace: "workspace",
             app: &meta.app,
@@ -891,7 +891,7 @@ action attach(b: Board, list: todo.TodoList) {
                 &collab_types::DocumentMutation::Incremental(change),
             )
         };
-        let kinds = package_surfaces(&meta);
+        let kinds = package_surfaces(&meta, &SourceWords);
         let new_task = meta
             .actions
             .iter()
@@ -923,6 +923,38 @@ action attach(b: Board, list: todo.TodoList) {
         replica.apply(&planned);
         assert_eq!(refuse(&mut replica, &start), None);
     }
+}
+
+/// A German reader's words: the package's own name, read from its catalogue.
+struct German;
+
+impl tilolang_runtime::Words for German {
+    fn add(&self, _: &[(String, String)]) {}
+
+    fn add_used(&self, _: &[(String, String)]) {}
+
+    fn word(&self, key: &str, _: &[(String, String)], source: &str) -> String {
+        match key {
+            "d-so-tilo-lang-counter" => "Zähler".to_owned(),
+            _ => source.to_owned(),
+        }
+    }
+}
+
+/// The package's own surface, and every surface file generated from it, name the app in the
+/// reader's words: `Counter` in the source language, `Zähler` for a German reader.
+#[test]
+fn a_surface_names_the_app_in_the_readers_words() {
+    let meta = counter();
+    let package = |words: &dyn tilolang_runtime::Words| {
+        package_surfaces(&meta, words)
+            .into_iter()
+            .find(|surface| surface.kind == meta.package_kind())
+            .expect("the package has a surface of its own")
+            .label
+    };
+    assert_eq!(package(&SourceWords), "Counter");
+    assert_eq!(package(&German), "Zähler");
 }
 
 const TASKS_IDS: &str = include_str!("../../../../apps/tl/tasks/app.ids");

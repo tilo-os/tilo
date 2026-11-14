@@ -229,7 +229,8 @@ impl Bundle {
     }
 
     /// The `surface.toml` bytes generated from this package's metadata: its resources, and as
-    /// `reads` those of the packages it uses.
+    /// `reads` those of the packages it uses. The bytes are part of the package's digest, so they
+    /// say each name in its source words, never in the language of whoever built it.
     ///
     /// # Errors
     /// The surface could not be written out: never an empty surface in its place, which would
@@ -240,12 +241,11 @@ impl Bundle {
             .iter()
             .map(|import| import.meta.clone())
             .collect();
-        crate::surface::surface_toml_reading(&[&self.meta], &reads).map_err(|error| {
-            BundleError::Surface {
+        crate::surface::surface_toml_reading(&[&self.meta], &reads, &tilolang_runtime::SourceWords)
+            .map_err(|error| BundleError::Surface {
                 app: self.meta.app.clone(),
                 reason: error.to_string(),
-            }
-        })
+            })
     }
 
     /// Write the bundle into `dir` (created when missing): module, ids lock, imports and

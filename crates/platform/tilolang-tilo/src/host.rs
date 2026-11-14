@@ -1753,7 +1753,8 @@ pub fn builtin_surface(packages: &[(&str, &str)]) -> Result<Vec<u8>, String> {
         .map(|package| package.meta.clone())
         .collect();
     let refs: Vec<&Meta> = metas.iter().collect();
-    crate::surface::surface_toml(&refs).map_err(|error| error.to_string())
+    crate::surface::surface_toml(&refs, &tilolang_runtime::SourceWords)
+        .map_err(|error| error.to_string())
 }
 
 /// The system time as ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`: what `now` reads.

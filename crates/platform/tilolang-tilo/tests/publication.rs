@@ -421,7 +421,7 @@ tilo_test_env::scenario! {
     // are destructive, as a native surface does.
     {
         let meta = shapes();
-        let surfaces = package_surfaces(&meta);
+        let surfaces = package_surfaces(&meta, &SourceWords);
         let shelf = surfaces
             .iter()
             .find(|surface| surface.kind == meta.kind_of("Shelf"))
