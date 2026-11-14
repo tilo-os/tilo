@@ -1350,9 +1350,9 @@ fn mount_search(
 ) -> Result<Rc<tilo_session::search::SessionSearch>, JsValue> {
     let wake = proxy()?;
     // The workspace's host, over the session this page holds with it: what it finds in the
-    // records this page never opened. Its answer arrives between the desk's passes, so it asks
-    // for the desk's next pass, which lists it, as the desk's own wake does.
-    let desk = proxy()?;
+    // records this page never opened. Its answer arrives between the shell's passes, so it asks
+    // for the shell's next pass, which lists it, as the shell's own wake does.
+    let shell = proxy()?;
     let woken = Arc::clone(woken);
     let host = config.peer.and_then(|peer| {
         let workspace = crate::peer::workspace_id(&config.workspace).ok()?;
@@ -1361,7 +1361,7 @@ fn mount_search(
         )?;
         let wake: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             woken.store(true, std::sync::atomic::Ordering::Release);
-            let _ = desk.send_event(id);
+            let _ = shell.send_event(id);
         });
         Some(crate::page_search::WorkspaceHost {
             search,

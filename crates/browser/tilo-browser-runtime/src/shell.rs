@@ -1794,6 +1794,17 @@ fn welcome_copy() -> LaunchpadCopy {
     }
 }
 
+impl BrowserShell {
+    /// Hand `event` to the open picker, which takes every event while it is up.
+    fn pick(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        let windows = self.pick_windows();
+        let modifiers = ctx.modifiers.state();
+        *ctx.handled =
+            self.picker
+                .handle_event(event, self.cursor, modifiers, self.under.area(), &windows);
+    }
+}
+
 impl Widget for BrowserShell {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let intents = std::mem::take(&mut *self.chrome.intents.borrow_mut());
@@ -2008,15 +2019,7 @@ impl Widget for BrowserShell {
         // Picking what to report takes every event: nothing underneath
         // reacts to a pick.
         if self.picker.is_open() {
-            let windows = self.pick_windows();
-            let modifiers = ctx.modifiers.state();
-            *ctx.handled = self.picker.handle_event(
-                event,
-                self.cursor,
-                modifiers,
-                self.under.area(),
-                &windows,
-            );
+            self.pick(event, ctx);
             return;
         }
         if self.window_menu_event(event, ctx, window_menu) {
