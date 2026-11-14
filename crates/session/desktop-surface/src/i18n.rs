@@ -300,6 +300,48 @@ mod tests {
         }
     }
 
+    /// The tab showing another device's window says what it is called, whose window it is and
+    /// how its pictures stand in every language the desktop ships.
+    #[test]
+    fn a_tab_showing_another_devices_window_reads_in_every_locale() {
+        let words = || {
+            [
+                t_args(
+                    "peer-window-name",
+                    &[("window", "Writer".into()), ("device", "Laptop".into())],
+                ),
+                t_args("peer-window-of", &[("name", "Laptop".into())]),
+                t("peer-window-first-picture"),
+                t_args(
+                    "peer-window-ended",
+                    &[("why", t("peer-window-ended-sender-stopped").into())],
+                ),
+            ]
+        };
+        let english = words();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = words();
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            english,
+            [
+                "Writer on Laptop",
+                "Laptop's window",
+                "Waiting for its first picture",
+                "Ended: the sender stopped sharing it",
+            ]
+        );
+        assert_eq!(
+            german,
+            [
+                "Writer auf Laptop",
+                "Fenster von Laptop",
+                "Wartet auf das erste Bild",
+                "Beendet: der Absender teilt es nicht mehr",
+            ]
+        );
+    }
+
     #[test]
     fn german_desktops_resolve_german_copy() {
         let english = t("workspace-menu-rename");

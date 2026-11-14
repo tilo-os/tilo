@@ -1185,6 +1185,22 @@ window-menu-stop-sharing-with-workspace = Stop sharing with workspace
 window-menu-stop-sharing-watched = Stop sharing with workspace ({ $viewers } watching)
 window-menu-stop-sharing-waiting = Stop sharing with workspace ({ $viewers } waiting)
 window-menu-someone-elses = { $name }'s window
+# A window another device shares, as the tab showing it says it: what the tab is called, whose
+# window it is, whether this device may type into it, and how its pictures stand.
+peer-window-name = { $window } on { $device }
+peer-window-of = { $name }'s window
+peer-window-can-type = Can type
+peer-window-view-only = View only
+peer-window-first-picture = Waiting for its first picture
+peer-window-picture-lost = Part of the picture was lost and the next whole one has not arrived
+peer-window-live = Live
+peer-window-ended = Ended: { $why }
+# Why it ended, as the rest of the sentence after "Ended:".
+peer-window-ended-tab-gone = the window is no longer shown here
+peer-window-ended-left-workspace = this device left the workspace
+peer-window-ended-sender-stopped = the sender stopped sharing it
+peer-window-ended-restarted = its picture changed size
+peer-window-ended-let-go = this device let the window go
 
 # The desk's widgets: what each is called, and what its controls do.
 desk-widget-music = Music

@@ -1230,6 +1230,22 @@ window-menu-stop-sharing-waiting = Teilen mit dem Arbeitsbereich beenden ({ $vie
        *[other] warten
     })
 window-menu-someone-elses = { $name }s Fenster
+# Ein Fenster, das ein anderes Gerät teilt, wie der Tab es sagt, der es zeigt: wie der Tab heißt,
+# wessen Fenster es ist, ob dieses Gerät hineinschreiben darf und wie es um seine Bilder steht.
+peer-window-name = { $window } auf { $device }
+peer-window-of = Fenster von { $name }
+peer-window-can-type = Eingabe erlaubt
+peer-window-view-only = Nur ansehen
+peer-window-first-picture = Wartet auf das erste Bild
+peer-window-picture-lost = Ein Teil des Bildes ging verloren, und das nächste ganze ist noch nicht angekommen
+peer-window-live = Live
+peer-window-ended = Beendet: { $why }
+# Warum es endete, als Rest des Satzes nach „Beendet:“.
+peer-window-ended-tab-gone = das Fenster wird hier nicht mehr gezeigt
+peer-window-ended-left-workspace = dieses Gerät hat den Arbeitsbereich verlassen
+peer-window-ended-sender-stopped = der Absender teilt es nicht mehr
+peer-window-ended-restarted = sein Bild hat die Größe geändert
+peer-window-ended-let-go = dieses Gerät hat das Fenster losgelassen
 # The desk's widgets: what each is called, and what its controls do.
 desk-widget-music = Musik
 desk-widget-team = Menschen hier

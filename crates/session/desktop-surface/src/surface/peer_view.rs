@@ -57,6 +57,7 @@ use ui::widget::{
 };
 use ui::{TextRenderer, Theme};
 
+use crate::i18n::{t, t_args};
 use crate::page_view::{PageStream, PageView};
 use tilo_actions::{
     ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
@@ -497,17 +498,14 @@ impl PeerSurface {
         ResourceSpec::new(self.resource_id(), KIND, self.title.to_string())
             .with_presentation(ResourcePresentation {
                 detail: Some(bounded(
-                    &format!("{}'s window", self.sharer),
+                    &t_args("peer-window-of", &[("name", (&*self.sharer).into())]),
                     ResourcePresentation::MAX_DETAIL_BYTES,
                 )),
-                badge: Some(
-                    if self.writable {
-                        "Can type"
-                    } else {
-                        "View only"
-                    }
-                    .to_string(),
-                ),
+                badge: Some(t(if self.writable {
+                    "peer-window-can-type"
+                } else {
+                    "peer-window-view-only"
+                })),
                 preview: Some(bounded(
                     &self.standing_line(),
                     ResourcePresentation::MAX_PREVIEW_BYTES,
@@ -528,15 +526,14 @@ impl PeerSurface {
         format!("{KIND}:{}", self.surface)
     }
 
-    /// A sentence for the resource's preview: how the stream stands.
+    /// A sentence for the resource's preview: how the stream stands, in the language of the
+    /// person reading it.
     fn standing_line(&self) -> String {
         match &self.standing {
-            Standing::Started if self.awaiting_keyframe => {
-                "A frame went missing; waiting for the sender's keyframe".to_string()
-            }
-            Standing::Started => "Waiting for its first picture".to_string(),
-            Standing::Pictured => "Live".to_string(),
-            Standing::Ended { why } => format!("Ended: {why}"),
+            Standing::Started if self.awaiting_keyframe => t("peer-window-picture-lost"),
+            Standing::Started => t("peer-window-first-picture"),
+            Standing::Pictured => t("peer-window-live"),
+            Standing::Ended { why } => t_args("peer-window-ended", &[("why", why.as_str().into())]),
         }
     }
 
@@ -770,7 +767,7 @@ impl PeerSurface {
                 Ok(ActionOutput::default())
             }
             PeerAction::End => {
-                self.end("this device let the window go");
+                self.end(&t("peer-window-ended-let-go"));
                 Ok(ActionOutput::default())
             }
         }
@@ -810,7 +807,13 @@ impl PeerSurface {
     /// What stands in the tile's place: the window's page or its newest picture, or - before
     /// either is here - the framework's arriving card naming the device the window comes from.
     fn content(&self) -> Box<dyn Widget> {
-        let alt = format!("{} on {}", self.title, self.sharer);
+        let alt = t_args(
+            "peer-window-name",
+            &[
+                ("window", (&*self.title).into()),
+                ("device", (&*self.sharer).into()),
+            ],
+        );
         if let Some(page) = &self.page
             && page.borrow().frame().is_some()
         {

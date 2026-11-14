@@ -78,15 +78,15 @@ const VIEW_AGAIN: Duration = Duration::from_secs(2);
 /// How long a viewer's ask keeps its streams up after the last one arrived.
 const VIEW_EXPIRY: Duration = Duration::from_secs(6);
 
-/// Why a shared window's tile went: its tab is no longer on the desk.
-const TAB_GONE: &str = "the window is no longer shown here";
+/// Why a shared window's tile went, by the catalogue's key: its tab is no longer on the desk.
+const TAB_GONE: &str = "peer-window-ended-tab-gone";
 /// Why a shared window's tile went: this session left its workspaces.
-const LEFT_WORKSPACE: &str = "this device left the workspace";
+const LEFT_WORKSPACE: &str = "peer-window-ended-left-workspace";
 /// Why a shared window's tile went: its sender ended the stream.
-const SENDER_STOPPED: &str = "the sender stopped sharing it";
+const SENDER_STOPPED: &str = "peer-window-ended-sender-stopped";
 /// Why a shared window's tile was made anew: its sender started its stream over at another size or
 /// in another codec.
-const RESTARTED: &str = "its picture changed size";
+const RESTARTED: &str = "peer-window-ended-restarted";
 
 /// What the person asks of the shares, as the resource's actions spell it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1247,7 +1247,7 @@ impl WindowShares {
         self.watching.clear();
         for ((peer, surface), stream) in std::mem::take(&mut self.received) {
             if stream.shown {
-                desk.end_peer_surface(peer, surface, LEFT_WORKSPACE);
+                desk.end_peer_surface(peer, surface, &t(LEFT_WORKSPACE));
             }
         }
         self.renegotiate.clear();
@@ -1383,7 +1383,7 @@ impl WindowShares {
                 NeighbourMsg::SurfaceStreamEnd { surface, .. }
                     if self.received.remove(&(from, surface)).is_some() =>
                 {
-                    desk.end_peer_surface(from, surface, SENDER_STOPPED);
+                    desk.end_peer_surface(from, surface, &t(SENDER_STOPPED));
                     changed = true;
                 }
                 _ => {}
@@ -1503,7 +1503,7 @@ impl WindowShares {
                     .remove(&key)
                     .is_some_and(|stream| stream.shown)
                 {
-                    desk.end_peer_surface(peer, tab, RESTARTED);
+                    desk.end_peer_surface(peer, tab, &t(RESTARTED));
                 }
                 let shown = desk.show_peer_surface(&start).is_some();
                 self.received.insert(
@@ -1651,7 +1651,7 @@ impl WindowShares {
     fn unmount(&mut self, desk: &DesktopHandle, tab: TabId) {
         for ((peer, surface), stream) in &mut self.received {
             if stream.tab == tab && stream.shown {
-                desk.end_peer_surface(*peer, *surface, TAB_GONE);
+                desk.end_peer_surface(*peer, *surface, &t(TAB_GONE));
                 stream.shown = false;
             }
         }
@@ -1669,7 +1669,7 @@ impl WindowShares {
             return;
         };
         self.received.remove(&key);
-        desk.end_peer_surface(key.0, key.1, why);
+        desk.end_peer_surface(key.0, key.1, &t(why));
     }
 
     /// A member `peer` of `workspace` said which of this device's windows it shows: it views those,

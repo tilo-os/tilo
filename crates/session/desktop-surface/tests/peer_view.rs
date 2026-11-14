@@ -226,6 +226,68 @@ fn a_received_stream_is_pictured_in_its_tile() {
         resource.presentation.as_ref().unwrap().preview.as_deref(),
         Some("Live")
     );
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts.iter().any(|text| text == "Writer on Laptop"),
+        "the picture is named by the window it shows and the device it runs on: {texts:?}"
+    );
+}
+
+/// What the tile publishes of itself is read in the language of the person reading it: whose
+/// window it shows, whether this device may type into it, and how its stream stands. None of it
+/// is a sentence built in code.
+#[test]
+fn a_tile_says_whose_window_it_is_and_how_it_stands_in_the_readers_language() {
+    let mut minter = IdMinter::new(7);
+    let tab = peer_tab(&mut minter);
+    let tab_id = tab.id;
+    let tree = seed_tree(&mut minter, "Desk", vec![tab]);
+    let mut peers = PeerSurfaces::default();
+    let tab = peers
+        .start(&tree, &stream_start(tab_id, false))
+        .expect("the peer's window has a tab");
+    let tile = Rc::clone(peers.tile(tab).expect("the share has a tile"));
+    let said = || {
+        let presentation = tile
+            .borrow()
+            .resource()
+            .presentation
+            .expect("the tile says what it shows");
+        [
+            presentation.detail,
+            presentation.badge,
+            presentation.preview,
+        ]
+        .map(Option::unwrap_or_default)
+    };
+    let in_german = || {
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = said();
+        ui::i18n::I18nManager::set_locale("en-US");
+        german
+    };
+
+    assert_eq!(
+        said(),
+        [
+            "Laptop's window",
+            "View only",
+            "Waiting for its first picture"
+        ]
+    );
+    assert_eq!(
+        in_german(),
+        [
+            "Fenster von Laptop",
+            "Nur ansehen",
+            "Wartet auf das erste Bild"
+        ]
+    );
+
+    // A share that ended says why.
+    let stopped = tilo_desktop_surface::i18n::t("peer-window-ended-sender-stopped");
+    tile.borrow_mut().end(&stopped);
+    assert_eq!(said()[2], "Ended: the sender stopped sharing it");
 }
 
 #[test]
