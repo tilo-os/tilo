@@ -5435,7 +5435,9 @@ impl MailApp {
 }
 
 mod checks;
-#[cfg(any(target_arch = "wasm32", test))]
+// The workspace-held mail a window in a page shows, and the engine a test
+// drives it with: a build without the live account engine loads it.
+#[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
 mod host_mail;
 mod person_accounts;
 mod server_outbox;
