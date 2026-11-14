@@ -2539,7 +2539,7 @@ mod tests {
     #[test]
     fn an_app_that_ends_cleanly_before_its_window_came_could_not_open() {
         let apps = Apps::with_launcher(SessionEnvironment::from_process(), None, None);
-        let desktop = desk();
+        let desktop = shell();
         apps.attach(desktop.clone());
         desktop
             .with_policy(|policy| {
