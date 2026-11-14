@@ -1126,6 +1126,38 @@ mod tests {
         }
     }
 
+    /// The walk above never leaves the board fewer than four tasks. A board
+    /// opens empty, and its first task and the removal of its last are where
+    /// the kept tree has no item to share or to keep.
+    #[test]
+    fn the_kept_tree_is_the_one_built_from_scratch_as_a_board_fills_and_empties() {
+        let mut app = TestApp::<BoardApp>::new().expect("the board opens");
+        let opened = kept_tree(&mut app);
+        assert_eq!(opened.children().len(), 0, "a board opens with no item");
+        call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
+        let first = kept_tree(&mut app);
+        assert_eq!(first.children().len(), 1, "the first task is the one item");
+        let only = app
+            .state()
+            .tasks
+            .ids()
+            .next()
+            .map(|id| id.as_str().to_owned())
+            .expect("the task just added");
+        call(&mut app, "remove", json!({ "task": only }));
+        let emptied = kept_tree(&mut app);
+        assert_eq!(
+            emptied.children().len(),
+            0,
+            "removing the last task leaves no item"
+        );
+        // A task of the same title after it is another task: nothing kept
+        // for the removed one stands in for it.
+        call(&mut app, "add", json!({ "title": "Only", "index": 0 }));
+        let again = kept_tree(&mut app);
+        assert_eq!(again.children().len(), 1, "the board has one item again");
+    }
+
     #[test]
     fn an_edit_no_item_depends_on_shares_every_item() {
         let mut app = TestApp::<BoardApp>::new().expect("the board opens");
