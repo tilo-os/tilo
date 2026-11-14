@@ -113,7 +113,11 @@ impl HostStepServices for SessionActions {
         // a place it opens stands beside that conversation
         // (`docs/designs/app-language/one-app-model.md` §3). The person's own step stands beside
         // the place in front.
-        let beside = crate::mcp_server::service_steps::turn_beside(request.actor.turn());
+        let beside = request
+            .actor
+            .turn()
+            .map(|turn| tilo_session_core::arrangement::turn_key(&turn.conversation, &turn.message))
+            .unwrap_or_default();
         self.doors.invoke_step(
             request.actor.id().to_owned(),
             request.address.clone(),
