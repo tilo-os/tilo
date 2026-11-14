@@ -1877,7 +1877,7 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
 }
 
 tilo_test_env::scenario! {
-    fn the_floor_moves_only_by_a_bounded_approval_from_its_authority_for_this_index;
+    fn the_floor_moves_only_by_an_approval_from_its_authority_for_this_index;
 
     phase an_increment_without_an_approval_is_refused;
     {
@@ -1957,38 +1957,6 @@ tilo_test_env::scenario! {
             floor.counter,
             "the counter must not have moved"
         );
-    }
-
-    phase issuance_refuses_to_approve_past_the_newest_enrolled_generation;
-    // Issuance refuses to hand out approvals that could strand a device — keeping a stash of
-    // approvals from becoming a denial-of-service after a later compromise.
-    {
-        let f = fixture!();
-        let ws = f.ws();
-        let floor = f.floor(3);
-        let nv_name = f.nv_name();
-
-        // Generations 5 and 6 have keyslots; 6 is the highest floor that still leaves something to unseal.
-        let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[5, 6], 3).unwrap();
-        assert_eq!(req.safe_target_floor, 6);
-
-        let err = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, false)
-            .expect_err("approving past the newest enrolled generation must be refused");
-        let msg = format!("{err:#}");
-        assert!(
-            msg.contains("newest generation with a sealed keyslot"),
-            "{msg}"
-        );
-
-        let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
-        assert_eq!(ok.len(), 3, "floor 3 -> 6 is three single-use steps");
-        assert_eq!(ok[0].target_floor, 4);
-        assert_eq!(ok[2].target_floor, 6);
-
-        // And the override exists, but has to be asked for.
-        let forced = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, true)
-            .expect("the override should work when explicitly requested");
-        assert_eq!(forced.len(), 4);
     }
 
     phase an_approval_for_another_machines_index_is_refused;
@@ -2228,4 +2196,36 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
     .expect("confirmation with approvals");
     assert_eq!(o2.floor.floor_generation(), 6);
     assert!(o2.unapproved_steps.is_empty(), "{:?}", o2.unapproved_steps);
+}
+
+/// Issuance refuses to hand out approvals that could strand a device — keeping a stash of
+/// approvals from becoming a denial-of-service after a later compromise.
+#[test]
+fn issuance_refuses_to_approve_past_the_newest_enrolled_generation() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+    let nv_name = f.nv_name();
+
+    // Generations 5 and 6 have keyslots; 6 is the highest floor that still leaves something to unseal.
+    let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[5, 6], 3).unwrap();
+    assert_eq!(req.safe_target_floor, 6);
+
+    let err = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, false)
+        .expect_err("approving past the newest enrolled generation must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("newest generation with a sealed keyslot"),
+        "{msg}"
+    );
+
+    let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
+    assert_eq!(ok.len(), 3, "floor 3 -> 6 is three single-use steps");
+    assert_eq!(ok[0].target_floor, 4);
+    assert_eq!(ok[2].target_floor, 6);
+
+    // And the override exists, but has to be asked for.
+    let forced = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, true)
+        .expect("the override should work when explicitly requested");
+    assert_eq!(forced.len(), 4);
 }
