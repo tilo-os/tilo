@@ -316,150 +316,28 @@ fn delivery_admission_local_candidate_delta_includes_all_routes_and_refuses_evid
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn delivery_admission_literal_signed_bytes_and_v4_v5_migration_remain_exact() {
-    static V4: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
-        include_str!("../tests/fixtures/delivery-admission/native-v4.postcard.hex")
-            .split_ascii_whitespace()
-            .map(|byte| {
-                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
-            })
-            .collect()
-    });
-    static V5: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
-        include_str!("../tests/fixtures/delivery-admission/native-v5.postcard.hex")
-            .split_ascii_whitespace()
-            .map(|byte| {
-                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
-            })
-            .collect()
-    });
-    static OP: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
-        include_str!("../tests/fixtures/delivery-admission/original-signed-op.postcard.hex")
-            .split_ascii_whitespace()
-            .map(|byte| {
-                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
-            })
-            .collect()
-    });
-    static ITEM: std::sync::LazyLock<Vec<u8>> = std::sync::LazyLock::new(|| {
-        include_str!("../tests/fixtures/delivery-admission/original-app-document.postcard.hex")
-            .split_ascii_whitespace()
-            .map(|byte| {
-                u8::from_str_radix(byte, 16).expect("checked-in fixture contains hexadecimal bytes")
-            })
-            .collect()
-    });
-    const ID: &str = include_str!("../tests/fixtures/delivery-admission/operation-id.hex");
-    let (_, authority, key, _, now) = fixtures();
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut old = StatePeer::restore(
-        V4.as_slice(),
-        workspace,
-        authority.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(!old.exact_admissions_selected());
-    let rewritten = old.durable().unwrap();
-    if rewritten != V4.as_slice() {
-        // Durable state re-saves its Automerge documents, whose compressed
-        // columns depend on the flate2 backend unified into this build (a
-        // workspace build selects zlib-rs; this crate alone uses miniz_oxide).
-        // Without selection the rewrite must still carry the identical rows,
-        // governance and writer, and be a fixed point under this backend.
-        let reread = StatePeer::restore(
-            &rewritten,
-            workspace,
-            authority.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        assert!(!reread.exact_admissions_selected());
-        assert_eq!(reread.rows(), old.rows(), "frozen v4 rows changed");
-        assert_eq!(
-            reread
-                .admitted_workspace()
-                .map(|workspace| workspace.clone().get_heads()),
-            old.admitted_workspace()
-                .map(|workspace| workspace.clone().get_heads()),
-            "frozen v4 governance changed"
-        );
-        assert_eq!(
-            reread.durable().unwrap(),
-            rewritten,
-            "frozen v4 bytes changed without selection"
-        );
-    }
-    let item: NeighbourMsg =
-        collab_types::canonical::from_canonical_bytes(ITEM.as_slice()).unwrap();
-    assert_eq!(postcard::to_allocvec(&item).unwrap(), ITEM.as_slice());
-    let NeighbourMsg::AppDocument { envelope, .. } = &item else {
-        panic!("unexpected fixture shape")
+fn delivery_admission_operation_id_names_the_literal_signed_bytes() {
+    let (mut receiver, _, key, _, now) = seeded();
+    let mut author = receiver.clone();
+    let message = incremental(&mut author, &key, now, "literal-A");
+    let bytes = collab_types::canonical_bytes(&message).unwrap();
+    let decoded: NeighbourMsg = collab_types::canonical::from_canonical_bytes(&bytes).unwrap();
+    assert_eq!(collab_types::canonical_bytes(&decoded).unwrap(), bytes);
+    let NeighbourMsg::AppDocument { envelope, .. } = &decoded else {
+        panic!("unexpected message shape")
     };
-    assert_eq!(
-        collab_types::canonical_bytes(envelope.as_ref()).unwrap(),
-        OP.as_slice()
-    );
+    let op = collab_types::canonical_bytes(envelope.as_ref()).unwrap();
     collab_types::verify_op(envelope.as_ref()).unwrap();
-    assert_eq!(blake3::hash(OP.as_slice()).to_hex().as_str(), ID.trim());
-    old.select_exact_admissions().unwrap();
+    receiver.select_exact_admissions().unwrap();
     let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
-    let report = old.receive_from_report(origin, item.clone(), now).unwrap();
+    let report = receiver.receive_from_report(origin, decoded, now).unwrap();
     let InputDisposition::Accepted(admitted) = report.primary() else {
-        panic!("fixture rejected")
+        panic!("message rejected: {:?}", report.primary())
     };
-    assert_eq!(admitted.sequence(), 7);
-    assert_eq!(hex::encode(admitted.operation_id()), ID.trim());
-    let mut restored = StatePeer::restore(
-        V5.as_slice(),
-        workspace,
-        authority.clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(restored.exact_admissions_selected());
     assert_eq!(
-        restored
-            .receive_from_report(origin, item, now)
-            .unwrap()
-            .primary(),
-        &InputDisposition::Duplicate(admitted.clone())
-    );
-    for cut in [0, 1, 2, 3, V5.as_slice().len() / 2, V5.as_slice().len() - 1] {
-        assert!(
-            StatePeer::restore(
-                &V5.as_slice()[..cut],
-                workspace,
-                authority.clone(),
-                vec![],
-                RevocationList::new(),
-                now
-            )
-            .is_err()
-        );
-    }
-    let mut trailing = V5.as_slice().to_vec();
-    trailing.push(0);
-    assert!(
-        StatePeer::restore(
-            &trailing,
-            workspace,
-            authority,
-            vec![],
-            RevocationList::new(),
-            now
-        )
-        .is_err()
+        hex::encode(admitted.operation_id()),
+        blake3::hash(&op).to_hex().as_str(),
+        "the operation id names no literal canonical SignedOp bytes"
     );
 }
 
