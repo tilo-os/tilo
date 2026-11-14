@@ -3199,8 +3199,21 @@ fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
 /// and the device hosting them stops naming a viewer it no longer hears: an ask dropped as a
 /// repeat of the first would leave the viewer unnamed from then on. It says what the viewer wants
 /// now, so a copy that came over another route changes nothing.
+///
+/// A window's stream is announced and ended in the same bytes each time too. The announcement of
+/// a window's page says the window, its size and its codec and nothing of when, so the same
+/// window shared again after its share stopped, or shown again by a viewer that had let it go, is
+/// announced exactly as it was the first time. Dropped as a repeat, the second announcement left
+/// the watching device with a share its governance names and no page to ask the plane for, for
+/// as long as it remembered the first. A copy of either over another route changes nothing: a
+/// stream announced twice is the one stream, and one ended twice is already gone.
 const fn said_again_on_purpose(msg: &NeighbourMsg) -> bool {
-    matches!(msg, NeighbourMsg::SurfaceViewRequest { .. })
+    matches!(
+        msg,
+        NeighbourMsg::SurfaceViewRequest { .. }
+            | NeighbourMsg::SurfaceStreamStart { .. }
+            | NeighbourMsg::SurfaceStreamEnd { .. }
+    )
 }
 
 /// Remote input is not deduplicated for good: a second click or key press is
