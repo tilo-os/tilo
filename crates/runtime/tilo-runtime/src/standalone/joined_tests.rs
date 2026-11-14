@@ -1480,6 +1480,12 @@ async fn a_write_to_a_record_the_workspace_lacks_is_taken_only_in_a_declared_kin
     for (app, kind) in [
         ("dev.tilo.declared", None),
         ("dev.tilo.declared", Some("dev.tilo.other")),
+        // The kind is the declared one whole: not the empty kind, a part of
+        // it, more than it, or its letters in another case.
+        ("dev.tilo.declared", Some("")),
+        ("dev.tilo.declared", Some("dev.tilo")),
+        ("dev.tilo.declared", Some("dev.tilo.note.draft")),
+        ("dev.tilo.declared", Some("dev.tilo.Note")),
         ("dev.tilo.not-installed", Some("dev.tilo.note")),
     ] {
         let refused = joined
