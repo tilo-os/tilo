@@ -5867,6 +5867,15 @@ impl FrameHarness {
         crate::widget::find_resource(self.root.as_ref(), &self.state.doc, id)
     }
 
+    /// The item resources this frame leaves out of what it publishes past
+    /// each collection's published page
+    /// ([`crate::widget::resources_past_page`]).
+    #[must_use]
+    pub fn resources_past_page(&self) -> Vec<tilo_actions::ResourceSpec> {
+        self.drain_component_wakes();
+        crate::widget::resources_past_page(self.root.as_ref(), &self.state.doc)
+    }
+
     /// Every action contract violation that would make the live host refuse
     /// to publish a mounted component's surface. The host withdraws a whole
     /// component when one of its actions breaks its contract, so a test

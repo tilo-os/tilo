@@ -255,6 +255,9 @@ fn lands<R: Resource>(doc: &Doc, action: &EncodedAction) -> Option<Place> {
     } else {
         return None;
     };
+    if !R::lands_on_state(&action) {
+        return None;
+    }
     R::lands(&R::read(doc).ok()?, &action)
 }
 

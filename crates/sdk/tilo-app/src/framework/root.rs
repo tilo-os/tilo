@@ -2214,6 +2214,50 @@ impl RootPublishes for ResourceRoot {
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<ResourceSpec> {
         RootPublishes::resource_for(self, None, doc, id)
     }
+    /// The items of each collection past the page the published tree
+    /// carries, each resolved by id as [`Self::resource_for`] resolves one
+    /// the tree leaves out: what a listing reads to reach every item.
+    fn resources_past_page(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
+        let Some(table) = self.resource.record_table else {
+            return Vec::new();
+        };
+        let current = if self.typed.follows(doc) {
+            None
+        } else {
+            self.typed.read(doc).ok()
+        };
+        let state = current.unwrap_or_else(|| self.typed.state());
+        let parts = self.typed.children_parts(&*state);
+        let every = tilo_resource::table::record_items(table, &*state);
+        let mut children = Vec::new();
+        for collection in parts
+            .items
+            .iter()
+            .filter(|collection| collection.within.is_empty())
+        {
+            let Some((_, items)) = every.iter().find(|(field, _)| *field == collection.field)
+            else {
+                continue;
+            };
+            for (id, _) in items.iter().skip(collection.items.len()) {
+                let resource_id = (self.resource.item_id)(collection, id);
+                let Some(mut child) = self.typed.child(&*state, doc, &resource_id) else {
+                    continue;
+                };
+                if self.resource.readable {
+                    offer_document_reads(&mut child, &|id| self.typed.document_child(&*state, id));
+                }
+                children.push(child);
+            }
+        }
+        self.bind_row_declarations(&mut children);
+        if self.stages.opens() {
+            for child in &mut children {
+                offer_item_open(self.resource.opens_as_item, child);
+            }
+        }
+        children
+    }
     /// A live row a surface is still reading.
     fn resource_pending(&self, id: &str) -> bool {
         let mut pending = false;

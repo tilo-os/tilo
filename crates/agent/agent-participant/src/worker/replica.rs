@@ -511,6 +511,55 @@ impl ConfinedReplica {
         }
     }
 
+    /// [`crate::Replica::renew`]: kept for a worker that replaces this one.
+    ///
+    /// # Errors
+    /// Why the worker could not renew it.
+    pub fn renew(&mut self, actor: &ReplicaActor) -> Result<(), AppError> {
+        let actor =
+            serde_json::to_string(actor).map_err(|error| worker_error(error.to_string()))?;
+        let answered = self.call(
+            &mut self.lock(),
+            &Request::Renew {
+                actor: actor.clone(),
+            },
+        )?;
+        match answered {
+            Reply::Done => {
+                self.actor = actor;
+                Ok(())
+            }
+            Reply::Failed(reason) => Err(worker_error(reason)),
+            _ => Err(worker_error("the worker answered out of turn")),
+        }
+    }
+
+    /// The views the resource `wanted` offers under `policy`, read from the
+    /// record as the worker holds it now: [`crate::Replica::resource_views`].
+    ///
+    /// # Errors
+    /// Why the worker could not answer.
+    pub fn resource_views(
+        &self,
+        wanted: &tilo_actions::remote::ViewResourceQuery,
+        policy: &crate::workspace_actions::ViewReadPolicy,
+    ) -> Result<Vec<ActionDescriptor>, AppError> {
+        let request = Request::Views {
+            wanted: serde_json::to_string(wanted)
+                .map_err(|error| worker_error(error.to_string()))?,
+            policy: serde_json::to_string(policy)
+                .map_err(|error| worker_error(error.to_string()))?,
+        };
+        let answered = self.call(&mut self.lock(), &request)?;
+        match answered {
+            Reply::Descriptors(text) => {
+                serde_json::from_str(&text).map_err(|error| worker_error(error.to_string()))
+            }
+            Reply::Failed(reason) => Err(worker_error(reason)),
+            _ => Err(worker_error("the worker answered out of turn")),
+        }
+    }
+
     /// Perform one published operation through the resource's own door:
     /// [`crate::Replica::invoke`].
     pub fn invoke(
@@ -713,13 +762,16 @@ impl ConfinedReplica {
         content: &ContentStore,
         address: &ActionAddress,
     ) -> Result<(), AppError> {
+        // Only an effect reads the content its record refers to, and reading
+        // every value the record holds for it costs what the record holds: a
+        // document operation, nearly every write, reads none of it.
+        if !self.is_effect(inner, address)? {
+            return Ok(());
+        }
         let missing: Vec<String> = referenced_content(&inner.mirror)
             .into_iter()
             .filter(|hash| !inner.held.contains(hash) && content.has(hash))
             .collect();
-        if missing.is_empty() || !self.is_effect(inner, address)? {
-            return Ok(());
-        }
         let (mut items, mut bytes) = (0usize, 0usize);
         for (at, hash) in missing.iter().enumerate() {
             if items >= REFERENCED_CONTENT_ITEMS || bytes >= REFERENCED_CONTENT_BYTES {
@@ -739,7 +791,15 @@ impl ConfinedReplica {
     /// Whether `address` names one of the record's effects or views now,
     /// rather than a document operation.
     fn is_effect(&self, inner: &mut Inner, address: &ActionAddress) -> Result<bool, AppError> {
-        match self.call(inner, &Request::Survey)? {
+        let address_json =
+            serde_json::to_string(address).map_err(|error| worker_error(error.to_string()))?;
+        // The one action, resolved by its address, never the whole listing.
+        match self.call(
+            inner,
+            &Request::Resolve {
+                address: address_json,
+            },
+        )? {
             Reply::Descriptors(text) => {
                 let offered: Vec<ActionDescriptor> =
                     serde_json::from_str(&text).map_err(|error| worker_error(error.to_string()))?;

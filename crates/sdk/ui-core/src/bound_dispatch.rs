@@ -2683,6 +2683,18 @@ pub(crate) fn execute_resource_operation(
             } else {
                 None
             };
+            let declared = matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. });
+            // An action that answers what it changed reads it off the change
+            // alone: automerge's diff index, armed for this action where no
+            // one else keeps one and no transaction is open, so the answer
+            // costs what the action changed, not a pass over every operation
+            // the document holds.
+            let indexed = (declared || answering())
+                && doc.diff_cursor().is_empty()
+                && automerge::transaction::Transactable::pending_ops(doc) == 0;
+            if indexed {
+                doc.update_diff_cursor();
+            }
             let dispatched = execute_document(
                 doc,
                 action.as_ref(),
@@ -2692,6 +2704,9 @@ pub(crate) fn execute_resource_operation(
                 broker_admitted,
                 context,
             );
+            if indexed && dispatched.is_err() {
+                doc.reset_diff_cursor();
+            }
             if let Some((edits, heads)) = unsigned
                 && doc.get_heads() != heads
             {
@@ -2713,7 +2728,6 @@ pub(crate) fn execute_resource_operation(
                     path,
                 );
             }
-            let declared = matches!(spec.contract.result, tilo_actions::ResultSpec::Json { .. });
             // An edit an effect waits on answers it what it changed, whatever its
             // declaration: the effect replies to its caller from that.
             let value = (declared || answering())
@@ -2728,6 +2742,9 @@ pub(crate) fn execute_resource_operation(
                     None if declared => Some(serde_json::Value::Null),
                     value => value,
                 });
+            if indexed {
+                doc.reset_diff_cursor();
+            }
             let resources = match (applied.as_ref(), before.as_ref()) {
                 (Some(envelope), Some(before)) => {
                     minted_items(doc, &resource.kind, envelope, before)

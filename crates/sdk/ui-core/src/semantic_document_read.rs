@@ -405,6 +405,19 @@ pub(crate) fn readers_of(
         .map_or(&[], SemanticReaders::semantic_readers)
 }
 
+/// Whether any widget in `widget`'s retained tree registers a reader: a tree
+/// that registers none offers no registered read, whatever it publishes.
+pub fn registers_readers(widget: &dyn crate::widget::Widget) -> bool {
+    if !readers_of(widget).is_empty() {
+        return true;
+    }
+    let mut found = false;
+    widget.for_each_child(&mut |child| {
+        found = found || registers_readers(child);
+    });
+    found
+}
+
 /// The reader registered anywhere in `widget`'s retained tree for `type_id`.
 pub(crate) fn registered_in_tree(
     widget: &dyn crate::widget::Widget,

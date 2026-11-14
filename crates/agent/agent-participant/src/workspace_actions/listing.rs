@@ -8,8 +8,7 @@
 //! naming one resource by path reads several pages.
 
 use super::{
-    CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, reads,
-    record_provider,
+    CatalogueQuery, CatalogueRow, DocumentRoute, Worker, WorkspaceState, bounded, record_provider,
 };
 use tilo_actions::remote::{Caller, CataloguePage};
 use tilo_relay_protocol::WorkspaceId;
@@ -69,22 +68,25 @@ impl Worker {
                     tracing::warn!(%error, record = %route.record, "workspace actions: a record did not mount");
                 }
             }
+            // The record's registered reads, over its retained source: kept
+            // while the record stands where it was ([`super::canonical`]).
+            let heads = self
+                .mounted
+                .get(&self.holder_of(route))
+                .and_then(|mounted| mounted.merged.clone());
             if let Some(link) = self.shared.link.get().cloned()
-                && let Ok(mut read) = reads::CanonicalRead::prepare(
+                && let Ok(operations) = self.canonical.operations(
                     &self.catalogue,
                     link.as_ref(),
-                    workspace_id,
-                    caller,
+                    (workspace_id, caller),
                     route,
+                    heads.as_deref(),
                 )
-                && read
-                    .recheck(link.as_ref(), workspace_id, caller, route)
-                    .is_ok()
             {
                 take(
                     &mut rows,
                     &mut skip,
-                    read.operations().into_iter().map(&row).collect(),
+                    operations.into_iter().map(&row).collect(),
                 );
             }
         }

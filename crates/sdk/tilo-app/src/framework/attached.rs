@@ -347,6 +347,21 @@ impl AttachedView {
             .collect()
     }
 
+    /// The items the view's tree leaves out past each collection's published
+    /// page, as the participant may reach them: children of the record's
+    /// resource.
+    #[must_use]
+    pub fn resources_past_page(&self) -> Vec<tilo_actions::ResourceSpec> {
+        let permissions = self.permissions.borrow();
+        self.frame
+            .resources_past_page()
+            .into_iter()
+            .filter_map(|resource| {
+                permissions.permitted_resource(self.definition.app_id(), resource)
+            })
+            .collect()
+    }
+
     /// The resource `id` the view publishes for this participant, resolved
     /// without building every other one: what an invocation on an address
     /// already known asks for.
@@ -987,6 +1002,9 @@ fn changed_keys_of(
         ui_core::automerge::Prop::Seq(index) => index.to_string(),
     };
     let mut probe = doc.fork();
+    // Indexed from here: the diff below reads the change alone, not every
+    // operation the record holds.
+    probe.update_diff_cursor();
     let was = probe.get_heads();
     let bytes = match mutation {
         DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,

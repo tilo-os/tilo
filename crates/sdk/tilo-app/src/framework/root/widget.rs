@@ -116,6 +116,7 @@ pub(crate) trait RootPublishes {
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::ResourceSpec>;
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec>;
+    fn resources_past_page(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec>;
     fn resource_pending(&self, id: &str) -> bool;
     fn resource_for(
         &self,
@@ -483,6 +484,10 @@ impl PublishesResources for RootWidget {
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {
         self.0.resource(doc, id)
+    }
+
+    fn resources_past_page(&self, doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        self.0.resources_past_page(doc)
     }
 
     fn resource_pending(&self, id: &str) -> bool {

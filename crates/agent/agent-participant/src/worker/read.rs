@@ -85,6 +85,16 @@ impl ConfinedRead {
         descriptors(sent(&mut self.process, &Request::ReadOperations)?)
     }
 
+    /// Whether the component registers any reader: one that registers none
+    /// offers no registered read over any source.
+    pub(crate) fn registers(&mut self) -> Result<bool, String> {
+        match sent(&mut self.process, &Request::ReadRegisters)? {
+            Reply::Registers(registers) => Ok(registers),
+            Reply::Failed(reason) => Err(reason),
+            _ => Err("the app worker answered out of turn".into()),
+        }
+    }
+
     /// Perform one registered read.
     pub(crate) fn invoke(
         &mut self,

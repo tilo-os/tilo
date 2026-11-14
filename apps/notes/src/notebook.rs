@@ -1181,8 +1181,17 @@ impl Notebook {
         action: &str,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        use tilo_resource::Resource as _;
-        let notebook = Notebook::read(doc).ok()?;
+        use automerge::ReadDoc as _;
+        // Only the notes the change names are looked up, never the whole
+        // notebook read: a note-creating action costs what it does in a
+        // notebook of ten notes in one of thousands.
+        let exists = |page: PageId| {
+            Notebook::paths()
+                .pages
+                .item_path(&page_id(page))
+                .object(doc)
+                .is_some()
+        };
         // Appending names its note by title: answer the note it found.
         if action == "append-to-note" {
             return changes.iter().find_map(|patch| {
@@ -1191,7 +1200,7 @@ impl Notebook {
                         return None;
                     };
                     let page = page_of(&Id::from(key.as_str()))?;
-                    notebook.pages.contains(&page_id(page)).then(|| {
+                    exists(page).then(|| {
                         serde_json::json!({
                             "page": page.to_string(),
                             "resource": crate::actions::page_resource_id(page),
@@ -1202,8 +1211,9 @@ impl Notebook {
         }
         // A block action of a note's body answers the blocks it touched.
         if tilo_document::block_actions::ANSWERING.contains(&action) {
-            return notebook.pages.iter().find_map(|(id, _)| {
-                let body = body_object(doc, page_of(id)?)?;
+            let pages = Notebook::paths().pages.object(doc)?;
+            return doc.keys(&pages).find_map(|key| {
+                let body = body_object(doc, page_of(&Id::from(key.as_str()))?)?;
                 let answer =
                     tilo_document::block_actions::action_result_under(doc, &body, action, changes)?;
                 answer
@@ -1222,7 +1232,7 @@ impl Notebook {
                 return None;
             };
             let page = page_of(&Id::from(key.as_str()))?;
-            notebook.pages.contains(&page_id(page)).then(|| {
+            exists(page).then(|| {
                 serde_json::json!({
                     "page": page.to_string(),
                     "resource": crate::actions::page_resource_id(page),

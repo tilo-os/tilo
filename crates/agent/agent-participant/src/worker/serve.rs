@@ -284,6 +284,12 @@ impl Worker {
                 (None, _) => Reply::Failed("no component is mounted".into()),
                 (_, Err(reason)) => Reply::Failed(reason),
             },
+            Request::ReadRegisters => match self.read.as_ref() {
+                Some(read) => Reply::Registers(ui::semantic_document_read::registers_readers(
+                    read.frame.root_widget(),
+                )),
+                None => Reply::Failed("no component is mounted".into()),
+            },
             Request::ReadOperations => match self.read.as_ref() {
                 Some(read) => descriptors(&read.operations()),
                 None => Reply::Failed("no component is mounted".into()),
@@ -396,6 +402,7 @@ impl Worker {
             request @ (Request::AskWorkspace | Request::Wanted | Request::Answered { .. }) => {
                 workspace_reply(replica, request)
             }
+            Request::Renew { actor } => renewed(replica, &actor),
             Request::Presence => Reply::Presence(
                 replica
                     .presence()
@@ -480,21 +487,28 @@ impl Worker {
         }
     }
 
+    /// The views of one resource under a policy: of the document loaded for
+    /// it, or of the record this worker holds, as it holds it now.
     fn views(&self, wanted: &str, policy: &str) -> Reply {
-        let Some((app_id, doc)) = self.views.as_ref() else {
-            return Reply::Failed("no document is loaded".into());
-        };
-        match (
+        let (wanted, policy) = match (
             decode::<tilo_actions::remote::ViewResourceQuery>(wanted),
             decode::<ViewReadPolicy>(policy),
         ) {
-            (Ok(wanted), Ok(policy)) => descriptors(&self.catalogue.resource_views(
+            (Ok(wanted), Ok(policy)) => (wanted, policy),
+            (Err(reason), _) | (_, Err(reason)) => return Reply::Failed(reason),
+        };
+        let permissions = policy.permissions();
+        match (self.views.as_ref(), self.replica.as_ref()) {
+            (Some((app_id, doc)), _) => descriptors(&self.catalogue.resource_views(
                 app_id,
                 doc,
                 &wanted,
-                &policy.permissions(),
+                &permissions,
             )),
-            (Err(reason), _) | (_, Err(reason)) => Reply::Failed(reason),
+            (None, Some(replica)) => {
+                descriptors(&replica.resource_views(&wanted.id, &wanted.kind, &permissions))
+            }
+            (None, None) => Reply::Failed("no document is loaded".into()),
         }
     }
 
@@ -809,6 +823,15 @@ impl ReadSession {
 /// The replica's own changes since the last take, or why they could not be
 /// collected: a failure, never "nothing changed", so a write that made them
 /// is not answered as done.
+/// [`crate::Replica::renew`] as the worker answers it.
+fn renewed(replica: &mut crate::Replica, actor: &str) -> Reply {
+    match decode(actor).map(|actor| replica.renew(actor)) {
+        Ok(Ok(())) => Reply::Done,
+        Ok(Err(error)) => Reply::Failed(error.to_string()),
+        Err(reason) => Reply::Failed(reason),
+    }
+}
+
 fn taken_mutation(replica: &mut crate::Replica) -> Reply {
     match replica.take_mutation() {
         Ok(mutation) => Reply::Mutation(mutation.map(wire_mutation)),

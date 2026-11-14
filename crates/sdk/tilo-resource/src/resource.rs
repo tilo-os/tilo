@@ -201,6 +201,15 @@ pub trait Resource: Sized + 'static {
         None
     }
 
+    /// Whether [`Self::lands`] reads the state to place whoever took
+    /// `action`: `false` where it places them nowhere whatever the state
+    /// holds, so a host placing them after each action need not read a
+    /// record of thousands of items to learn that. The default reads it.
+    fn lands_on_state(action: &Self::Action) -> bool {
+        let _ = action;
+        true
+    }
+
     /// The one field of the record `action` writes, when it writes only one:
     /// a reply or a note writes the `comments`, so a grant on that field
     /// (what someone who may only comment holds) reaches it. `None` by

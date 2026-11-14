@@ -562,7 +562,26 @@ impl Replica {
     /// a time reaches them (a chat's messages below its record).
     #[must_use]
     pub fn survey_rows(&self) -> Vec<tilo_actions::remote::CatalogueRow> {
-        let resources = self.view.resources();
+        let mut resources = self.view.resources();
+        // The items past each collection's published page, under the
+        // record's resource: a listing reaches every one of them.
+        let past = self.view.resources_past_page();
+        let mut past_root = None;
+        if !past.is_empty()
+            && let Some(root) = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == self.kind.kind())
+        {
+            let mut holder = tilo_actions::ResourceSpec::new(
+                root.id.as_str(),
+                root.kind.clone(),
+                root.label.clone(),
+            );
+            holder.app_id.clone_from(&root.app_id);
+            holder.children = past;
+            past_root = Some((resources.len(), root.id.as_str().to_owned()));
+            resources.push(holder);
+        }
         let in_chains = chain_resources(&resources);
         let mut rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
             .into_iter()
@@ -587,8 +606,19 @@ impl Replica {
         let offering: std::collections::HashSet<String> =
             rows.iter().map(|row| row.resource.id.clone()).collect();
         let mut containers = Vec::new();
-        for resource in &resources {
-            containers_into(resource, "", &offering, self.app_id(), &mut containers);
+        for (at, resource) in resources.iter().enumerate() {
+            match &past_root {
+                // The record's resource stands in its row once: its items
+                // past the page are containers under it.
+                Some((holder, root)) if at == *holder => {
+                    for child in &resource.children {
+                        containers_into(child, root, &offering, self.app_id(), &mut containers);
+                    }
+                }
+                _ => {
+                    containers_into(resource, "", &offering, self.app_id(), &mut containers);
+                }
+            }
         }
         rows.extend(containers);
         rows
@@ -722,11 +752,9 @@ impl Replica {
         if !self.runs_effects {
             return Ok(false);
         }
-        let resources = self.view.resources();
-        let Some(descriptor) = tilo_actions::door::survey(&resources)
-            .into_iter()
-            .find(|descriptor| descriptor.address == *address)
-        else {
+        // The one action, resolved by its address: never every resource the
+        // record publishes, which grows with everything it holds.
+        let Some(descriptor) = self.view.descriptor(address) else {
             // The door refuses what the view does not publish.
             return Ok(false);
         };
@@ -748,7 +776,7 @@ impl Replica {
             return Ok(false);
         }
         if !descriptor.contract.reaches_agents()
-            || !self.offers(&descriptor, &chain_resources(&resources))
+            || !self.offers(&descriptor, &chain_resources(&self.view.resources()))
         {
             return Err(not_offered(&descriptor));
         }
@@ -910,6 +938,25 @@ impl Replica {
     /// done. They stay in the record and go with the next call.
     pub fn take_mutation(&mut self) -> Result<Option<DocumentMutation>, AppError> {
         self.view.take_changes().map_err(AppError::Merge)
+    }
+
+    /// A member's standing read again at a later time, the standing and
+    /// sandbox unchanged: what was granted until a time is held to the new
+    /// one, and nothing of the record is opened again for it, which costs
+    /// more the more it holds.
+    ///
+    /// # Errors
+    ///
+    /// [`AppError::Launch`] for any actor but a member.
+    pub fn renew(&mut self, actor: ReplicaActor) -> Result<(), AppError> {
+        if !matches!(actor, ReplicaActor::Member { .. }) {
+            return Err(AppError::Launch(
+                "only a member's standing is renewed".into(),
+            ));
+        }
+        let (_, permissions) = replica_standing(actor, "", "");
+        self.view.set_permissions(permissions);
+        Ok(())
     }
 
     /// Merge another participant's durable change into the view's record.

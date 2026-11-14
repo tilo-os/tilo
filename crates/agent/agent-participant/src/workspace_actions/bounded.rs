@@ -510,11 +510,24 @@ impl Worker {
         let key = (holder.clone(), who.person.clone(), who.agent.clone());
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let current = self.bounded.get(&key).is_some_and(|held| {
-            held.standing == policy.standing
-                && held.sandbox == policy.sandbox
-                && policy.unix_time.saturating_sub(held.unix_time) < STANDING_FRESHNESS_SECS
-        });
+        let same = self
+            .bounded
+            .get(&key)
+            .is_some_and(|held| held.standing == policy.standing && held.sandbox == policy.sandbox);
+        let mut current = same
+            && self.bounded.get(&key).is_some_and(|held| {
+                policy.unix_time.saturating_sub(held.unix_time) < STANDING_FRESHNESS_SECS
+            });
+        // The same standing read again later: the replica takes the new time
+        // in place rather than being opened again over the whole record.
+        if same
+            && !current
+            && let Some(held) = self.bounded.get_mut(&key)
+            && held.held.app.renew(&member_actor(&policy, who)?).is_ok()
+        {
+            held.unix_time = policy.unix_time;
+            current = true;
+        }
         if !current {
             self.bounded.remove(&key);
             while self.bounded.len() >= super::MAX_MOUNTED {

@@ -1752,6 +1752,8 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         },
     );
+    // A resource placing participants itself reads the state for every action.
+    let lands_on_state = options.lands.is_some();
     let read_content = options.read_content.as_ref().map_or_else(
         || quote!(),
         |path| {
@@ -2182,6 +2184,13 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
                     // A verb is a step of its own: nothing continues it.
                     _ => false,
                 }
+            }
+
+            fn lands_on_state(action: &Self::Action) -> bool {
+                #lands_on_state || matches!(
+                    &action.operation,
+                    #action_enum::FieldEdit(edit) if matches!(edit.op(), #krate::EditOp::Rich { .. })
+                )
             }
 
             fn lands(state: &Self, action: &Self::Action) -> ::core::option::Option<#krate::Place> {

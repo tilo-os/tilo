@@ -50,6 +50,13 @@ pub trait PublishesResources: Widget {
         None
     }
 
+    /// The item resources the published tree leaves out because their collection holds more than one
+    /// page of items, each resolved as [`Self::resource`] resolves it: what a listing paging past the
+    /// published page lists, so every item is reachable. Children of the record resource.
+    fn resources_past_page(&self, _doc: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
+
     /// Whether `id`, which resolves to nothing now, may resolve once what the widget is reading off the
     /// UI thread lands (a row of a list not read yet). A caller resolving it is answered then, never
     /// kept waiting on a blocking read nor told it is unknown before the read ends.
@@ -249,6 +256,15 @@ pub fn resource(
     id: &str,
 ) -> Option<tilo_actions::ResourceSpec> {
     capability::<dyn PublishesResources>(widget)?.resource(doc, id)
+}
+
+/// [`PublishesResources::resources_past_page`] of `widget`.
+pub fn resources_past_page(
+    widget: &(impl Widget + ?Sized),
+    doc: &AutoCommit,
+) -> Vec<tilo_actions::ResourceSpec> {
+    capability::<dyn PublishesResources>(widget)
+        .map_or_else(Vec::new, |w| w.resources_past_page(doc))
 }
 
 /// `widget`'s resources as `participant` sees them.

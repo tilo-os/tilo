@@ -97,6 +97,9 @@ pub(crate) enum Request {
         actor: String,
         seed: Option<(String, Vec<Vec<u8>>)>,
     },
+    /// The held record's member reads their standing as of a later time:
+    /// JSON `ReplicaActor`, a member of the same standing and sandbox.
+    Renew { actor: String },
     /// Every operation the held record publishes now.
     Survey,
     /// Every operation the held record publishes now, each in the row of the
@@ -203,6 +206,9 @@ pub(crate) enum Request {
     },
     /// The registered reads the mounted component offers.
     ReadOperations,
+    /// Whether the mounted component registers any reader at all, answered
+    /// [`Reply::Registers`].
+    ReadRegisters,
     /// Perform one registered read.
     ReadInvoke {
         /// JSON `ActionAddress`.
@@ -267,6 +273,8 @@ pub(crate) enum Reply {
     /// A picture written out again as a PNG or JPEG. Not trusted: its
     /// header is checked before it is shown to anyone.
     Picture(Vec<u8>),
+    /// Whether the mounted component registers any reader.
+    Registers(bool),
     /// The request was carried out.
     Done,
     /// The request could not be carried out.

@@ -120,3 +120,33 @@ fn an_item_past_the_published_page_keeps_its_row_effects() {
         [last.to_string()]
     );
 }
+
+/// Every item of a collection longer than the published page is reachable
+/// by a listing: those past the page are named apart, each the resource
+/// addressing it resolves to, and none of the page twice.
+#[test]
+fn the_items_past_the_published_page_are_listed_apart() {
+    let mut app = TestApp::<LibraryApp>::new().unwrap();
+    let count = tilo_resource::items::ITEM_PAGE + 10;
+    app.invoke(Library::ADD_MANY.with(count)).unwrap();
+    let ids: Vec<String> = app
+        .state()
+        .books
+        .ids()
+        .map(|id| format!("test.lazy-library/books/{id}"))
+        .collect();
+    let past: Vec<String> = app
+        .harness()
+        .resources_past_page()
+        .into_iter()
+        .map(|resource| resource.id.as_str().to_owned())
+        .collect();
+    assert_eq!(past, ids[tilo_resource::items::ITEM_PAGE..]);
+    let published = app.harness().resources();
+    let on_page = published
+        .iter()
+        .flat_map(|resource| resource.children.iter())
+        .filter(|child| ids.iter().any(|id| id == child.id.as_str()))
+        .count();
+    assert_eq!(on_page, tilo_resource::items::ITEM_PAGE);
+}

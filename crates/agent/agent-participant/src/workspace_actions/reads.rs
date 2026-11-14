@@ -61,6 +61,11 @@ impl CanonicalRead {
         Ok(read)
     }
 
+    /// Whether the record's component registers any reader.
+    pub(super) fn registers(&mut self) -> Result<bool, String> {
+        self.read.registers()
+    }
+
     pub(super) fn revision(&self) -> &str {
         &self.revision
     }

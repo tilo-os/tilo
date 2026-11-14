@@ -691,6 +691,55 @@ pub fn find_resource(
     visit(widget, doc, None, true, id)
 }
 
+/// The item resources `widget`'s subtree leaves out of what it publishes
+/// past each collection's published page
+/// ([`crate::resources::PublishesResources::resources_past_page`]): those of
+/// the first widget that names any, read as [`find_resource`] reads them.
+pub fn resources_past_page(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+) -> Vec<tilo_actions::ResourceSpec> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+            return Vec::new();
+        }
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+        else {
+            return Vec::new();
+        };
+        if boundary.is_none() {
+            let found = match &binding {
+                Some(binding) => binding
+                    .read_document(doc, |doc, _| {
+                        crate::resources::resources_past_page(widget, doc)
+                    })
+                    .unwrap_or_default(),
+                None => crate::resources::resources_past_page(widget, doc),
+            };
+            if !found.is_empty() {
+                return found;
+            }
+        }
+        let mut found = Vec::new();
+        widget.for_each_child(&mut |child| {
+            if found.is_empty() {
+                found = visit(child, doc, binding.clone());
+            }
+        });
+        found
+    }
+    visit(widget, doc, None)
+}
+
 /// Every resource `widget`'s subtree publishes, as the host's action
 /// catalogue collects them. A host that embeds components under its own
 /// root (a shell surface) reads what its search offers through this.
