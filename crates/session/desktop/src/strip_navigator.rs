@@ -1056,7 +1056,7 @@ mod tests {
             // name in place.
             assert_eq!(
                 nav.new_strip(&frame, t0),
-                Some(StripNavigation::Strip(Command::Create("Strip 3".into())))
+                Some(StripNavigation::Strip(Command::Create(String::new())))
             );
             assert!(nav.is_open() && nav.takes_keys());
         }

@@ -911,10 +911,9 @@ impl StripSwitcher {
             Row::NewStrip => {
                 self.name_when_listed = true;
                 self.selected = Some(Row::NewStrip);
-                Press::Command(Command::Create(names::strip_named(
-                    "",
-                    self.model.strips.len(),
-                )))
+                // The strip is made unnamed: the desk reads it by the place it stands, in each
+                // reader's own language, until the person gives it a name.
+                Press::Command(Command::Create(String::new()))
             }
         }
     }
@@ -1860,11 +1859,11 @@ mod tests {
             let new = s.layout().label_rect(Row::NewStrip).unwrap().center();
             assert_eq!(
                 s.press(new, now),
-                Press::Command(Command::Create("Strip 2".into())),
+                Press::Command(Command::Create(String::new())),
                 "a click makes the strip at once"
             );
             // The host makes it and moves to it; the model lists it.
-            let mut m = model(&["Lounge", "Strip 2"]);
+            let mut m = model(&["Lounge", ""]);
             m.focused = 1;
             s.set_model(m);
             s.place(&ribbon(2, 1));
@@ -2004,7 +2003,7 @@ mod tests {
             assert_eq!(s.selected(), Some(Row::NewStrip));
             assert_eq!(
                 enter(&mut s),
-                KeyAnswer::Command(Command::Create("Strip 3".into()))
+                KeyAnswer::Command(Command::Create(String::new()))
             );
             assert!(s.is_open(), "the new strip's name comes next");
             assert_eq!(

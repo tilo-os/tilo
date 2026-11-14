@@ -565,6 +565,35 @@ tilo_test_env::scenario! {
         .unwrap();
         let later = workspace.strips[1].id.0;
         assert_eq!(workspace.strips[1].name, "Later");
+        // A strip nobody named is stored unnamed, and naming it to nothing clears it again: the
+        // desk reads an unnamed strip by the place it stands. A workspace keeps a name.
+        apply_command(
+            &mut workspace,
+            &DesktopCommand::RenameStrip {
+                strip: later,
+                name: "  ".into(),
+            },
+            &mut mint,
+            &mut create,
+        )
+        .unwrap();
+        assert_eq!(workspace.strips[1].name, "");
+        apply_command(
+            &mut workspace,
+            &DesktopCommand::CreateStrip { name: " ".into() },
+            &mut mint,
+            &mut create,
+        )
+        .unwrap();
+        assert_eq!(workspace.strips[2].name, "");
+        let unnamed = workspace.strips[2].id.0;
+        apply_command(
+            &mut workspace,
+            &DesktopCommand::RemoveStrip { strip: unnamed },
+            &mut mint,
+            &mut create,
+        )
+        .unwrap();
         apply_command(
             &mut workspace,
             &DesktopCommand::RemoveStrip { strip: later },

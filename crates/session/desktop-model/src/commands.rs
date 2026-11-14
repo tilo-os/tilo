@@ -662,6 +662,16 @@ fn name(value: &str) -> Result<String, String> {
     }
     Ok(value.into())
 }
+
+/// A strip's name: what the person typed, or nothing for a strip they left unnamed, which every
+/// reader sees as the place it stands in their own language.
+fn strip_name(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    if value.len() > 256 || value.chars().any(char::is_control) {
+        return Err("invalid desktop name".into());
+    }
+    Ok(value.into())
+}
 fn duplicate_tab(
     workspace: &mut Workspace,
     at: &TabLocation,
@@ -854,7 +864,7 @@ pub fn apply_command(
         } => split_tab(workspace, at, *before, mint)?,
         DesktopCommand::CreateStrip { name: label } => workspace.strips.push(Strip {
             id: StripId(mint()?),
-            name: name(label)?,
+            name: strip_name(label)?,
             window_groups: vec![],
         }),
         DesktopCommand::RenameStrip { strip, name: label } => {
@@ -1119,7 +1129,7 @@ pub fn move_tab_to_workspace(
 /// Name `strip`.
 fn rename_strip(workspace: &mut Workspace, strip: u64, label: &str) -> Result<(), String> {
     let strip = strip_index(workspace, strip)?;
-    strip_at_mut(workspace, strip)?.name = name(label)?;
+    strip_at_mut(workspace, strip)?.name = strip_name(label)?;
     Ok(())
 }
 
