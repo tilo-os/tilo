@@ -5,6 +5,10 @@ use vello::kurbo::Rect;
 
 use super::{ListModel, VirtualList};
 
+/// What a press on the pill reaches the list by, as its accessible node names it: the way back is
+/// one control wherever it stands, so a reader or an agent holds it across the rows moving.
+pub(super) const PILL_TARGET: &str = "jump-pill";
+
 impl<M: ListModel> VirtualList<M> {
     #[must_use]
     pub fn following_end(mut self) -> Self {
@@ -93,6 +97,28 @@ impl<M: ListModel> VirtualList<M> {
         self.set_scroll_offset(self.viewport.max_offset());
     }
 
+    /// The pill becomes the control the keyboard or a reader is on: Return or Space takes it, as
+    /// a press does. `false` while the list offers no way back.
+    pub(super) fn focus_pill(&mut self) -> bool {
+        if self.pill_rect().is_none() {
+            return false;
+        }
+        self.focused_key = None;
+        self.focused_group = None;
+        self.jump_focused = true;
+        true
+    }
+
+    /// Take the way back the pill offers, as pressing it does.
+    pub(super) fn press_pill(&mut self) -> bool {
+        if self.jump().is_none() {
+            return false;
+        }
+        self.jump_focused = false;
+        self.follow_pill();
+        true
+    }
+
     pub(super) fn follow_pill(&mut self) {
         match self.jump() {
             Some(crate::widget::conversation::Jump::Unread) => self.jump_to_unread(),
@@ -113,14 +139,11 @@ impl<M: ListModel> VirtualList<M> {
         area: Rect,
     ) -> Option<(crate::widget::conversation::Jump, Rect)> {
         let jump = self.jump()?;
-        let gutter = self.gutter.max(self.bleed);
-        let width = self.pill_width(jump).min(area.width());
-        let height = self.pill_height;
-        let rect = Rect::new(
-            (area.x1 - gutter - width).max(area.x0),
-            (area.y1 - gutter / 2.0 - height).max(area.y0),
-            (area.x1 - gutter).max(area.x0),
-            (area.y1 - gutter / 2.0).max(area.y0),
+        let rect = crate::widget::conversation::pill_rect(
+            area,
+            self.gutter.max(self.bleed),
+            self.pill_width(jump),
+            self.pill_height,
         );
         Some((jump, rect))
     }
@@ -136,7 +159,11 @@ impl<M: ListModel> VirtualList<M> {
 
     pub(super) fn jump_face(&self) -> Option<crate::widget::conversation::JumpFace> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
-        Some(crate::widget::conversation::JumpFace::new(jump, rect).hovered(self.jump_hovered))
+        Some(
+            crate::widget::conversation::JumpFace::new(jump, rect)
+                .hovered(self.jump_hovered)
+                .focused(self.jump_focused),
+        )
     }
 
     /// The way back the list offers over its rows, and whether the pill has room for its words:

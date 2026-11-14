@@ -398,6 +398,9 @@ pub struct VirtualList<M: ListModel> {
     unread: Option<String>,
     jump_hovered: bool,
     jump_pressed: bool,
+    /// Whether the pill is the control the keyboard or a reader is on, rather than a row: the way
+    /// back is pressed with Return or Space, as it is with a pointer.
+    jump_focused: bool,
     pill_height: f64,
     /// The pill's width for each way back ([`crate::widget::conversation::Jump::slot`]): the words
     /// measured at the face they are drawn in, so a narrow list shows them whole.
@@ -554,6 +557,7 @@ impl<M: ListModel> VirtualList<M> {
             unread: None,
             jump_hovered: false,
             jump_pressed: false,
+            jump_focused: false,
             pill_height: 0.0,
             pill_widths: [0.0; crate::widget::conversation::JUMPS],
             names_item: std::cell::RefCell::new(None),
@@ -871,6 +875,7 @@ impl<M: ListModel> VirtualList<M> {
     pub fn focus_row(&mut self, key: M::Key) {
         self.focused_group = None;
         self.focused_key = Some(key);
+        self.jump_focused = false;
     }
 
     fn focused_row_node(&self) -> Option<NodeId> {
@@ -1166,6 +1171,16 @@ impl<M: ListModel> VirtualList<M> {
     }
 
     fn on_key(&mut self, key: &Key, toggle: bool, extend: bool) -> bool {
+        // The pill, while it is the control the keyboard is on: the way back is taken by Return
+        // or Space, and any other key goes back to the rows.
+        if self.jump_focused {
+            self.jump_focused = false;
+            match key {
+                Key::Named(NamedKey::Enter | NamedKey::Space) => return self.press_pill(),
+                Key::Named(NamedKey::Escape) => return true,
+                _ => {}
+            }
+        }
         let count = self.model.len();
         if count == 0 {
             return false;
@@ -1577,6 +1592,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         self.pill_widths = crate::text_render::with_layout_renderer(theme, |text| {
             crate::widget::conversation::Jump::ALL.map(|jump| jump.width(text, theme))
         });
+        // A way back the list no longer offers holds no seat: what was the keyboard's is gone.
+        self.jump_focused &= self.jump().is_some();
         self.motion = self.feel.over(theme.motion());
         self.groups.theme(theme, self.interaction);
         if let Some(edges) = self.edges.as_mut() {

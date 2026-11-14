@@ -18,6 +18,20 @@ pub enum Jump {
 /// How many ways back a list keeps a width for ([`Jump::slot`] names each one).
 pub const JUMPS: usize = 2;
 
+/// Where a pill `width` wide and `height` tall stands in `area`: against the trailing edge, a
+/// `gutter` in, half a control's height above the foot. A conversation and the list that draws its
+/// rows place the same way back with this, so the pill stands in one place wherever it is drawn.
+#[must_use]
+pub fn pill_rect(area: Rect, gutter: f64, width: f64, height: f64) -> Rect {
+    let width = width.min(area.width());
+    Rect::new(
+        (area.x1 - gutter - width).max(area.x0),
+        (area.y1 - gutter / 2.0 - height).max(area.y0),
+        (area.x1 - gutter).max(area.x0),
+        (area.y1 - gutter / 2.0).max(area.y0),
+    )
+}
+
 impl Jump {
     /// Both ways back, in the order [`Jump::slot`] keeps their widths.
     pub const ALL: [Self; JUMPS] = [Self::Unread, Self::Present];
@@ -65,6 +79,7 @@ pub struct JumpFace {
     label: String,
     rect: Rect,
     hovered: bool,
+    focused: bool,
 }
 
 impl JumpFace {
@@ -75,12 +90,20 @@ impl JumpFace {
             label: jump.label(),
             rect,
             hovered: false,
+            focused: false,
         }
     }
 
     #[must_use]
     pub fn hovered(mut self, hovered: bool) -> Self {
         self.hovered = hovered;
+        self
+    }
+
+    /// The keyboard's seat, or a reader's: the ring a control wears while it is the one to press.
+    #[must_use]
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
         self
     }
 
@@ -92,7 +115,8 @@ impl JumpFace {
         let face = ButtonFace::new(self.rect, &self.label)
             .icon(self.jump.icon())
             .role(ButtonRole::Plain)
-            .hovered(self.hovered);
+            .hovered(self.hovered)
+            .focused(self.focused);
         Button::paint(
             paint.scene,
             paint.transform,

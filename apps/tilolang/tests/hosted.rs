@@ -210,7 +210,13 @@ enum Window {
 impl Window {
     /// The frame harness over `hosted`.
     fn in_harness(hosted: HostedWindow) -> Self {
-        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), VIEWPORT);
+        Self::in_harness_sized(hosted, VIEWPORT)
+    }
+
+    /// The frame harness over `hosted`, in a window `viewport` logical pixels: a phone's width,
+    /// where a window is drawn at its narrowest.
+    fn in_harness_sized(hosted: HostedWindow, viewport: (u32, u32)) -> Self {
+        let harness = FrameHarness::new(ui::State::new(), Box::new(hosted), viewport);
         Self::Harness(Box::new(harness))
     }
 
@@ -404,6 +410,8 @@ struct Session {
     woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
     broker: Box<dyn std::any::Any>,
+    /// The invocations the test has delivered, numbered: each is answered by its own id.
+    invoked: u64,
 }
 
 /// Whether `host`'s instance reads the workspace's indexes: until then it shows the platform's
@@ -425,6 +433,16 @@ impl Session {
     /// A person at a Notes window in the frame harness.
     fn notes() -> Self {
         Self::new(NOTES, "ada", |_| {})
+    }
+
+    /// `person` at a harness window of the app `app` drawn `viewport` logical pixels wide and
+    /// tall, settled: a window at the width a phone gives it.
+    fn in_window(app: &str, person: &str, viewport: (u32, u32)) -> Self {
+        let mut session = Self::opened_in_language(app, person, "en-US", |hosted| {
+            Window::in_harness_sized(hosted, viewport)
+        });
+        session.settle();
+        session
     }
 
     /// A person at a Tasks window the live `App` runs.
@@ -650,6 +668,7 @@ impl Session {
             sent,
             woken,
             broker,
+            invoked: 1,
         }
     }
 
@@ -2824,4 +2843,132 @@ fn task_in_record(session: &Session, title: &str, done: bool) -> bool {
                 _ => false,
             })
         })
+}
+
+/// A person at Chat in a window 320 px wide (a phone's), with a channel `design` holding
+/// `messages` messages `bo` wrote while they were away: nothing of it is theirs, so all of it
+/// waits to be read. The channel is open, at its newest message.
+fn chat_at_a_phones_width(messages: usize) -> Session {
+    let mut session = Session::in_window(CHAT, "ada", (320, 568));
+    let new_channel = session.identity_doing("Conversations", "new_channel");
+    let channel = match session.invoke_doing(&new_channel, &serde_json::json!({ "name": "design" }))
+    {
+        ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => output
+            .resources
+            .into_iter()
+            .next()
+            .expect("the channel it made"),
+        other => panic!("the channel was made: {other:?}"),
+    };
+    // Sending is the app's own: an action of no one record, given the conversation it writes in.
+    let send = ui::tilo_actions::ActionAddress::new(
+        format!("tl.{CHAT}"),
+        session.doing("TextChannel", "send").1,
+    )
+    .encode();
+    let to = serde_json::json!({
+        "app": CHAT,
+        "kind": session.kind("TextChannel"),
+        "id": channel,
+        "label": "",
+    });
+    for said in 0..messages {
+        let written = session.invoke_as(
+            "bo",
+            &send,
+            &serde_json::json!({ "to": to, "body": format!("Message {said}") }),
+        );
+        assert!(
+            matches!(
+                written,
+                ui::tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "bo's message was written: {written:?}"
+        );
+    }
+    let (x, y) = shown_at(&mut session, "design");
+    session.window.click_at(x, y);
+    session.settle();
+    session
+}
+
+/// What the way back over a conversation is in a window drawn at a phone's width: a control
+/// saying the words the pill shows, standing where the pill is drawn, which a reader, an agent or
+/// a keyboard takes to the first message the person has not seen.
+#[test]
+fn a_conversations_way_back_is_a_control_that_goes_to_the_first_message_unread() {
+    use ui::widget::conversation::Jump;
+
+    let _settled = ui::motion::testing::settled();
+    let mut session = chat_at_a_phones_width(40);
+    let words = Jump::Unread.label();
+    let pill = session
+        .window
+        .harness()
+        .a11y_node_named(&words)
+        .unwrap_or_else(|| {
+            panic!(
+                "the window offers the way back: {:?}",
+                session
+                    .controls()
+                    .into_iter()
+                    .map(|control| control.name)
+                    .collect::<Vec<_>>()
+            )
+        });
+    let shown = session
+        .window
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == pill)
+        .and_then(|(_, node)| node.bounds())
+        .expect("the way back stands where it is drawn");
+    assert!(
+        shown.x0 >= 0.0 && shown.x1 <= 320.0 && shown.y0 > 0.0 && shown.y1 <= 568.0,
+        "the way back stands inside the window: {shown:?}"
+    );
+    assert!(
+        shown.x1 - shown.x0 > 80.0,
+        "its words are whole at 320 px: {shown:?}"
+    );
+    assert!(
+        session
+            .controls()
+            .iter()
+            .any(|control| control.name == words),
+        "the window's controls name the way back: {:?}",
+        session
+            .controls()
+            .into_iter()
+            .map(|control| control.name)
+            .collect::<Vec<_>>()
+    );
+
+    // An agent presses it by its node, as a reader takes it, and the person is where reading
+    // starts again.
+    session
+        .window
+        .harness()
+        .perform_a11y_action(pill, &ui::a11y::Action::Activate)
+        .expect("the way back takes the press");
+    session.settle();
+    assert!(
+        session.window.harness().a11y_node_named(&words).is_none(),
+        "taken, the way back offers nothing more"
+    );
+    let first = session
+        .window
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            let name = node.label()?;
+            name.contains("Message 0").then(|| node.bounds()).flatten()
+        })
+        .expect("the first message is read in the window");
+    assert!(
+        first.y0 >= 0.0 && first.y1 <= 568.0,
+        "the way back went to the first message unread: {first:?}"
+    );
 }

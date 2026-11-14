@@ -409,14 +409,11 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let theme = paint.theme;
-        let width = Jump::Present.width(paint.text, theme);
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let inset = self.chrome.gutter;
-        let rect = Rect::new(
-            area.x1 - inset - width,
-            area.y1 - inset / 2.0 - height,
-            area.x1 - inset,
-            area.y1 - inset / 2.0,
+        let rect = ui::widget::conversation::pill_rect(
+            area,
+            self.chrome.gutter,
+            Jump::Present.width(paint.text, theme),
+            ButtonFace::height(ControlSize::Regular, theme),
         );
         JumpFace::new(Jump::Present, rect)
             .hovered(self.hovered(rect))

@@ -122,6 +122,14 @@ impl super::Session {
         (self.kind(ty), declared.id.clone())
     }
 
+    /// The identity of the app's action `action` on records of `ty`, as the door takes it: the
+    /// kind of record and the id the app declares the action by, which is what a window's control
+    /// publishes and no language renames.
+    pub(super) fn identity_doing(&self, ty: &str, action: &str) -> String {
+        let (kind, action) = self.doing(ty, action);
+        ui::tilo_actions::ActionAddress::new(kind, action).encode()
+    }
+
     /// The id the app gives the field `field`, as it is declared (`title`): what the control that
     /// edits it is known by, in the type that declares it.
     pub(super) fn field_id(&self, field: &str) -> String {
@@ -174,7 +182,7 @@ pub(super) struct ShownControl {
     /// a control that runs none.
     doing: Option<String>,
     /// What the person's language calls it.
-    name: String,
+    pub(super) name: String,
     /// Where it stands: its left and top edge, its width and its height.
     at: (f64, f64, f64, f64),
 }
@@ -188,9 +196,21 @@ impl super::Session {
         identity: &str,
         arguments: &serde_json::Value,
     ) -> ui::tilo_actions::InvocationUpdate {
+        self.invoke_as("ada", identity, arguments)
+    }
+
+    /// [`Self::invoke_doing`] as `actor` runs it: what another person's press writes in the
+    /// workspace, which the window's own person has not seen.
+    pub(super) fn invoke_as(
+        &mut self,
+        actor: &str,
+        identity: &str,
+        arguments: &serde_json::Value,
+    ) -> ui::tilo_actions::InvocationUpdate {
         let doing = ui::tilo_actions::ActionAddress::parse(identity)
             .unwrap_or_else(|| panic!("{identity} names a resource and an action"));
-        let id = 1;
+        let id = self.invoked;
+        self.invoked += 1;
         self.inbox()
             .borrow_mut()
             .push_back(CollabEvent::Invocation {
@@ -202,7 +222,7 @@ impl super::Session {
                     "{}{arguments}",
                     ui::tilo_actions::ARGUMENTS_JSON_PREFIX
                 )),
-                actor: "ada".to_owned(),
+                actor: actor.to_owned(),
                 context: None,
             });
         self.settle();

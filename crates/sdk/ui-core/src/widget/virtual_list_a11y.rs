@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::edit::RenameStamp;
 use super::groups::{Band, HEADING_TARGET};
+use super::jump::PILL_TARGET;
 use super::open::first_page_title;
 use super::{ListModel, MountedRow, MountedRowState, VirtualList};
 use crate::a11y::{AccessNode, AccessState, Role};
@@ -222,6 +223,16 @@ impl<M: ListModel> VirtualList<M> {
             return performed;
         }
 
+        // The way back over the rows: one control, wherever it stands, read by the words it says
+        // and pressed to go where it offers.
+        if target == PILL_TARGET {
+            return match action {
+                Action::Focus => self.focus_pill(),
+                Action::Activate => self.press_pill(),
+                _ => false,
+            };
+        }
+
         // A heading's group, as its node in the accessibility tree names it: read, folded and
         // unfolded by something that is not the keyboard.
         if let Some(heading) = target.strip_prefix(super::groups::HEADING_TARGET) {
@@ -348,6 +359,9 @@ impl<M: ListModel> VirtualList<M> {
         for band in bands {
             children.push(Arc::new(self.heading_node(band, enabled)));
         }
+        if let Some(pill) = self.pill_node(enabled) {
+            children.push(Arc::new(pill));
+        }
         children.extend(self.menu_node().map(Arc::new));
         if kept.rows.len() != reached {
             kept.rows.retain(|_, row| row.walk == walk);
@@ -430,6 +444,26 @@ impl<M: ListModel> VirtualList<M> {
         let mut bands: Vec<&Band> = self.groups.bands.iter().collect();
         bands.sort_by_key(|band| band.index);
         bands
+    }
+
+    /// The pill as a reader, an agent or a keyboard meets it: one button saying the words it
+    /// shows, standing where it is drawn, so the way back a list offers over its rows is reached
+    /// by something that is not a pointer.
+    fn pill_node(&self, enabled: bool) -> Option<AccessNode> {
+        let (jump, rect) = self.pill_rect_for(self.rect)?;
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(jump.label())
+                .with_interface_name(true)
+                .with_action_target(PILL_TARGET)
+                .with_bounds(rect)
+                .with_state(
+                    AccessState::new()
+                        .focusable(true)
+                        .focused(self.jump_focused)
+                        .disabled(!enabled),
+                ),
+        )
     }
 
     fn heading_node(&self, band: &Band, enabled: bool) -> AccessNode {

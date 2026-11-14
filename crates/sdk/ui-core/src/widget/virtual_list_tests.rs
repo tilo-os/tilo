@@ -2118,6 +2118,112 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
     assert_eq!(reading.jump(), None);
 }
 
+/// A transcript's way back is a control, not a picture of one: a reader, an agent and a keyboard
+/// find it by the words it says, standing where the pill is drawn, and taking it goes to the
+/// first row the person has not seen.
+#[test]
+fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
+    use crate::a11y::Action;
+    use crate::headless::FrameHarness;
+    use crate::widget::ListRow;
+    use crate::widget::conversation::Jump;
+    use accesskit::Role as AkRole;
+
+    fn transcript(unread: &str) -> VirtualList<VecListModel<u32, u32>> {
+        let mut list = VirtualList::new(
+            VecListModel::new((0..300_u32).collect(), |item| *item).expect("the rows"),
+            40.0,
+            |_, _, key| Box::new(ListRow::new(key.to_string(), format!("Item {key}"))) as Element,
+        )
+        .with_viewport_height(400.0)
+        .following_end()
+        .unread_from(Some(unread.to_owned()));
+        list.set_key_presenting(|id: &str| id.parse::<u32>().ok());
+        list
+    }
+    let words = Jump::Unread.label();
+
+    // A screen reader reads the way back where the pill stands, and takes it.
+    let mut reading = FrameHarness::for_root(
+        crate::State::new(),
+        transcript("250"),
+        (320, 568),
+        Theme::dark(),
+    );
+    reading.relayout();
+    let (pill, node) = named(&reading.a11y_nodes(), AkRole::Button, &words);
+    let bounds = node.bounds().expect("the pill stands where it is drawn");
+    assert!(
+        bounds.x0 >= 0.0 && bounds.x1 <= 320.0 && bounds.y0 > 0.0 && bounds.y1 <= 568.0,
+        "the pill stands inside a window 320 px wide: {bounds:?}"
+    );
+    assert!(
+        bounds.x1 - bounds.x0 > 80.0,
+        "its words are whole at 320 px: {bounds:?}"
+    );
+    reading.relayout();
+    assert_eq!(
+        reading.a11y_node_named(&words),
+        Some(pill),
+        "the pill is one control across frames, not a new one each time"
+    );
+    reading
+        .perform_a11y_action(pill, &Action::Activate)
+        .expect("an agent presses the way back");
+    reading.relayout();
+    assert!(
+        reading.a11y_node_named(&words).is_none(),
+        "taken, the way back offers nothing more"
+    );
+    let (_, row) = named(&reading.a11y_nodes(), AkRole::ListItem, "Item 250");
+    let shown = row.bounds().expect("the first unseen row is drawn");
+    assert!(
+        shown.y0 >= 0.0 && shown.y1 <= 568.0,
+        "the way back went to the first unseen row: {shown:?}"
+    );
+
+    // The keyboard reaches it the same way: focus, then Space.
+    let mut typing = FrameHarness::for_root(
+        crate::State::new(),
+        transcript("250"),
+        (320, 568),
+        Theme::dark(),
+    );
+    typing.relayout();
+    let (pill, _) = named(&typing.a11y_nodes(), AkRole::Button, &words);
+    typing
+        .perform_a11y_action(pill, &Action::Focus)
+        .expect("the way back takes focus");
+    typing.key("Space");
+    typing.relayout();
+    let (_, row) = named(&typing.a11y_nodes(), AkRole::ListItem, "Item 250");
+    assert!(
+        row.bounds().is_some_and(|at| at.y0 >= 0.0),
+        "Space on the focused way back goes to the first unseen row"
+    );
+
+    // The node stands exactly where the pointer's press takes the way back.
+    let mut pointing = FrameHarness::for_root(
+        crate::State::new(),
+        transcript("250"),
+        (320, 568),
+        Theme::dark(),
+    );
+    pointing.relayout();
+    let (_, node) = named(&pointing.a11y_nodes(), AkRole::Button, &words);
+    let bounds = node.bounds().expect("the pill stands where it is drawn");
+    pointing.click_at(
+        f64::midpoint(bounds.x0, bounds.x1),
+        f64::midpoint(bounds.y0, bounds.y1),
+    );
+    pointing.relayout();
+    let (_, row) = named(&pointing.a11y_nodes(), AkRole::ListItem, "Item 250");
+    assert!(
+        row.bounds().is_some_and(|at| at.y0 >= 0.0),
+        "the node is where the pill is pressed"
+    );
+}
+
 /// A pill a list floats over its rows takes the width its words need, never a share of the list:
 /// a phone's window shows the way back whole where half its width would cut it to an ellipsis.
 #[test]
