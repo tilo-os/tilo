@@ -392,7 +392,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       },
       {
@@ -552,7 +553,8 @@
           "type": [
             "boolean",
             "null"
-          ]
+          ],
+          "title": "Look at artwork"
         }
       }
     ]
@@ -1204,7 +1206,8 @@
             },
             "additionalProperties": false,
             "description": "One shape to draw."
-          }
+          },
+          "title": "Changed the marks"
         }
       }
     ]
@@ -2791,7 +2794,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       },
       {
@@ -2824,7 +2828,8 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "title": "Set the artwork's width"
         }
       },
       {
@@ -2835,7 +2840,8 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "title": "Set the artwork's height"
         }
       },
       {
@@ -2928,7 +2934,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       }
     ]
@@ -3559,7 +3566,8 @@
           ],
           "items": {
             "type": "string"
-          }
+          },
+          "title": "Changed the marks"
         }
       },
       {
@@ -3654,7 +3662,8 @@
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "title": "Titled the artwork {$new}"
         }
       },
       {
@@ -3665,7 +3674,8 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "title": "Set the artwork's width"
         }
       },
       {
@@ -3676,7 +3686,8 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "title": "Set the artwork's height"
         }
       },
       {
@@ -3967,7 +3978,8 @@
           "type": [
             "number",
             "null"
-          ]
+          ],
+          "title": "Set the artwork's width"
         }
       },
       {
