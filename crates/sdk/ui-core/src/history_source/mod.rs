@@ -38,6 +38,7 @@ pub mod descriptions;
 pub mod detail;
 pub mod digest;
 pub mod facets;
+pub mod file_changes;
 pub mod groups;
 mod log;
 pub mod narrative;

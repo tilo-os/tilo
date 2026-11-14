@@ -310,6 +310,13 @@ impl HistoryHost {
             "history-files-refresh-activity",
             Command::FileRefresh,
         )));
+        if let Some(parent) = selected_change_parent(files) {
+            actions = actions.push(Box::new(self.command_button(
+                "history-files-revert-change",
+                "history-files-revert-change",
+                Command::FileRevertChange(parent),
+            )));
+        }
         if files.restore.request.is_some() {
             actions = actions
                 .push(Box::new(self.command_button(
@@ -395,15 +402,26 @@ fn version_label(provenance: &fs_protocol::FileProvenance) -> String {
     })
 }
 
+/// The versions of the file coalesced into the changes a person made: one row
+/// per change, so an atomic save and an agent session's run read as one thing.
+fn file_changes(files: &FileController) -> Vec<crate::history_source::file_changes::FileChange> {
+    crate::history_source::file_changes::coalesce(
+        &files.versions,
+        &files.attributions,
+        crate::history_source::file_changes::QUIET,
+        &crate::history_source::file_changes::NoTurnBoundary,
+    )
+}
+
 fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
-    files
-        .versions
-        .iter()
-        .map(|version| {
+    file_changes(files)
+        .into_iter()
+        .map(|change| {
+            let version = change.last();
             let person = version.actor.person.as_bytes();
             // The device that signed the version names who wrote it: an
             // agent's own device reads as the agent, on behalf of its person,
-            // and so does the agent the signing device recorded as having
+            // and so does the writer the signing device recorded as having
             // caused the write through its person's session.
             let known = files.target.authors.resolve_attributed_file_actor_in(
                 person,
@@ -437,11 +455,13 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
                 timestamp: crate::time::UNIX_EPOCH
                     .checked_add(crate::time::Duration::from_millis(version.timestamp_ms))
                     .unwrap_or(crate::time::UNIX_EPOCH),
-                summary: format!(
-                    "{} · {}",
-                    version_label(&version.provenance),
-                    files.target.label
-                ),
+                summary: change.sentence(&files.target.label).unwrap_or_else(|| {
+                    format!(
+                        "{} · {}",
+                        version_label(&version.provenance),
+                        files.target.label
+                    )
+                }),
                 text_delta: None,
                 diff_payload: None,
                 redaction: None,
@@ -449,6 +469,17 @@ fn file_timeline_entries(files: &FileController) -> Vec<crate::HistoryEntry> {
             }
         })
         .collect()
+}
+
+/// The version a change replaced, when the change the selected row stands for
+/// replaced one: restoring it takes the whole change back, an agent session's
+/// run included, through the one restore every file version already uses.
+fn selected_change_parent(files: &FileController) -> Option<fs_protocol::FileVersionId> {
+    let selected = files.selected()?;
+    file_changes(files)
+        .into_iter()
+        .find(|change| change.last().id == selected)
+        .and_then(|change| change.parent_before())
 }
 
 #[cfg(test)]
@@ -991,8 +1022,13 @@ mod tests {
         )]
         .into();
         let rows = file_timeline_entries(&files);
-        assert_eq!(rows[1].author.name, "Ada");
-        assert_eq!(rows[1].author.attribution, None);
+        assert_eq!(
+            rows.len(),
+            1,
+            "the same person's two versions, one unattributed, are one change"
+        );
+        assert_eq!(rows[0].author.name, "Ada");
+        assert_eq!(rows[0].author.attribution, None);
 
         // A writer the signing device's session recorded — an agent session,
         // an app or a third-party program — wrote through Ada's mount: the row
@@ -1121,5 +1157,88 @@ mod tests {
             crate::history_source::sentence::attribution_hover(&rows[0].author).as_deref(),
             Some("Program · Text Editor · Ada's laptop · /Reports")
         );
+    }
+
+    /// A file's versions coalesce into the changes a person made: a save's
+    /// several versions are one row, an atomic save is one row, and an agent
+    /// session's run is one row that reverts to the version before it.
+    #[test]
+    fn a_file_run_is_one_row_and_reverts_to_what_it_replaced() {
+        use crate::history_mode::checked_files::FileHistoryTarget;
+        use fs_protocol::files::*;
+        let (ada, ada_laptop) = ([1; 32], [2; 32]);
+        let record = fs_protocol::FileRecordId(uuid::Uuid::from_u128(3));
+        let mut files = FileController::new(FileHistoryTarget {
+            binding: uuid::Uuid::new_v4(),
+            record,
+            label: "Report.txt".into(),
+            transport: std::sync::Arc::new(no_transport::NoTransport {
+                never_submits: None,
+            }),
+            folder: None,
+            authors: {
+                let mut authors = crate::history_source::AuthorDirectory::new();
+                authors.register_person(
+                    &hex::encode(ada),
+                    crate::HistoryAuthor::new("Ada", 0.0, "ada00000"),
+                );
+                authors
+            },
+        });
+        let version = |id: u128, timestamp_ms: u64, parents: Vec<u128>, provenance| FileVersionV1 {
+            id: FileVersionId(uuid::Uuid::from_u128(id)),
+            record_id: record,
+            parents: parents
+                .into_iter()
+                .map(|parent| FileVersionId(uuid::Uuid::from_u128(parent)))
+                .collect(),
+            actor: fs_protocol::FileActor {
+                person: collab_types::Ed25519PublicKey::from_bytes(ada),
+                device: collab_types::Ed25519PublicKey::from_bytes(ada_laptop),
+            },
+            timestamp_ms,
+            content_hash: None,
+            metadata_hash: fs_protocol::ContentHash([0; 32]),
+            provenance,
+        };
+        let session = fs_protocol::FileAttributionV1 {
+            actor: "agent:claude:session-1".into(),
+            label: "Prepare the report".into(),
+            color: [70, 80, 90],
+        };
+        let base = version(1, 1_000, vec![], FileProvenance::Create);
+        let first = version(2, 2_000, vec![1], FileProvenance::Edit);
+        let second = version(3, 900_000, vec![2], FileProvenance::Edit);
+        let third = version(4, 1_800_000, vec![3], FileProvenance::Edit);
+        files.versions = vec![base.clone(), first.clone(), second.clone(), third.clone()];
+        files.attributions = [
+            (first.id, session.clone()),
+            (second.id, session.clone()),
+            (third.id, session.clone()),
+        ]
+        .into();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows.len(), 2, "the base version and the run");
+        assert_eq!(
+            rows[1].author.attribution.as_ref().and_then(|a| a.writer),
+            Some(fs_protocol::AttributedWriter::Agent)
+        );
+
+        // The run's row is the last version; taking it back restores the
+        // version the run replaced.
+        files.select(third.id, None);
+        assert_eq!(selected_change_parent(&files), Some(base.id));
+
+        // An atomic save — a temporary renamed over the file, then written —
+        // is one row, and reverts to what the save replaced.
+        let before = version(10, 10_000, vec![], FileProvenance::Create);
+        let renamed = version(11, 1_000_000, vec![10], FileProvenance::Rename);
+        let written = version(12, 1_009_000, vec![11], FileProvenance::Edit);
+        files.versions = vec![before.clone(), renamed, written.clone()];
+        files.attributions = crate::history_mode::files_session::Attributions::new();
+        let rows = file_timeline_entries(&files);
+        assert_eq!(rows.len(), 2, "the base version and the atomic save");
+        files.select(written.id, None);
+        assert_eq!(selected_change_parent(&files), Some(before.id));
     }
 }

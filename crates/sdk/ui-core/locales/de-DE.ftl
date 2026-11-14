@@ -257,6 +257,7 @@ history-files-check-restore = Ergebnis der Wiederherstellung prüfen
 history-files-retry-restore = Dieselbe Wiederherstellung erneut versuchen
 history-files-redo-restore = Dateiwiederherstellung wiederholen…
 history-files-undo-restore = Dateiwiederherstellung rückgängig machen…
+history-files-revert-change = Änderung zurücknehmen
 history-files-current-unavailable = Die aktuelle Version lässt sich nicht lesen
 history-files-current-revision = Aktuelle Version: { $revision }
 history-files-live-updates = Die Datei hat sich seither geändert. Die gewählte Version bleibt
@@ -1284,3 +1285,17 @@ now-playing-seek-help = Mit Pfeil links und rechts um fünf Sekunden springen
 
 ## What the records are called, and the actions on them
 settings-text-assistance = Rechtschreibung und Text
+
+# One change to a file, described from what the content diff shows: no model
+# is involved, so these are the words a row shows by default.
+history-file-added-line = Eine Zeile zu { $file } hinzugefügt
+history-file-added-lines = { $lines } Zeilen zu { $file } hinzugefügt
+history-file-added-line-quote = { $sentence }: { $line }
+history-file-changed-line = Eine Zeile in { $file } geändert
+history-file-changed-lines = { $lines } Zeilen in { $file } geändert
+history-file-removed-line = Eine Zeile aus { $file } entfernt
+history-file-removed-lines = { $lines } Zeilen aus { $file } entfernt
+history-file-added-binary = { $file } hinzugefügt, { $size }
+history-file-removed-binary = { $file } entfernt, { $size }
+history-file-replaced-binary = { $file } ersetzt, { $before } → { $after }
+history-file-changed = { $file } geändert

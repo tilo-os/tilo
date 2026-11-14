@@ -254,6 +254,7 @@ history-files-check-restore = Check restore result
 history-files-retry-restore = Retry same restore
 history-files-redo-restore = Redo file restore…
 history-files-undo-restore = Undo file restore…
+history-files-revert-change = Revert change
 history-files-current-unavailable = The current version can't be read
 history-files-current-revision = Current version: { $revision }
 history-files-live-updates = The file has changed since. The version you picked stays
@@ -1321,3 +1322,17 @@ now-playing-seek-help = Use Left and Right Arrow to move five seconds
 
 ## What the records are called, and the actions on them
 settings-text-assistance = Spelling and text
+
+# One change to a file, described from what the content diff shows: no model
+# is involved, so these are the words a row shows by default.
+history-file-added-line = Added a line to { $file }
+history-file-added-lines = Added { $lines } lines to { $file }
+history-file-added-line-quote = { $sentence }: { $line }
+history-file-changed-line = Changed a line in { $file }
+history-file-changed-lines = Changed { $lines } lines in { $file }
+history-file-removed-line = Removed a line from { $file }
+history-file-removed-lines = Removed { $lines } lines from { $file }
+history-file-added-binary = Added { $file }, { $size }
+history-file-removed-binary = Removed { $file }, { $size }
+history-file-replaced-binary = Replaced { $file }, { $before } → { $after }
+history-file-changed = Changed { $file }

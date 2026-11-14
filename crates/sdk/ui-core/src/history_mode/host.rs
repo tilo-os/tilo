@@ -51,6 +51,9 @@ enum Command {
     FileCheck,
     FileRetry,
     FileRefresh,
+    /// Take back the whole change a file row stands for, restoring the version
+    /// it replaced.
+    FileRevertChange(fs_protocol::FileVersionId),
 }
 
 #[derive(Clone)]
@@ -1380,6 +1383,7 @@ impl HistoryHost {
                         | Command::FileCheck
                         | Command::FileRetry
                         | Command::FileRefresh
+                        | Command::FileRevertChange(_)
                 )
             {
                 continue;
@@ -1418,6 +1422,21 @@ impl HistoryHost {
                     if let Some(files) = &mut self.files {
                         files.load();
                     }
+                }
+                Command::FileRevertChange(parent) => {
+                    if let Some(files) = &mut self.files {
+                        files.request_review(
+                            fs_protocol::files::CheckedHistoryOperationV1::Restore {
+                                version_id: parent,
+                            },
+                        );
+                    }
+                    let message = if let Some(files) = &self.files {
+                        format!("File: {}\n\n{}", files.target.label, files.message)
+                    } else {
+                        String::new()
+                    };
+                    self.show_review(None, message);
                 }
                 Command::Live => self.return_to_live(),
                 Command::Open(entry) => {
