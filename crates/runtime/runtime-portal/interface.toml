@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 24
+version = 25
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -223,8 +223,9 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "DriveEntry.open_at" = "#4 Option<String>"
 "DriveEntry.size_bytes" = "#2 u64"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
-"EncryptionMetadata" = "struct deny_unknown_fields"
+"EncryptionMetadata" = "struct"
 "EncryptionMetadata.epoch" = "#0 u64"
+"EncryptionMetadata.released_channel" = "#2 Option<Uuid>"
 "EncryptionMetadata.scheme" = "#1 EncryptionScheme"
 "EncryptionScheme" = "enum external"
 "EncryptionScheme::ContentKey" = "#1 struct"
@@ -885,7 +886,7 @@ EntryName = "one native filename component, serialized as its raw bytes"
 "SignedOp.attestation_id" = "#3 AttestationId"
 "SignedOp.author" = "#2 Ed25519PublicKey"
 "SignedOp.claims" = "#8 Vec<ChangeClaim>"
-"SignedOp.encryption" = "#7 Option<EncryptionMetadata>"
+"SignedOp.encryption" = "#7 Option<EncryptionMetadata> with=encryption_wire"
 "SignedOp.kind" = "#4 OpKind"
 "SignedOp.payload" = "#0 Vec<u8> with=serde_bytes"
 "SignedOp.seq" = "#6 u64"

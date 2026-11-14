@@ -59,11 +59,11 @@ mode = "off"
 file-chooser = "via-host"
 
 [sandbox.services]
-collab = "optional@24"
-tilo-fs = "optional@24"
+collab = "optional@25"
+tilo-fs = "optional@25"
 # Photos may request its fixed, local-only visual-analysis operation through
 # this broker. The app still has no network namespace or model socket.
-model-gateway = "optional@24"
+model-gateway = "optional@25"
 
 [entrypoint]
 bin             = "bin/photos"

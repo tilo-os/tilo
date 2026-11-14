@@ -457,14 +457,24 @@ pub enum ContentRetention {
 /// `SignedOp.signature` covers (cipher)bytes either way, and covers
 /// `encryption` itself too, so a malicious peer can't strip the metadata or
 /// downgrade the scheme.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+///
+/// Wire form: one tagged value — `0` none, `3` MLS application message
+/// `{epoch}`, `4` content key `{epoch, retention}`. Tags `1` (`{epoch,
+/// channel}`) and `2` (`{epoch, channel, retention}`) are the forms the 0.1
+/// releases signed, when each record sealed under a channel of its own: they
+/// are read with that channel kept ([`Self::released_channel`]), so the op
+/// re-encodes to the bytes its signature covers, and never written for a new
+/// op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EncryptionMetadata {
     /// MLS epoch the ciphertext belongs to: the ratchet epoch for
     /// [`EncryptionScheme::MlsApplication`], the content-key epoch for
     /// [`EncryptionScheme::ContentKey`].
     pub epoch: u64,
     pub scheme: EncryptionScheme,
+    /// The channel a 0.1 release sealed the op for, as it signed it; `None`
+    /// for every op this build seals.
+    pub released_channel: Option<uuid::Uuid>,
 }
 
 impl EncryptionMetadata {
@@ -473,6 +483,7 @@ impl EncryptionMetadata {
         Self {
             epoch,
             scheme: EncryptionScheme::MlsApplication,
+            released_channel: None,
         }
     }
 
@@ -481,6 +492,7 @@ impl EncryptionMetadata {
         Self {
             epoch,
             scheme: EncryptionScheme::ContentKey { retention },
+            released_channel: None,
         }
     }
 
@@ -490,6 +502,108 @@ impl EncryptionMetadata {
         match self.scheme {
             EncryptionScheme::MlsApplication => None,
             EncryptionScheme::ContentKey { retention } => Some(retention),
+        }
+    }
+}
+
+/// Serde adapter for `Option<EncryptionMetadata>`: its tagged wire form
+/// (see [`EncryptionMetadata`]).
+mod encryption_wire {
+    use super::{ContentRetention, EncryptionMetadata, EncryptionScheme};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// The variants in tag order: the first three are the 0.1 releases'
+    /// layout, byte for byte.
+    #[derive(Serialize, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    enum Wire {
+        None,
+        ReleasedMlsApplication {
+            epoch: u64,
+            channel: uuid::Uuid,
+        },
+        ReleasedContentKey {
+            epoch: u64,
+            channel: uuid::Uuid,
+            retention: ContentRetention,
+        },
+        MlsApplication {
+            epoch: u64,
+        },
+        ContentKey {
+            epoch: u64,
+            retention: ContentRetention,
+        },
+    }
+
+    fn wire(value: Option<&EncryptionMetadata>) -> Wire {
+        let Some(&EncryptionMetadata {
+            epoch,
+            scheme,
+            released_channel,
+        }) = value
+        else {
+            return Wire::None;
+        };
+        match (scheme, released_channel) {
+            (EncryptionScheme::MlsApplication, Some(channel)) => {
+                Wire::ReleasedMlsApplication { epoch, channel }
+            }
+            (EncryptionScheme::ContentKey { retention }, Some(channel)) => {
+                Wire::ReleasedContentKey {
+                    epoch,
+                    channel,
+                    retention,
+                }
+            }
+            (EncryptionScheme::MlsApplication, None) => Wire::MlsApplication { epoch },
+            (EncryptionScheme::ContentKey { retention }, None) => {
+                Wire::ContentKey { epoch, retention }
+            }
+        }
+    }
+
+    #[allow(
+        clippy::ref_option,
+        reason = "serde's `with` adapters receive a reference to the field"
+    )]
+    pub(super) fn serialize<S: Serializer>(
+        value: &Option<EncryptionMetadata>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        wire(value.as_ref()).serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<EncryptionMetadata>, D::Error> {
+        Ok(match Wire::deserialize(deserializer)? {
+            Wire::None => None,
+            Wire::ReleasedMlsApplication { epoch, channel } => Some(EncryptionMetadata {
+                released_channel: Some(channel),
+                ..EncryptionMetadata::mls_application(epoch)
+            }),
+            Wire::ReleasedContentKey {
+                epoch,
+                channel,
+                retention,
+            } => Some(EncryptionMetadata {
+                released_channel: Some(channel),
+                ..EncryptionMetadata::content_key(epoch, retention)
+            }),
+            Wire::MlsApplication { epoch } => Some(EncryptionMetadata::mls_application(epoch)),
+            Wire::ContentKey { epoch, retention } => {
+                Some(EncryptionMetadata::content_key(epoch, retention))
+            }
+        })
+    }
+
+    /// Borrowing wrapper so signing views serialize exactly like the field.
+    pub(super) struct View<'a>(pub(super) &'a Option<EncryptionMetadata>);
+
+    impl Serialize for View<'_> {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serialize(self.0, serializer)
         }
     }
 }
@@ -525,8 +639,10 @@ pub struct SignedOp {
     pub seq: u64,
     /// Encryption mode. `None` means `payload` is cleartext; `Some(meta)`
     /// names the epoch and versioned scheme. Part of the signed bytes so a
-    /// peer can't rewrite the metadata to downgrade a ciphertext.
-    #[serde(default)]
+    /// peer can't rewrite the metadata to downgrade a ciphertext. See
+    /// [`EncryptionMetadata`] for the wire form, which keeps every op the
+    /// 0.1 releases signed decodable.
+    #[serde(default, with = "encryption_wire")]
     pub encryption: Option<EncryptionMetadata>,
     /// What each change in `payload` claims to be: its action and the
     /// storage units it writes, one per change, signed with the op so a
@@ -641,7 +757,7 @@ impl SignedOp {
             kind: &'a OpKind,
             timestamp: &'a SystemTime,
             seq: u64,
-            encryption: &'a Option<EncryptionMetadata>,
+            encryption: encryption_wire::View<'a>,
             claims: &'a [crate::claim::ChangeClaim],
             surface: &'a Option<[u8; 32]>,
         }
@@ -653,7 +769,7 @@ impl SignedOp {
             kind: &self.kind,
             timestamp: &self.timestamp,
             seq: self.seq,
-            encryption: &self.encryption,
+            encryption: encryption_wire::View(&self.encryption),
             claims: &self.claims,
             surface: &self.surface,
         })
@@ -664,6 +780,11 @@ impl SignedOp {
 mod tests {
     use super::*;
     use crate::canonical::from_canonical_bytes;
+
+    /// The metadata as a signed op's field carries it.
+    #[derive(Deserialize)]
+    #[serde(transparent)]
+    struct Wrapped(#[serde(with = "encryption_wire")] Option<EncryptionMetadata>);
     use crate::crypto::generate_keypair;
 
     /// The unordered document sequence never falls below wall-clock
@@ -818,6 +939,45 @@ mod tests {
             a.signature = Signature::from_bytes([0u8; 64]);
             b.signature = Signature::from_bytes([0xff; 64]);
             assert_eq!(a.signing_bytes().unwrap(), b.signing_bytes().unwrap());
+        }
+
+        phase metadata_a_release_signed_keeps_its_bytes;
+        {
+            // The forms the 0.1 releases wrote: `Option<{epoch, channel}>`
+            // for an MLS application message, the third tag for a content
+            // key. Each reads with its channel and writes the same bytes.
+            #[derive(Serialize)]
+            struct Released {
+                epoch: u64,
+                channel: uuid::Uuid,
+            }
+            let channel = uuid::Uuid::from_u128(9);
+            let mls = canonical_bytes(&Some(Released { epoch: 9, channel })).unwrap();
+            let read: Wrapped = from_canonical_bytes(&mls).unwrap();
+            assert_eq!(
+                read.0,
+                Some(EncryptionMetadata {
+                    released_channel: Some(channel),
+                    ..EncryptionMetadata::mls_application(9)
+                })
+            );
+            assert_eq!(canonical_bytes(&encryption_wire::View(&read.0)).unwrap(), mls);
+            let content = [&[2_u8, 9, 16][..], channel.as_bytes(), &[1]].concat();
+            let read: Wrapped = from_canonical_bytes(&content).unwrap();
+            assert_eq!(
+                read.0,
+                Some(EncryptionMetadata {
+                    released_channel: Some(channel),
+                    ..EncryptionMetadata::content_key(9, ContentRetention::Delta)
+                })
+            );
+            assert_eq!(canonical_bytes(&encryption_wire::View(&read.0)).unwrap(), content);
+            // This build's forms carry no channel, under tags of their own.
+            let ours = canonical_bytes(&encryption_wire::View(&Some(
+                EncryptionMetadata::content_key(9, ContentRetention::Delta),
+            )))
+            .unwrap();
+            assert_eq!(ours, [4, 9, 1]);
         }
 
         phase content_key_metadata_round_trips_and_is_signed;
