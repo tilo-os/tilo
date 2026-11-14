@@ -162,7 +162,19 @@ impl DesktopSurface {
                     }
                     Admitted::Workspace(workspace) => shared.tree.active = workspace,
                     Admitted::Launch(app, float) => {
-                        match launch::open(self.tiles.as_mut(), &mut shared, &app, float) {
+                        match launch::open(self.tiles.as_mut(), &mut shared, &app, float, None) {
+                            Some(op) => ops.push(op),
+                            None => continue,
+                        }
+                    }
+                    Admitted::LaunchAt(app, index) => {
+                        match launch::open(
+                            self.tiles.as_mut(),
+                            &mut shared,
+                            &app,
+                            false,
+                            Some(index),
+                        ) {
                             Some(op) => ops.push(op),
                             None => continue,
                         }

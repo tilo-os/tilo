@@ -88,6 +88,7 @@ pub mod window_menu;
 mod window_move;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
+pub use launch::{StripSlot, slot_among};
 pub use liveness::LivenessChoice;
 pub use notices::{
     AppInbox, AppNotifier, DesktopNotifications, NotificationLayer, NotificationOutcome,

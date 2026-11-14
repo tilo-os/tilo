@@ -816,6 +816,9 @@ pub enum Admitted {
     /// it stands over the desk beside the place it opens into when the app
     /// that opened it asked, else in the shown strip.
     Launch(String, bool),
+    /// An application launch the desktop itself asked for, at a place of the
+    /// shown strip: files dropped between its windows open where they fell.
+    LaunchAt(String, usize),
     /// Show application `app`: the shown strip's window of it when there is
     /// one by the time the command applies, else a new one. Decided then,
     /// not at dispatch, since a workspace's desktop can arrive in between: a

@@ -37,6 +37,13 @@ impl DesktopHandle {
         self.shared.borrow().float_covers.clone()
     }
 
+    /// The application the window of `tab` runs, or `None` for a window that is not an
+    /// application's.
+    #[must_use]
+    pub fn app_of(&self, tab: TabId) -> Option<String> {
+        crate::host::records::app_of(&self.shared.borrow().tree, tab).map(str::to_owned)
+    }
+
     /// Where the whole window of `tab` stands — its bar, and the tab's content in it — in the
     /// surface's coordinates, as of the last layout: where a menu for it hangs from.
     #[must_use]
