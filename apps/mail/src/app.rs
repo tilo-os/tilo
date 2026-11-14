@@ -239,7 +239,7 @@ pub struct MailApp {
     person_accounts: Option<(PersonRecord<PersonAccounts>, Option<u64>)>,
     /// The host's mail session, when this window runs in a page: the host
     /// that keeps the accounts reads and sends here.
-    #[cfg(any(target_arch = "wasm32", test))]
+    #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
     host_mail: Option<host_mail::HostMail>,
     custody: Option<crate::custody::SecretRelease>,
     sender_pictures_seen: Option<(u64, Vec<String>)>,
@@ -612,7 +612,7 @@ impl MailApp {
             unsend: false,
             persisted_active_account: None,
             person_accounts: None,
-            #[cfg(any(target_arch = "wasm32", test))]
+            #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
             host_mail: None,
             custody: None,
             sender_pictures_seen: None,
@@ -3708,7 +3708,7 @@ impl Widget for MailApp {
         dyn ui::undo::UndoControl
     );
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        #[cfg(any(target_arch = "wasm32", test))]
+        #[cfg(any(target_arch = "wasm32", test, not(feature = "live")))]
         self.pump_host_mail();
         let (state, path) = ui::doc::document_ref(state, path);
         self.follow_document();
