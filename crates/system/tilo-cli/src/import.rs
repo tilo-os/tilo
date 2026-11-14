@@ -78,13 +78,13 @@ pub enum ImportCmd {
 
 #[derive(Args)]
 pub struct OutlineArgs {
-    /// The Outline site, like https://outline.example.
+    /// The Outline site, like `https://outline.example`.
     #[arg(long)]
     url: String,
-    /// A file holding the API token; --token-env reads it from TILO_IMPORT_TOKEN.
+    /// A file holding the API token; `--token-env` reads it from `TILO_IMPORT_TOKEN`.
     #[arg(long, conflicts_with = "token_env")]
     token_file: Option<PathBuf>,
-    /// Read the API token from TILO_IMPORT_TOKEN instead.
+    /// Read the API token from `TILO_IMPORT_TOKEN` instead.
     #[arg(long)]
     token_env: bool,
     /// Only these collections, by id; every collection without.
@@ -94,10 +94,10 @@ pub struct OutlineArgs {
 
 #[derive(Args)]
 pub struct TokenArgs {
-    /// A file holding the API token; --token-env reads it from TILO_IMPORT_TOKEN.
+    /// A file holding the API token; `--token-env` reads it from `TILO_IMPORT_TOKEN`.
     #[arg(long, conflicts_with = "token_env")]
     token_file: Option<PathBuf>,
-    /// Read the API token from TILO_IMPORT_TOKEN instead.
+    /// Read the API token from `TILO_IMPORT_TOKEN` instead.
     #[arg(long)]
     token_env: bool,
     /// The API endpoint, when the tool is not at its usual one.
@@ -107,13 +107,13 @@ pub struct TokenArgs {
 
 #[derive(Args)]
 pub struct ForgejoArgs {
-    /// The Forgejo site, like https://code.example.
+    /// The Forgejo site, like `https://code.example`.
     #[arg(long)]
     url: String,
-    /// A file holding the API token; --token-env reads it from TILO_IMPORT_TOKEN.
+    /// A file holding the API token; `--token-env` reads it from `TILO_IMPORT_TOKEN`.
     #[arg(long, conflicts_with = "token_env")]
     token_file: Option<PathBuf>,
-    /// Read the API token from TILO_IMPORT_TOKEN instead.
+    /// Read the API token from `TILO_IMPORT_TOKEN` instead.
     #[arg(long)]
     token_env: bool,
     /// The repository whose issues come in, as owner/name.
@@ -158,11 +158,15 @@ pub struct MailArgs {
 
 /// `tilo import`: the source `cmd` read and written into `workspace`.
 pub fn run(reach: Reach<'_>, workspace: Option<String>, cmd: ImportCmd) -> Result<ExitCode> {
-    // Mail's accounts are the person's, not a workspace's: they reach every
-    // device, and Mail syncs their mail into whichever workspace it opens in.
-    if let ImportCmd::Mail(args) = cmd {
-        return mail(args);
-    }
+    let cmd = match cmd {
+        // Mail's accounts are the person's, not a workspace's: they reach every
+        // device, and Mail syncs their mail into whichever workspace it opens in.
+        ImportCmd::Mail(args) => return mail(&args),
+        ImportCmd::Outline(args) => WorkspaceImport::Outline(args),
+        ImportCmd::Linear(args) => WorkspaceImport::Linear(args),
+        ImportCmd::Forgejo(args) => WorkspaceImport::Forgejo(args),
+        ImportCmd::Files(args) => WorkspaceImport::Files(args),
+    };
     let Some(workspace) = workspace else {
         bail!("name the workspace to import into: -w <name or id>");
     };
@@ -173,18 +177,27 @@ pub fn run(reach: Reach<'_>, workspace: Option<String>, cmd: ImportCmd) -> Resul
         let client = Client::open(reach)?;
         let workspace = crate::hosted::workspace_id(&client, &workspace).await?;
         match cmd {
-            ImportCmd::Outline(args) => outline(&client, &workspace, args).await,
-            ImportCmd::Linear(args) => linear(&client, &workspace, args).await,
-            ImportCmd::Forgejo(args) => forgejo(&client, &workspace, args).await,
-            ImportCmd::Files(args) => files(&client, &workspace, args).await,
-            ImportCmd::Mail(_) => unreachable!("mail is answered above"),
+            WorkspaceImport::Outline(args) => outline(&client, &workspace, args).await,
+            WorkspaceImport::Linear(args) => linear(&client, &workspace, args).await,
+            WorkspaceImport::Forgejo(args) => forgejo(&client, &workspace, args).await,
+            WorkspaceImport::Files(args) => files(&client, &workspace, args).await,
         }
     })
 }
 
+/// The imports that fill a workspace: `ImportCmd` without Mail, which fills
+/// the person instead.
+enum WorkspaceImport {
+    Outline(OutlineArgs),
+    Linear(TokenArgs),
+    Forgejo(ForgejoArgs),
+    Files(FilesArgs),
+}
+
 /// Where an import writes: a workspace, through its apps' actions, or, in a
-/// test, a record of the calls it would have made.
-trait Target {
+/// test, a record of the calls it would have made. An import runs on any of
+/// the runtime's threads, so a target is shared across them.
+trait Target: Sync {
     async fn act(&self, resource: &str, action: &str, args: &Value, title: &str) -> Result<Value>;
     async fn upload(&self, bytes: Vec<u8>) -> Result<String>;
     fn progress(&self, line: &str);
@@ -520,15 +533,24 @@ fn shown_pictures(markdown: &str) -> Vec<String> {
     let mut urls = Vec::new();
     let mut rest = markdown;
     while let Some(at) = rest.find("![") {
-        let after = &rest[at.saturating_add(2)..];
+        let Some(after) = rest.get(at.saturating_add(2)..) else {
+            break;
+        };
         let Some(close) = after.find("](") else {
             break;
         };
-        let destination = &after[close.saturating_add(2)..];
+        let Some(destination) = after.get(close.saturating_add(2)..) else {
+            break;
+        };
         let Some(end) = destination.find(')') else {
             break;
         };
-        let url = destination[..end].trim().trim_matches(['<', '>']);
+        let Some(url) = destination
+            .get(..end)
+            .map(|url| url.trim().trim_matches(['<', '>']))
+        else {
+            break;
+        };
         if !url.is_empty()
             && !url.starts_with("data:")
             && !url.starts_with("asset:")
@@ -536,7 +558,7 @@ fn shown_pictures(markdown: &str) -> Vec<String> {
         {
             urls.push(url.to_owned());
         }
-        rest = &destination[end.saturating_add(1)..];
+        rest = destination.get(end.saturating_add(1)..).unwrap_or_default();
     }
     urls
 }
@@ -594,7 +616,9 @@ async fn linear_issues(source: &Source) -> Result<Vec<Value>> {
         if let Some(errors) = answer.get("errors").filter(|errors| !errors.is_null()) {
             bail!("Linear refused the query: {errors}");
         }
-        let connection = &answer["data"]["issues"];
+        let Some(connection) = answer.pointer("/data/issues") else {
+            bail!("Linear answered without a page of issues");
+        };
         let nodes = connection
             .get("nodes")
             .and_then(Value::as_array)
@@ -840,24 +864,23 @@ fn forgejo_links(issues: &mut [Value], owner: &str, repo: &str) {
 /// The issue numbers `text` names as `#42`.
 fn cross_references(text: &str) -> Vec<u64> {
     let mut numbers = Vec::new();
-    let bytes = text.as_bytes();
-    let mut at = 0;
-    while at < bytes.len() {
-        if bytes[at] != b'#' {
-            at = at.saturating_add(1);
+    for (at, _) in text.match_indices('#') {
+        // A word before it makes it a fragment, not an issue.
+        let starts_word = text
+            .get(..at)
+            .and_then(|before| before.chars().next_back())
+            .is_none_or(|before| !before.is_alphanumeric());
+        if !starts_word {
             continue;
         }
-        let start = at;
-        at = at.saturating_add(1);
-        let digits = at;
-        while at < bytes.len() && bytes[at].is_ascii_digit() {
-            at = at.saturating_add(1);
-        }
-        // A word before it makes it a fragment, not an issue.
-        let starts_word = start == 0 || !bytes[start.saturating_sub(1)].is_ascii_alphanumeric();
-        if at > digits
-            && starts_word
-            && let Ok(number) = text[digits..at].parse::<u64>()
+        let digits = text.get(at.saturating_add(1)..).unwrap_or_default();
+        let end = digits
+            .char_indices()
+            .find(|&(_, digit)| !digit.is_ascii_digit())
+            .map_or(digits.len(), |(at, _)| at);
+        if let Some(number) = digits
+            .get(..end)
+            .and_then(|digits| digits.parse::<u64>().ok())
             && !numbers.contains(&number)
         {
             numbers.push(number);
@@ -1009,10 +1032,10 @@ fn files_under(paths: &[PathBuf]) -> Result<Vec<Found>> {
         let meta = std::fs::symlink_metadata(path)
             .with_context(|| format!("reading {}", path.display()))?;
         if meta.is_file() {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| path.display().to_string());
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
             found.push(Found {
                 path: path.clone(),
                 name,
@@ -1097,7 +1120,6 @@ async fn open_in_app(
         return Ok(None);
     };
     match extension.as_str() {
-        "md" | "markdown" | "mdown" | "mkd" | "txt" => Ok(None),
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tif" | "tiff" => {
             let Some((width, height)) = image_size(bytes) else {
                 return Ok(None);
@@ -1138,6 +1160,11 @@ fn record_of(answer: &Value) -> Option<String> {
 /// A picture's size in pixels, as its own header states it: PNG, GIF, JPEG
 /// and WebP.
 fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    let word = |at: usize| -> Option<u16> {
+        Some(u16::from_be_bytes(
+            bytes.get(at..at.saturating_add(2))?.try_into().ok()?,
+        ))
+    };
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         let width = u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?);
         let height = u32::from_be_bytes(bytes.get(20..24)?.try_into().ok()?);
@@ -1151,18 +1178,20 @@ fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
         match bytes.get(12..16)? {
             b"VP8X" => {
-                let width = 1 + u32::from_le_bytes([
+                let width = u32::from_le_bytes([
                     bytes.get(24).copied()?,
                     bytes.get(25).copied()?,
                     bytes.get(26).copied()?,
                     0,
-                ]);
-                let height = 1 + u32::from_le_bytes([
+                ])
+                .saturating_add(1);
+                let height = u32::from_le_bytes([
                     bytes.get(27).copied()?,
                     bytes.get(28).copied()?,
                     bytes.get(29).copied()?,
                     0,
-                ]);
+                ])
+                .saturating_add(1);
                 return Some((width, height));
             }
             b"VP8 " => {
@@ -1174,23 +1203,28 @@ fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
             }
             b"VP8L" => {
                 let bits = u32::from_le_bytes(bytes.get(21..25)?.try_into().ok()?);
-                return Some(((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1));
+                return Some((
+                    (bits & 0x3fff).saturating_add(1),
+                    ((bits >> 14) & 0x3fff).saturating_add(1),
+                ));
             }
             _ => return None,
         }
     }
     if bytes.starts_with(b"\xff\xd8") {
-        let mut at = 2;
-        while at + 9 < bytes.len() {
-            if bytes[at] != 0xff {
+        // Each marker: its two bytes, then its length, then at least the four
+        // bytes of a frame header. A picture that ends inside one is not one.
+        let mut at: usize = 2;
+        while at.saturating_add(9) < bytes.len() {
+            if bytes.get(at) != Some(&0xff) {
                 at = at.saturating_add(1);
                 continue;
             }
-            let marker = bytes[at + 1];
-            let length = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
-            if marker >= 0xc0 && marker <= 0xcf && !matches!(marker, 0xc4 | 0xc8 | 0xcc) {
-                let height = u32::from(u16::from_be_bytes([bytes[at + 5], bytes[at + 6]]));
-                let width = u32::from(u16::from_be_bytes([bytes[at + 7], bytes[at + 8]]));
+            let marker = bytes.get(at.saturating_add(1)).copied()?;
+            let length = usize::from(word(at.saturating_add(2))?);
+            if (0xc0..=0xcf).contains(&marker) && !matches!(marker, 0xc4 | 0xc8 | 0xcc) {
+                let height = u32::from(word(at.saturating_add(5))?);
+                let width = u32::from(word(at.saturating_add(7))?);
                 return Some((width, height));
             }
             at = at.saturating_add(2).saturating_add(length);
@@ -1201,8 +1235,8 @@ fn image_size(bytes: &[u8]) -> Option<(u32, u32)> {
 
 // ---- mail --------------------------------------------------------------------
 
-fn mail(args: MailArgs) -> Result<ExitCode> {
-    let json = mail_account(&args)?;
+fn mail(args: &MailArgs) -> Result<ExitCode> {
+    let json = mail_account(args)?;
     if args.dry_run {
         println!("{}", serde_json::to_string_pretty(&json)?);
         return Ok(ExitCode::SUCCESS);
@@ -1283,36 +1317,13 @@ fn text<'a>(value: &'a Value, name: &str) -> &'a str {
 /// `text` as milliseconds since the epoch: an RFC 3339 time as sources write
 /// it. A time it cannot read is zero.
 fn iso_ms(text: &str) -> i64 {
-    let bytes = text.as_bytes();
-    let number = |from: usize, to: usize| -> Option<i64> {
-        let slice = bytes.get(from..to)?;
-        std::str::from_utf8(slice).ok()?.parse::<i64>().ok()
-    };
-    let (Some(year), Some(month), Some(day)) = (number(0, 4), number(5, 7), number(8, 10)) else {
-        return 0;
-    };
-    let (hour, minute, second) = match (number(11, 13), number(14, 16), number(17, 19)) {
-        (Some(hour), Some(minute), Some(second)) => (hour, minute, second),
-        _ => (0, 0, 0),
-    };
-    let millis = text
-        .get(20..23)
-        .and_then(|fraction| fraction.parse::<i64>().ok())
-        .unwrap_or(0);
-    // Days from the civil date, by Howard Hinnant's count.
-    let year = year - i64::from(month <= 2);
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    let seconds = days * 86_400 + hour * 3600 + minute * 60 + second;
-    seconds * 1000 + millis
+    chrono::DateTime::parse_from_rfc3339(text.trim()).map_or(0, |time| time.timestamp_millis())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead as _, Read as _, Write as _};
     use std::sync::{Arc, Mutex};
 
     /// What an import asked the workspace to do.
@@ -1372,7 +1383,6 @@ mod tests {
                     let Ok(mut stream) = stream else { break };
                     let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
                     let mut request_line = String::new();
-                    use std::io::{BufRead as _, Read as _, Write as _};
                     if reader.read_line(&mut request_line).is_err() {
                         break;
                     }
@@ -1398,8 +1408,10 @@ mod tests {
                     let answer = routes
                         .iter()
                         .find(|(route, _)| path.starts_with(route.as_str()))
-                        .map(|(_, answer)| answer.clone())
-                        .unwrap_or_else(|| json!({"error": "no fixture"}));
+                        .map_or_else(
+                            || json!({"error": "no fixture"}),
+                            |(_, answer)| answer.clone(),
+                        );
                     let body = answer.to_string();
                     let _ = write!(
                         stream,
@@ -1450,6 +1462,7 @@ mod tests {
             write_notes(&target, pages).await.unwrap();
             let calls = target.calls();
             assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].resource, "notes");
             assert_eq!(calls[0].action, "import-pages");
             assert_eq!(calls[0].args["pages"].as_array().unwrap().len(), 3);
         });
@@ -1493,6 +1506,7 @@ mod tests {
             assert_eq!(issue["created_ms"], 1_767_323_045_678_i64);
             let target = Recording::default();
             write_issues(&target, issues).await.unwrap();
+            assert_eq!(target.calls()[0].resource, "tasks");
             assert_eq!(target.calls()[0].action, "import-issues");
         });
     }
@@ -1539,22 +1553,11 @@ mod tests {
 
     #[test]
     fn files_keep_their_folders_and_their_names() {
-        let found = vec![
-            Found {
-                path: PathBuf::from("/tmp/contracts/2026/lease.pdf"),
-                name: "2026/lease.pdf".to_owned(),
-            },
-            Found {
-                path: PathBuf::from("/tmp/notes.md"),
-                name: "notes.md".to_owned(),
-            },
-        ];
         assert_eq!(folders_of("2026/lease.pdf"), ["2026"]);
         assert_eq!(folders_of("a/b/c.txt"), ["a", "a/b"]);
         assert!(folders_of("notes.md").is_empty());
         assert!(!is_markdown("lease.pdf"));
         assert!(is_markdown("notes.md"));
-        assert_eq!(found.len(), 2);
     }
 
     #[test]
@@ -1576,7 +1579,9 @@ mod tests {
             .unwrap();
         runtime.block_on(async {
             let target = Recording::default();
-            let (files, notes) = import_files(&target, &[contracts.clone()]).await.unwrap();
+            let (files, notes) = import_files(&target, std::slice::from_ref(&contracts))
+                .await
+                .unwrap();
             assert_eq!(files, 2);
             assert_eq!(notes, 4, "two folders and two files");
             let calls = target.calls();
@@ -1584,11 +1589,12 @@ mod tests {
                 .iter()
                 .find(|call| call.action == "import-photo")
                 .expect("the picture opens in Photos");
+            assert_eq!(photo.resource, "photos");
             assert_eq!(photo.args["image"]["width"], 4);
             assert_eq!(photo.args["image"]["name"], "contracts/scan.png");
             let pages = calls
                 .iter()
-                .find(|call| call.action == "import-pages")
+                .find(|call| call.resource == "notes" && call.action == "import-pages")
                 .expect("the folders and files are notes")
                 .args["pages"]
                 .clone();
@@ -1596,7 +1602,7 @@ mod tests {
             let by_key = |key: &str| {
                 pages
                     .iter()
-                    .find(|page| page["key"] == format!("{key}"))
+                    .find(|page| page["key"] == key)
                     .cloned()
                     .unwrap()
             };

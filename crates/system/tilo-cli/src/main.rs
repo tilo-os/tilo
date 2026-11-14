@@ -252,13 +252,13 @@ enum Cmd {
                       tilo import linear --token-file linear.token -w company\n  \
                       tilo import forgejo --url https://code.example --token-file forgejo.token --repo tilo/tilo -w company\n  \
                       tilo import files ./contracts ./notes.md -w company\n  \
-                      tilo import mail --imap-host imap.example --smtp-host smtp.example --user ops@example --password-file ops.password -w company\n\n\
+                      tilo import mail --imap-host imap.example --smtp-host smtp.example --user ops@example\n\n\
                       Each import writes through the workspace's apps' actions, as one run: History \
                       names it and undo takes it back. Running one again updates the records it made."
     )]
     Import {
         #[command(subcommand)]
-        cmd: import::ImportCmd,
+        cmd: Box<import::ImportCmd>,
     },
     /// Run a tilolang program in a hosted workspace, as one undoable step.
     #[command(after_help = "Example:\n  tilo run visa.tl -w jane-doe")]
@@ -924,10 +924,7 @@ fn run_hosted(
         Cmd::Run { file, json } => workspace
             .ok_or_else(needs_workspace)
             .map(|workspace| hosted::program(reach(json), &workspace, &file)),
-        Cmd::Import { cmd } => {
-            drop(needs_workspace);
-            import::run(reach(false), workspace, cmd)
-        }
+        Cmd::Import { cmd } => import::run(reach(false), workspace, *cmd),
         Cmd::Sdk { cmd } => Ok(sdk::generate(reach(false), workspace.as_deref(), cmd)),
         other => return Err(other),
     })
@@ -2010,6 +2007,7 @@ mod tests {
                 "members",
                 "account",
                 "files",
+                "import",
                 "run",
                 "sdk",
                 "device",
@@ -2033,6 +2031,7 @@ mod tests {
                 "  members    The people in a hosted workspace, and inviting more\n",
                 "  account    Your hosted account: its workspaces\n",
                 "  files      Files into a hosted workspace\n",
+                "  import     Bring another tool's records in, as the workspace's own\n",
                 "  run        Run a tilolang program in a hosted workspace, as one undoable step\n",
                 "  sdk        Write the SDK's types for a workspace's apps, from their surfaces\n",
                 "  device     Your devices: update them, go back, repair them, develop on them\n",
@@ -2079,7 +2078,7 @@ mod tests {
         assert_eq!(
             listed(elsewhere),
             [
-                "app", "keys", "members", "account", "files", "run", "sdk", "login"
+                "app", "keys", "members", "account", "files", "import", "run", "sdk", "login"
             ]
         );
         let help = command_here(elsewhere).render_help().to_string();
@@ -2102,7 +2101,9 @@ mod tests {
         // workspace, and reaches hosted workspaces with a key.
         assert_eq!(
             listed(nothing),
-            ["keys", "members", "account", "files", "run", "sdk", "login"]
+            [
+                "keys", "members", "account", "files", "import", "run", "sdk", "login"
+            ]
         );
         let bare = command_here(nothing).render_help().to_string();
         assert!(bare.contains("tilo keys create"), "{bare}");
