@@ -3272,6 +3272,7 @@ fn now_secs() -> i64 {
 mod tests {
     use super::*;
     use crate::model::classify;
+    use ui::framework::testing::TEST_WORKSPACE;
     use ui::headless::{Framed, viewport};
 
     #[test]
@@ -3863,16 +3864,16 @@ mod tests {
                 ui::RemoteActions::with_host(
                     session.clone(),
                     ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
-                        .in_workspace("workspace"),
+                        .in_workspace(TEST_WORKSPACE),
                 ),
-                Some("workspace".into()),
+                Some(TEST_WORKSPACE.into()),
             );
             app.harness().press_window_action("Open Photos").unwrap();
             let asked = session.take_asked();
             assert_eq!(asked.len(), 1, "Photos browse hands off to Photos");
             assert_eq!(
                 asked[0].target,
-                ui::tilo_actions::remote::application_open_target("workspace", "so.tilo.photos")
+                ui::tilo_actions::remote::application_open_target(TEST_WORKSPACE, "so.tilo.photos")
             );
             assert_eq!(
                 ui::window_toolbar::notice().map(|notice| notice.text),
@@ -5021,9 +5022,9 @@ mod tests {
             ui::RemoteActions::with_host(
                 session.clone(),
                 ui::tilo_actions::remote::Caller::local_app("so.tilo.camera")
-                    .in_workspace("workspace"),
+                    .in_workspace(TEST_WORKSPACE),
             ),
-            Some("workspace".into()),
+            Some(TEST_WORKSPACE.into()),
         );
         app.harness()
             .invoke_published("camera.capture", "open-photos", &serde_json::Map::new())
@@ -5032,7 +5033,7 @@ mod tests {
         assert_eq!(asked.len(), 1);
         assert_eq!(
             asked[0].target,
-            ui::tilo_actions::remote::application_open_target("workspace", "so.tilo.photos")
+            ui::tilo_actions::remote::application_open_target(TEST_WORKSPACE, "so.tilo.photos")
         );
     }
 
