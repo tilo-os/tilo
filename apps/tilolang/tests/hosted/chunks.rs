@@ -164,7 +164,7 @@ fn a_chunk_that_arrives_after_the_window_opened_shows_without_opening_it_again(
 
 /// `mutation`, sent by `me` on `route`, as the document envelope the broker delivers to the
 /// route's other replicas.
-fn delivered(route: &RouteSpec, me: &str, mutation: &DocumentMutation) -> CollabEvent {
+pub(super) fn delivered(route: &RouteSpec, me: &str, mutation: &DocumentMutation) -> CollabEvent {
     let record = route.record.as_deref().unwrap_or("");
     let workspace = route.cluster_id.to_string();
     let mut envelope = collab_types::SignedOp::new_unsigned(

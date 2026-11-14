@@ -69,6 +69,9 @@ mod typing;
 #[path = "hosted/controls.rs"]
 mod controls;
 
+#[path = "hosted/personal.rs"]
+mod personal;
+
 #[path = "hosted/replay.rs"]
 mod replay;
 use replay::replayed;
@@ -93,12 +96,15 @@ const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
+/// What the connection sent on a route other than its own.
+type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
 
 /// The broker's end of the instance's connection.
 struct Broker {
     route: RouteSpec,
     sent: Sent,
     inbox: Inbox,
+    routed: Routed,
     joined: Option<RouteSpec>,
 }
 
@@ -133,7 +139,8 @@ impl PeerTransport for Broker {
         Ok(())
     }
 
-    fn send_to_route(&mut self, _route: RouteSpec, request: CollabRequest) -> Result<(), String> {
+    fn send_to_route(&mut self, route: RouteSpec, request: CollabRequest) -> Result<(), String> {
+        self.routed.borrow_mut().push((route, request.clone()));
         self.sent.borrow_mut().push(request);
         Ok(())
     }
@@ -574,14 +581,15 @@ impl Session {
         storage: Option<std::path::PathBuf>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
+        let (sent, inbox, routed) = (Sent::default(), Inbox::default(), Routed::default());
         let manager = CollaborationManager::with_peer_transport(Broker {
             route: route.clone(),
             sent: Rc::clone(&sent),
             inbox: Rc::clone(&inbox),
+            routed: Rc::clone(&routed),
             joined: None,
         });
-        let wire = (Box::new(inbox) as Box<dyn std::any::Any>, sent);
+        let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
         Self::launch(manager, route, spec, chunks, storage, wire, window)
     }
 
@@ -680,9 +688,12 @@ impl Session {
 
     /// What the broker delivers to the instance's connection next.
     fn inbox(&self) -> &Inbox {
-        self.broker
-            .downcast_ref::<Inbox>()
-            .expect("the broker's end holds the connection's inbox")
+        &self.wire().0
+    }
+
+    /// The broker's end: its inbox, and what the instance sent on routes other than its own.
+    fn wire(&self) -> &(Inbox, Routed) {
+        self.broker.downcast_ref().expect("the broker's end")
     }
 
     /// Forget the requests the instance sent so far.

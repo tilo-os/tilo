@@ -23,7 +23,7 @@ use std::sync::Arc;
 use tilo_ui_host::AppWindow;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{self, Config, Instance, Mode, Outgoing, Platform, queue_commits};
-use tilolang_tilo::personal::{Keep, Personal};
+use tilolang_tilo::personal::Personal;
 use tilolang_tilo::runtime::{OutsideSink, ResourceRef};
 use tilolang_tilo::{HostEffect, OpenEffect};
 use ui::framework::{ResourceSurface, RunMode, WorkspaceRecord};
@@ -356,96 +356,27 @@ impl Window {
         self
     }
 
-    /// Give the views what the record keeps of this person: how their window shows its resource,
-    /// where they are in it, and what they have seen. A slot already holding its value is left
-    /// alone, so this runs every frame.
+    /// Give the views what the record keeps of this person ([`Instance::bring_personal`]). A
+    /// slot already holding its value is left alone, so this runs every frame.
     fn bring_personal(&mut self, record: &WorkspaceRecord<Personal>) {
-        let state = record.get();
-        let kept = state.of(&self.me);
-        self.instance.set_view_states(
-            kept.slots
-                .iter()
-                .map(|slot| (slot.key(), slot.value.clone())),
-        );
-        // Everyone's marks, not this person's alone: a conversation shows who read to a line.
-        self.instance.set_seen(
-            state.seen.iter().map(|seen| {
-                (
-                    seen.person.clone(),
-                    seen.resource.clone(),
-                    Some(seen.mark.clone()),
-                )
-            }),
-            &kept
-                .runs
-                .iter()
-                .map(|reviewed| reviewed.run.clone())
-                .collect::<Vec<_>>(),
-        );
+        self.instance.bring_personal(&record.get());
     }
 
-    /// Keep what this person changed of their own state since the last frame in the record: the
-    /// view state they set, and what they marked seen. A change the record cannot take
-    /// stays on this device, told once, rather than stopping the window.
+    /// Keep what this person changed of their own state since the last frame in the record
+    /// ([`Instance::take_personal`]). A change the record cannot take stays on this device,
+    /// told once, rather than stopping the window.
     fn keep_personal(&mut self, record: &WorkspaceRecord<Personal>) {
-        let keep_it = |keep: &Keep, what: &str| {
-            let invoke = match Invoke::<Personal>::apply(keep) {
+        for keep in self.instance.take_personal(&record.get()) {
+            let invoke = match Invoke::<Personal>::apply(&keep) {
                 Ok(invoke) => invoke,
                 Err(why) => {
                     tracing::debug!(%why, "the change does not encode");
-                    return;
-                }
-            };
-            if let Err(error) = record.invoke(&invoke) {
-                tracing::warn!(%error, "personal: {what} stays on this device");
-            }
-        };
-        let writes = self.instance.take_view_writes();
-        let seen = self.instance.take_seen();
-        for (key, value) in writes {
-            let keep = match Keep::view(&key, &value) {
-                Ok(keep) => keep,
-                Err(why) => {
-                    tracing::debug!(%why, "the slot is no person's state");
                     continue;
                 }
             };
-            keep_it(&keep, "a view's state");
-        }
-        for write in seen {
-            // Someone else's mark is not this person's to keep.
-            let keep = match write {
-                tilolang_tilo::runtime::seen::SeenWrite::Resource {
-                    person,
-                    resource,
-                    mark,
-                } if person.eq_ignore_ascii_case(&self.me) => Keep::Seen {
-                    person: self.me.clone(),
-                    resource,
-                    mark,
-                },
-                tilolang_tilo::runtime::seen::SeenWrite::Run { person, run }
-                    if person.eq_ignore_ascii_case(&self.me) =>
-                {
-                    let mut runs: Vec<String> = record
-                        .get()
-                        .of(&self.me)
-                        .runs
-                        .into_iter()
-                        .map(|reviewed| reviewed.run)
-                        .collect();
-                    if !runs.contains(&run) {
-                        runs.push(run);
-                        runs.sort();
-                    }
-                    Keep::Runs {
-                        person: self.me.clone(),
-                        runs,
-                    }
-                }
-                _ => continue,
-            };
-            keep_it(&keep, "what the person saw");
+            if let Err(error) = record.invoke(&invoke) {
+                tracing::warn!(%error, "personal: the person's own state stays on this device");
+            }
         }
     }
 

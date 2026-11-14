@@ -132,6 +132,12 @@ impl PeerTransport for Broker {
         self.routes.borrow_mut().push(route);
         Ok(())
     }
+
+    /// A record beside the app's (the workspace's record of each person's own state) is sent on
+    /// a route of its own: the broker takes it.
+    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The window, as the test drives it from the far end of the patch connection.
@@ -1418,6 +1424,15 @@ impl PeerTransport for SlowBroker {
             self.asked = false;
             Ok(self.route.clone())
         })
+    }
+
+    /// The records every app of the workspace opens beside its own are joined too.
+    fn join_route(
+        &mut self,
+        _: RouteSpec,
+        _: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        Ok(())
     }
 }
 

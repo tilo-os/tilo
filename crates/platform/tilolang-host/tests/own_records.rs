@@ -130,6 +130,20 @@ impl PeerTransport for Connection {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
     }
+
+    /// The records every app of the workspace opens beside its own (each person's own state)
+    /// are joined and sent on routes of their own, which this bus does not relay.
+    fn join_route(
+        &mut self,
+        _: RouteSpec,
+        _: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn send_to_route(&mut self, _: RouteSpec, _: CollabRequest) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// The window, from the far end of the patch connection: the root's tree as the instance sent

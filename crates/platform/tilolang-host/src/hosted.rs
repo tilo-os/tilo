@@ -27,6 +27,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
+use crate::personal::PersonalRecord;
 use collaboration::action_directory::PublishedDirectory;
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use collaboration::{
@@ -809,6 +810,9 @@ pub struct Hosted {
     identity: Option<std::os::fd::OwnedFd>,
     /// The scope the instance's code runs in, its record's content store registered for it.
     scope: RecordScope,
+    /// The workspace's record of each person's own state: what the person picked in the views
+    /// and what they have seen, given to the views and kept back as they change it.
+    personal: PersonalRecord,
 }
 
 /// The wake scope a record's code runs in, the record's content store registered for it: an
@@ -888,6 +892,12 @@ impl Hosted {
         let scope = RecordScope::of(&record, &wake);
         let in_scope = scope.enter();
         let used = used_apps(&spec, &bundle, &mut record);
+        let personal = PersonalRecord::open(
+            record.route().cluster_id,
+            &spec.app,
+            &kept.documents,
+            record.manager_mut(),
+        );
         let platform = HostPlatform {
             bundle: Arc::clone(&bundle),
             installed: spec.installed.clone(),
@@ -948,6 +958,7 @@ impl Hosted {
             asking: false,
             identity: None,
             scope,
+            personal,
         }
     }
 
@@ -1071,6 +1082,10 @@ impl Hosted {
         // The chunks the replica holds with the record's own frame: the store reads them as what
         // the window shows reaches into them, and the indexes are built over them.
         self.record.sync_instance(&mut self.instance);
+        // What the person picked and saw, as their own record keeps it, before the views run.
+        if self.personal.take_moved() && !self.instance.bring_personal(self.personal.state()) {
+            self.personal.moved_again();
+        }
         changed |= self.instance.update();
         let chose = self.chosen();
         changed |= chose;
@@ -1094,6 +1109,10 @@ impl Hosted {
             }
             changed |= self.take_step(&asked);
         }
+        // What the person changed of their own state is kept in its record, as theirs.
+        let keeps = self.instance.take_personal(self.personal.state());
+        self.personal
+            .keep(&self.spec.person, keeps, self.record.manager_mut());
         for event in events {
             changed |= self.delivered(event);
         }
@@ -1515,6 +1534,9 @@ impl Hosted {
     /// installed here is called rides with the context, and is what this window's history reads
     /// another app's change as.
     fn delivered(&mut self, event: CollabEvent) -> bool {
+        if let Some(moved) = self.personal.take(&event, self.record.manager_mut()) {
+            return moved;
+        }
         for used in &mut self.used {
             if let Some(moved) = used.record.take(&event, self.record.manager_mut()) {
                 used.moved |= moved;
@@ -2229,6 +2251,13 @@ impl Hosted {
     pub fn flush(&mut self) {
         let _code = self.scope.enter();
         self.record.flush();
+        self.personal.flush();
+    }
+
+    /// What the workspace's record of each person's own state holds, as this instance holds it.
+    #[must_use]
+    pub fn personal(&self) -> &tilolang_tilo::personal::PersonalState {
+        self.personal.state()
     }
 }
 

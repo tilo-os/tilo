@@ -22,6 +22,7 @@
 
 pub mod files;
 pub mod hosted;
+pub mod personal;
 pub mod phrases;
 pub mod stop;
 pub mod task;

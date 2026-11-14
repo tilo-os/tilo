@@ -41,6 +41,11 @@ tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 serde_json.workspace = true
+# The workspace's record of each person's own state, which every app of the workspace opens: its
+# id, its document, and the changes that arrive for it.
+collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
+automerge.workspace = true
+tilo-automerge.workspace = true
 # A record the door hands over travels as base64 on the program connection.
 base64.workspace = true
 thiserror.workspace = true
@@ -64,13 +69,10 @@ tilo-dialogs = { version = "0.1.0", path = "../tilo-dialogs" }
 tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["test-support"] }
 tilo-test-env = { path = "../../dev/test-env" }
 collaboration = { version = "0.1.0", path = "../../collab/collaboration", features = ["test-support", "broker-transport", "native"] }
-collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilolang = { path = "../../lang/tilolang" }
 # The session's persistent search index, and the source a search reads it through: a tilolang
 # app's published entries are found by a word of their text through it.
 tilo-desktop-search = { path = "../../session/desktop-search", features = ["indexes"] }
-automerge.workspace = true
-tilo-automerge.workspace = true
 tempfile.workspace = true
 # The replies the test's broker awaits from the instance's action directory.
 tokio = { workspace = true, features = ["sync"] }
