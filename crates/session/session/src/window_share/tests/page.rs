@@ -945,16 +945,21 @@ fn a_page_handed_over_in_parts_is_drawn_whole_on_the_watching_desk() {
         "the sharing device never said it sends the window:{}",
         two.said()
     );
-    let named: Vec<String> = two
-        .viewer
-        .session
-        .controls()
-        .into_iter()
-        .map(|control| control.name)
-        .collect();
+    // The desk builds the tile again around the page it now holds, and names its text.
+    let named = |two: &Two| -> Vec<String> {
+        two.viewer
+            .session
+            .controls()
+            .into_iter()
+            .map(|control| control.name)
+            .collect()
+    };
     assert!(
-        named.iter().any(|name| name.contains("Paint stream")),
-        "the watching desk names the text of the page it draws: {named:?}"
+        two.within(LINK, false, |two| {
+            named(two).iter().any(|name| name.contains("Paint stream"))
+        }),
+        "the watching desk does not name the text of the page it draws: {:?}",
+        named(&two)
     );
 }
 
@@ -1095,6 +1100,8 @@ impl Watcher {
 
     /// Ask the sharing device for the pages of `tabs`, and of nothing else.
     fn show(&self, tabs: &[u64]) {
+        // The plane reads on the planes' runtime, as a session's does.
+        let _entered = live_planes().runtime.enter();
         let tracks: Vec<Track> = tabs.iter().map(|tab| Track::Page(*tab)).collect();
         self.plane.show(self.host, &tracks);
     }
