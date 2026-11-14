@@ -1265,8 +1265,14 @@ impl App {
                     // first: the window lights what is under the pointer and
                     // the box opens about what they click.
                     if *pointing {
+                        let window = self
+                            .window
+                            .shown_title
+                            .clone()
+                            .or_else(|| self.window.title.clone())
+                            .unwrap_or_default();
                         self.report_pointing =
-                            Some(crate::app::report_point::Pointing::new(to.clone()));
+                            Some(crate::app::report_point::Pointing::new(to.clone(), window));
                         self.layout.layout_dirty = true;
                         continue;
                     }

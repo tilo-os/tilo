@@ -32,13 +32,16 @@ pub(crate) struct Pointing {
     to: Vec<Recipient>,
     /// What lies under the pointer, outermost first and deepest last.
     chain: Vec<crate::pick::PickTarget>,
+    /// What the window is called: the name of a part that has none of its own.
+    window: String,
 }
 
 impl Pointing {
-    pub(crate) fn new(to: Vec<Recipient>) -> Self {
+    pub(crate) fn new(to: Vec<Recipient>, window: String) -> Self {
         Self {
             to,
             chain: Vec::new(),
+            window,
         }
     }
 
@@ -60,7 +63,24 @@ impl Pointing {
         if let Some(selection) = crate::shared_selection::pointed_selection(focused, at) {
             return Some(selection);
         }
-        lit.map(subject_of)
+        lit.map(|lit| SharedSelection::of_text(&self.describe(lit)).within(lit.rect))
+    }
+
+    /// What a part is called on the box's chip: what kind of thing the app says it is
+    /// ("Message"), else what it is called there ("Send message"), else the window it is part
+    /// of: a role ("Group") names no thing a person sees, and is said only by a window with no
+    /// name.
+    fn describe(&self, target: &crate::pick::PickTarget) -> String {
+        [
+            target.kind.as_deref(),
+            target.name.as_deref(),
+            Some(&self.window),
+        ]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|said| !said.is_empty())
+        .map_or_else(|| target.role_name(), str::to_owned)
     }
 
     /// The window's whole answer to `event` while pointing: whether it took it.
@@ -143,7 +163,7 @@ impl Pointing {
                     theme,
                     rect,
                     bounds,
-                    &describe(target),
+                    &self.describe(target),
                 );
             }
         }
@@ -161,33 +181,6 @@ pub(crate) enum Taken {
     Left,
     /// The person picked the thing the box is about, where it stands.
     Picked(SharedSelection, Option<[f64; 4]>),
-}
-
-/// What a part is called on the box's chip: what kind of thing the app says it
-/// is ("Message"), else what it is called there ("Send message"), else its
-/// role as assistive technology names it ("ListItem").
-fn describe(target: &crate::pick::PickTarget) -> String {
-    if let Some(kind) = target
-        .kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|kind| !kind.is_empty())
-    {
-        return kind.to_owned();
-    }
-    if let Some(name) = target
-        .name
-        .as_deref()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-    {
-        return name.to_owned();
-    }
-    target.role_name()
-}
-
-fn subject_of(target: &crate::pick::PickTarget) -> SharedSelection {
-    SharedSelection::of_text(&describe(target)).within(target.rect)
 }
 
 fn rect_array(rect: Rect) -> [f64; 4] {
@@ -322,4 +315,29 @@ fn hint(
         None,
         &quiet,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    /// A part with no name of its own is called by the window it is in, never by its role.
+    #[test]
+    fn a_part_with_no_name_is_called_by_its_window() {
+        let pointing = super::Pointing::new(Vec::new(), "Notes".to_owned());
+        let part = |name: Option<&str>, kind: Option<&str>| crate::pick::PickTarget {
+            path: String::new(),
+            role: crate::a11y::Role::Group,
+            name: name.map(str::to_owned),
+            interface: false,
+            kind: kind.map(str::to_owned),
+            rect: vello::kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+        };
+        for (name, kind, called) in [
+            (None, None, "Notes"),
+            (Some("  "), None, "Notes"),
+            (Some("Send message"), None, "Send message"),
+            (Some("Send"), Some("Message"), "Message"),
+        ] {
+            assert_eq!(pointing.describe(&part(name, kind)), called);
+        }
+    }
 }
