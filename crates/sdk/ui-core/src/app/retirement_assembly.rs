@@ -78,6 +78,7 @@ pub(super) struct AppAssemblyValues {
     pub close_admission: Option<crate::close_admission::Admission>,
     #[cfg(feature = "native")]
     pub report_pointing: Option<Option<super::report_point::Pointing>>,
+    pub window_box: Option<crate::widget::context_menu::ContextMenu>,
     pub needs_sync: Option<bool>,
     pub theme: Option<Theme>,
     pub debug_mode: Option<bool>,
@@ -183,6 +184,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
     {
         assembly.values.report_pointing = Some(None);
     }
+    assembly.values.window_box = Some(crate::widget::context_menu::ContextMenu::new());
     assembly.values.needs_sync = Some(true);
     assembly.values.theme = Some(configured_theme.clone());
     assembly.values.debug_mode = Some((inputs.debug_mode)());
@@ -261,6 +263,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         close_admission: Some(close_admission),
         #[cfg(feature = "native")]
             report_pointing: Some(report_pointing),
+        window_box: Some(window_box),
         needs_sync: Some(needs_sync),
         theme: Some(theme),
         debug_mode: Some(debug_mode),
@@ -331,6 +334,7 @@ pub(super) fn assemble(mut assembly: AppAssemblyCustody) -> App {
         close_admission,
         #[cfg(feature = "native")]
         report_pointing,
+        window_box,
         needs_sync,
         theme,
         debug_mode,

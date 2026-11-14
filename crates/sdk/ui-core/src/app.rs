@@ -48,6 +48,8 @@ mod host_commands;
 mod report_point;
 #[cfg(all(feature = "native", test))]
 mod report_point_tests;
+#[cfg(feature = "native")]
+mod window_box;
 
 mod model_lifecycle;
 mod participants;
@@ -502,6 +504,8 @@ pub struct App {
     /// at it or leaves ([`report_point::Pointing`]).
     #[cfg(feature = "native")]
     report_pointing: Option<report_point::Pointing>,
+    /// The send-to box the window stands with no menu around it ([`Self::open_send_box`]).
+    window_box: crate::widget::context_menu::ContextMenu,
     needs_sync: bool,
     pub theme: Theme,
     pub debug_mode: bool,

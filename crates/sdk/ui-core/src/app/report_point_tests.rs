@@ -6,7 +6,6 @@ use super::*;
 use vello::kurbo::{Point, Rect};
 
 use crate::floating_surface::{FloatingSurfaceHostMessage, Recipient, RecipientKind};
-use crate::shared_selection::take_open_send_box;
 use crate::widget::{Button, Column, ContextMenuArea, MenuEntry, Spacer};
 
 struct Window;
@@ -49,15 +48,6 @@ fn send(app: &mut App, event: &winit::event::WindowEvent) {
     app.surface_input(&Window, event.clone(), false);
 }
 
-fn area(app: &App) -> &ContextMenuArea {
-    let root = app
-        .root_widget
-        .as_any()
-        .and_then(|any| any.downcast_ref::<ContextMenuArea>());
-    assert!(root.is_some(), "the menu area is the root");
-    root.unwrap_or_else(|| unreachable!())
-}
-
 /// Where the button stands in the window.
 fn button_centre(app: &App) -> Point {
     app.root_widget.as_ref().children()[1].get_rect().center()
@@ -69,7 +59,6 @@ fn button_centre(app: &App) -> Point {
 #[cfg(feature = "native")]
 #[test]
 fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
-    let _ = take_open_send_box();
     let mut app = pointed_at_window();
     frames(&mut app);
     let report = Recipient::found(RecipientKind::Feedback, "", "Report a problem")
@@ -82,7 +71,7 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
     );
     frames(&mut app);
     assert!(
-        take_open_send_box().is_none(),
+        !app.window_box.send_to_alone_open(),
         "pointing opens no box of its own: the click does"
     );
 
@@ -106,7 +95,7 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
         ),
     );
     frames(&mut app);
-    let opened = area(&app).menu().send_to();
+    let opened = app.window_box.send_to();
     assert!(opened.is_open(), "the click asked the window for its box");
     assert_eq!(
         opened
@@ -137,7 +126,6 @@ fn pointing_picks_the_thing_under_the_pointer_for_the_box() {
 #[cfg(feature = "native")]
 #[test]
 fn escape_leaves_pointing_without_a_box() {
-    let _ = take_open_send_box();
     let mut app = pointed_at_window();
     frames(&mut app);
     assert!(
@@ -153,7 +141,7 @@ fn escape_leaves_pointing_without_a_box() {
     );
     frames(&mut app);
     assert!(
-        take_open_send_box().is_none(),
+        !app.window_box.send_to_alone_open(),
         "leaving pointing opens nothing"
     );
     assert_ne!(
@@ -164,12 +152,10 @@ fn escape_leaves_pointing_without_a_box() {
 }
 
 /// The box the shell asks for stands up in a window whose own menu is not
-/// open: every app carries one, not only the few that wrap their content in
-/// an area of their own.
+/// open: the window carries it, whatever menus its content has.
 #[cfg(feature = "native")]
 #[test]
-fn the_box_the_shell_asks_for_stands_in_any_window_with_a_menu() {
-    let _ = take_open_send_box();
+fn the_box_the_shell_asks_for_stands_in_any_window() {
     let mut app = pointed_at_window();
     frames(&mut app);
     assert!(
@@ -180,11 +166,7 @@ fn the_box_the_shell_asks_for_stands_in_any_window_with_a_menu() {
     );
     frames(&mut app);
     assert!(
-        area(&app).menu().send_to().is_open(),
-        "the window's own menu carries the box the shell asked for"
-    );
-    assert!(
-        take_open_send_box().is_none(),
-        "it was handed on, not left for the next frame"
+        app.window_box.send_to().is_open(),
+        "the window carries the box the shell asked for"
     );
 }

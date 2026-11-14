@@ -4279,6 +4279,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 || structure
                 || app.layout.layout_dirty
                 || app.root_widget.needs_animation_frame()
+                || app.window_box.needs_animation_frame()
                 || served_widget == Some(true)
             {
                 request_primary_redraw();
@@ -4363,6 +4364,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // A motion started outside the polled tree (a menu its owner draws in
         // its own overlay pass) asks through the motion clock.
         let widget_animation = app.root_widget.needs_animation_frame()
+            || app.window_box.needs_animation_frame()
             || self.slot_bar.needs_frame()
             || crate::motion::frames_wanted(crate::time::now());
         let needs_frame = widget_animation

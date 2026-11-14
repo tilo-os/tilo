@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::presence::capability::PublishesPresence;
-use crate::shared_selection::{SharedSelection, set_send_host_available, take_open_send_box};
+use crate::shared_selection::{SharedSelection, set_send_host_available};
 
 /// A list whose third row is selected.
 struct SelectedRow;
@@ -33,7 +33,6 @@ fn typed(text: &str) -> winit::event::WindowEvent {
 #[cfg(feature = "native")]
 #[test]
 fn a_key_nothing_took_over_a_selection_opens_the_box_with_it() {
-    let _ = take_open_send_box();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(SelectedRow));
     app.init_layout();
     set_send_host_available(false);
@@ -48,20 +47,16 @@ fn a_key_nothing_took_over_a_selection_opens_the_box_with_it() {
     );
     assert!(app.handle_unconsumed_typed_key(&typed("s")));
     set_send_host_available(false);
-    let opened = take_open_send_box().expect("the box was asked for");
-    assert_eq!(
-        opened.draft.as_deref(),
-        Some("s"),
-        "the key begins the message"
-    );
+    assert!(app.window_box.send_to_alone_open(), "the box was asked for");
+    let opened = app.window_box.send_to();
+    assert_eq!(opened.text(), "s", "the key begins the message");
     assert_eq!(
         opened
-            .about
-            .as_ref()
+            .subjects()
+            .first()
             .and_then(|about| about.anchor.place.clone()),
         Some(tilo_actions::SelectionPlace::item("row-3"))
     );
-    assert!(take_open_send_box().is_none(), "asked for once");
 }
 
 /// A report asked of this window is a box about what it picked, addressed to
@@ -71,7 +66,6 @@ fn a_key_nothing_took_over_a_selection_opens_the_box_with_it() {
 fn a_report_asked_of_a_window_opens_the_box_about_what_it_picked() {
     use crate::floating_surface::{FloatingSurfaceHostMessage, Recipient, RecipientKind};
 
-    let _ = take_open_send_box();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(SelectedRow));
     app.init_layout();
     let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
@@ -81,21 +75,22 @@ fn a_report_asked_of_a_window_opens_the_box_about_what_it_picked() {
             pointing: false,
         }])
     );
-    let opened = take_open_send_box().expect("the box was asked for");
+    assert!(app.window_box.send_to_alone_open(), "the box was asked for");
+    let opened = app.window_box.send_to();
     assert_eq!(
         opened
-            .about
-            .as_ref()
+            .subjects()
+            .first()
             .and_then(|about| about.anchor.place.clone()),
         Some(tilo_actions::SelectionPlace::item("row-3")),
         "what the window picked goes with the report"
     );
     assert_eq!(
-        opened.to,
-        vec![destination],
+        opened.recipients(),
+        [destination],
         "and it goes where the shell said"
     );
-    assert_eq!(opened.draft, None, "the words are left to write");
+    assert_eq!(opened.text(), "", "the words are left to write");
 }
 
 #[cfg(feature = "native")]
@@ -108,11 +103,10 @@ fn with_nothing_selected_a_key_asks_nothing() {
             "plain"
         }
     }
-    let _ = take_open_send_box();
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Plain));
     app.init_layout();
     set_send_host_available(true);
     assert!(!app.handle_unconsumed_typed_key(&typed("s")));
     set_send_host_available(false);
-    assert!(take_open_send_box().is_none());
+    assert!(!app.window_box.send_to_alone_open());
 }

@@ -13,12 +13,12 @@ use tilo_session_core::door::Published as _;
 use tilo_session_core::surface::SurfaceHost as _;
 use tilo_surface_host::{AppHost, Placement};
 
-/// A session-hosted app window whose own menu carries the send-to box, drawn on the desktop.
+/// A session-hosted app window with no menu of its own, drawn on the desktop: the window carries
+/// the send-to box itself.
 fn window() -> AppHost {
     let content = ui::widget::Column::new().push(Box::new(ui::widget::Spacer::fixed(200.0)));
-    let area = ui::widget::ContextMenuArea::new(Box::new(content), |_| Vec::new());
     let mut host = AppHost::new(
-        ui::App::new(ui::State::new(), Box::new(area)),
+        ui::App::new(ui::State::new(), Box::new(content)),
         Placement {
             origin: (0, 0),
             size: (480, 480),
@@ -56,17 +56,11 @@ fn the_box_a_send_key_opens_publishes_its_controls() {
         "no box stands yet: the window's own controls are all it shows"
     );
 
-    ui::shared_selection::open_send_box(None, None, Some("Ship the launch notes"), &[]);
-    // The window draws the box on its next frame, and a wake is what brings that frame: the
-    // shell's ask reaches an app as a message, which wakes it the same way.
-    host.pointer_motion(20.0, 20.0);
+    host.app_mut()
+        .open_send_box(None, None, Some("Ship the launch notes"), &[]);
     for _ in 0..4 {
         host.prepare_frame();
     }
-    assert!(
-        ui::shared_selection::take_open_send_box().is_none(),
-        "the box asked for was taken by a frame"
-    );
     let published = controls(&mut host);
     let names: Vec<&str> = published.iter().map(|(name, _)| name.as_str()).collect();
     for wanted in [
@@ -94,13 +88,12 @@ fn send_is_pressed_through_the_published_control() {
         "person:ada",
         "Ada",
     );
-    ui::shared_selection::open_send_box(
+    host.app_mut().open_send_box(
         None,
         None,
         Some("Ship the launch notes"),
         std::slice::from_ref(&adalovelace),
     );
-    host.pointer_motion(20.0, 20.0);
     for _ in 0..4 {
         host.prepare_frame();
     }

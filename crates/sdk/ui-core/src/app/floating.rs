@@ -1259,9 +1259,9 @@ impl App {
                 FloatingSurfaceHostMessage::ShareSelection { to, pointing } => {
                     // The shell asks this window to send from its keyboard,
                     // with no menu to carry a box: it opens alone, about what
-                    // the window has picked, and either to whom the shell
-                    // named — the people here, the one place a report goes —
-                    // or with the person naming whom it goes to. Pointing
+                    // the window has picked, to whom the shell named — the
+                    // people here, the one place a report goes — or else to a
+                    // new agent. Pointing
                     // first: the window lights what is under the pointer and
                     // the box opens about what they click.
                     if *pointing {
@@ -1282,7 +1282,7 @@ impl App {
                     let bounds = about
                         .as_ref()
                         .and_then(crate::shared_selection::SharedSelection::protocol_bounds);
-                    crate::shared_selection::open_send_box(about, bounds, None, to);
+                    self.open_send_box(about, bounds, None, to);
                 }
                 // What the shell says of windows shared live reaches the
                 // app's next sync, where it reads them

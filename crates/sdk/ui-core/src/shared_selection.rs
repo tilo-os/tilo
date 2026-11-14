@@ -352,47 +352,6 @@ thread_local! {
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static FOCUSED: RefCell<Option<SharedSelection>> = const { RefCell::new(None) };
     static BOX_OPEN: Cell<bool> = const { Cell::new(false) };
-    static ALONE: RefCell<Option<OpenSendBox>> = const { RefCell::new(None) };
-}
-
-/// A box a window is asked to open with no menu around it.
-#[derive(Clone, Debug, Default)]
-pub struct OpenSendBox {
-    pub about: Option<SharedSelection>,
-    pub bounds: Option<[f64; 4]>,
-    pub draft: Option<String>,
-    pub to: Vec<Recipient>,
-}
-
-/// Open the box with no menu: what a window's own key does over a selection, and what the
-/// shell's send key or its "report a problem" asks of an app.
-pub fn open_send_box(
-    about: Option<SharedSelection>,
-    bounds: Option<[f64; 4]>,
-    draft: Option<&str>,
-    to: &[Recipient],
-) {
-    ALONE.with(|alone| {
-        *alone.borrow_mut() = Some(OpenSendBox {
-            about,
-            bounds,
-            draft: draft.map(|draft| draft.chars().take(MAX_SEND_CHARS).collect()),
-            to: to.to_vec(),
-        });
-    });
-}
-
-/// A box asked for with no menu since the last call.
-pub fn take_open_send_box() -> Option<OpenSendBox> {
-    ALONE.with(|alone| alone.borrow_mut().take())
-}
-
-/// Whether a box was asked for with no menu and no menu has taken it yet: the frame that draws the
-/// window's menus stands it on the first of them, so what the window shows changes then, with no
-/// input or layout to say so.
-#[must_use]
-pub fn send_box_asked() -> bool {
-    ALONE.with(|alone| alone.borrow().is_some())
 }
 
 /// Send what a box holds: the app runner hands it to the session, which acts on it as the

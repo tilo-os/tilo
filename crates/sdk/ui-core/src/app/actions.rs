@@ -2455,7 +2455,10 @@ impl App {
     /// method all take their keys first, and without a shell that sends
     /// nothing happens.
     #[cfg(feature = "native")]
-    pub(crate) fn handle_unconsumed_typed_key(&self, event: &winit::event::WindowEvent) -> bool {
+    pub(crate) fn handle_unconsumed_typed_key(
+        &mut self,
+        event: &winit::event::WindowEvent,
+    ) -> bool {
         let winit::event::WindowEvent::KeyboardInput {
             event:
                 winit::event::KeyEvent {
@@ -2486,7 +2489,7 @@ impl App {
             return false;
         };
         // A key nothing took over a selection begins a message about it.
-        crate::shared_selection::open_send_box(Some(selection), None, Some(text), &[]);
+        self.open_send_box(Some(selection), None, Some(text), &[]);
         true
     }
 

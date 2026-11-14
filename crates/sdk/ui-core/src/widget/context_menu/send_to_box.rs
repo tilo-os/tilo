@@ -16,50 +16,36 @@ impl ContextMenu {
         &self.send_to
     }
 
-    /// Open the box with no menu around it: a window's own send key over a
-    /// selection, and a shell asking an app to send what it holds, or to
-    /// report a problem, when it names whom the box goes to. `bounds` is where what is sent stands; the box stands
-    /// beside it.
-    fn open_send_to_alone(
+    /// Stand the box with no menu around it — a window's own key over a
+    /// selection, the shell's send keys, a report — on the window's own menu,
+    /// which never opens rows of its own: the window hands it the pointer and
+    /// the keys while it stands ([`Self::send_to_alone_open`]), draws it over
+    /// everything and describes it. It stands beside `anchor`, in `viewport`.
+    pub(crate) fn open_window_box(
         &mut self,
         about: Option<crate::shared_selection::SharedSelection>,
-        bounds: Option<[f64; 4]>,
+        anchor: Option<Rect>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],
+        viewport: Option<Rect>,
     ) {
         self.set_about(about);
+        self.viewport = viewport.or(self.viewport);
         let cursor = self.last_cursor;
-        let anchor = bounds
-            .filter(|bounds| bounds.iter().all(|value| value.is_finite()))
-            .map(|[x0, y0, x1, y1]| Rect::new(x0, y0, x1, y1))
-            .unwrap_or_else(|| Rect::new(cursor.x, cursor.y, cursor.x, cursor.y));
+        let anchor = anchor.unwrap_or_else(|| Rect::new(cursor.x, cursor.y, cursor.x, cursor.y));
         self.alone = Some(anchor);
-        // The box's own opening leaves the keyboard where the person's next
-        // keystroke belongs: in the message when it carries the sentence the
-        // menu took, else in the field that names whom it goes to.
-        self.send_to.open(draft, to);
+        // Whom it goes to is named as it opens — the people or the place the
+        // asker named, else a new agent — so the person's next keystroke is
+        // the message's, after the sentence it may carry.
+        let draft: String = draft
+            .unwrap_or_default()
+            .chars()
+            .take(crate::shared_selection::MAX_SEND_CHARS)
+            .collect();
+        self.send_to.open(Some(&draft), to);
         self.send_to.stand_at_rest();
         self.send_to.place(anchor, self.viewport);
         self.dirty = true;
-    }
-
-    /// Stand the box the window was asked for with no menu around it — the
-    /// shell's send key, a report, the window's own key — on this menu, unless
-    /// it is open: what a host calls in its overlay pass, before it draws the
-    /// menu, when it hands the box the pointer and the keys while it stands
-    /// ([`Self::send_to_alone_open`]) and describes it as its own. The first
-    /// such host the frame draws takes it; a menu no host offers never does.
-    pub fn take_window_send_box(&mut self, presence: &crate::presence::PresenceCtx) {
-        if self.open {
-            return;
-        }
-        let Some(asked) = crate::shared_selection::take_open_send_box() else {
-            return;
-        };
-        if self.viewport.is_none() {
-            self.viewport = presence.viewport.get();
-        }
-        self.open_send_to_alone(asked.about, asked.bounds, asked.draft.as_deref(), &asked.to);
     }
 
     /// Whether the box stands open with no menu around it.

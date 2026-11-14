@@ -348,7 +348,7 @@ enum Opening {
 macro_rules! over_content {
     ($area:ident $(, $mut:tt)?) => {{
         let mut over: Vec<&$($mut)? (dyn Widget + '_)> = Vec::new();
-        if $area.menu.is_showing() {
+        if $area.menu.is_open() {
             over.push(&$($mut)? $area.menu);
         }
         if let Some((picker, _)) = &$($mut)? $area.picker {
@@ -597,7 +597,7 @@ impl ContextMenuArea {
 /// The box a menu opened from the keyboard stands under: the item with the
 /// keyboard, deepest first, so a list answers for its focused row rather
 /// than for itself.
-pub(super) fn keyboard_anchor(widget: &dyn Widget) -> Option<Rect> {
+pub(crate) fn keyboard_anchor(widget: &dyn Widget) -> Option<Rect> {
     let mut found = None;
     widget.for_each_child(&mut |child| {
         if found.is_none() {
@@ -733,12 +733,6 @@ impl super::Decorator for ContextMenuArea {
             *ctx.handled = true;
             return;
         }
-        if !self.menu.is_open() && self.menu.send_to_alone_open() {
-            self.menu.handle_event(event, ctx);
-            if *ctx.handled {
-                return;
-            }
-        }
         if self.menu.is_open() {
             // The menu itself tells the host's replay of the still opening
             // pointer from a real move, so the keyboard keeps its row.
@@ -805,7 +799,7 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_showing() || self.picker.is_some() || self.content.wants_pointer_capture()
+        self.menu.is_open() || self.picker.is_some() || self.content.wants_pointer_capture()
     }
 
     // The menu is a child only while it is open, so it hears the host's
@@ -870,10 +864,7 @@ impl super::Decorator for ContextMenuArea {
         }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        // The menu paints in the overlay pass, over everything, and carries a
-        // box the window was asked for with no menu around it, so it is drawn
-        // even while closed.
-        self.menu.take_window_send_box(presence);
+        // The menu paints in the overlay pass, over everything.
         self.menu
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         if let Some((anchor, pick)) = self.picker_wanted.take() {
@@ -912,10 +903,8 @@ impl super::Decorator for ContextMenuArea {
     /// The menu and the box it carries, and an emoji picker, are placed by the area itself, over
     /// the content, where the window's layout gives them no node: an assistive technology and an
     /// agent reach their controls through the content's node, as a person reaches them by pointer.
-    /// A box standing with no menu around it is placed here too, so the send key's box is reached
-    /// as the menu's rows are.
     fn lays_out_child(&self, child_index: usize) -> bool {
-        self.menu.is_showing() && child_index == self.content.children().len()
+        self.menu.is_open() && child_index == self.content.children().len()
             || self.picker.is_some() && child_index == self.content.children().len() + 1
     }
 

@@ -1092,6 +1092,17 @@ impl App {
                 &[],
             );
         }
+        // The box standing with no menu around it is read over the app, as it is drawn.
+        if self.window_box.send_to_alone_drawn() && self.history.is_none() {
+            let roots: [&dyn Widget; 2] = [self.root_widget.as_ref(), &self.window_box];
+            return crate::accesskit_bridge::build_presentation_with_resources_bound(
+                &roots,
+                &exported.nodes,
+                exported.focus(self.focused_node),
+                scale,
+                &[],
+            );
+        }
         if let Some(history) = &self.history {
             let resources = if history.live_interactive() {
                 self.collect_declared_resources()
@@ -1231,12 +1242,28 @@ impl App {
         self.refresh_control_action_availability();
         // A retained AT id is operable only while the exact target is exported
         // in the current presentation; hidden resources cannot bypass chrome.
-        let drawn = self
+        let (_, node) = self
             .build_a11y_tree_update(1.0)
             .nodes
             .into_iter()
-            .find(|(id, _)| *id == target)
-            .map(|(_, node)| node.bounds())?;
+            .find(|(id, _)| *id == target)?;
+        // The box standing with no menu around it is no widget of the layout: what it names is
+        // pressed on it, as its own keys and pointer reach it.
+        if self.window_box.send_to_alone_open()
+            && let Some(control) = Widget::accessibility(&self.window_box)
+                .and_then(|described| box_control(&described, &node))
+        {
+            if self.window_box.perform_semantic_action(
+                &control,
+                action,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &self.state.root,
+            ) {
+                self.layout.layout_dirty = true;
+            }
+            return None;
+        }
+        let drawn = node.bounds();
         if self.dispatch_resource_a11y_action(target, action) {
             return None;
         }
@@ -1519,11 +1546,9 @@ impl App {
     /// refresh while one is up walks again, and so does the first after it.
     /// A framework History at rest is tracked: what changes it refreshes it
     /// (`refresh_framework_history`), and that invalidates the widgets.
-    /// A send-to box asked for with no menu around it is one until a frame
-    /// stands it on a menu: it appears as the window draws, from the shell's
-    /// ask or the person's key alike, after anything that marks the tree.
+    /// A send-to box standing with no menu around it is one.
     fn semantic_tree_untracked(&self) -> bool {
-        crate::shared_selection::send_box_asked()
+        self.window_box.send_to_alone_drawn()
             || self.close_admission.dialog.is_some()
             || self
                 .history
@@ -1580,6 +1605,22 @@ impl App {
                 self.focused_node,
                 &[],
             );
+        }
+        // The box standing with no menu around it has the pointer and the keys: while it stands,
+        // it is what the window offers, as the palette is.
+        if self.window_box.send_to_alone_drawn() {
+            let delta = self.accessibility.semantic_tree.refresh_bound(
+                &self.window_box,
+                &self.layout.node_map,
+                &self.bindings.semantic_node_names(&self.layout.node_map),
+                self.focused_node,
+                &[],
+            );
+            if !delta.is_empty() {
+                self.accessibility.semantic_tree_revision =
+                    self.accessibility.semantic_tree_revision.wrapping_add(1);
+            }
+            return delta;
         }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
@@ -1754,6 +1795,22 @@ impl App {
         verb: crate::a11y::Action,
         press_unhandled: bool,
     ) -> Result<bool, String> {
+        if self.window_box.send_to_alone_open()
+            && let Some(target) = self
+                .accessibility
+                .semantic_tree
+                .node(id)
+                .and_then(|node| node.semantic_target.clone())
+        {
+            let handled = self.window_box.perform_semantic_action(
+                &target,
+                &verb,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
+                &self.state.root,
+            );
+            self.layout.layout_dirty |= handled;
+            return Ok(handled);
+        }
         let Some((taffy_raw, semantic_target, bounds)) =
             self.accessibility.semantic_tree.node(id).and_then(|n| {
                 n.widget_taffy_id
@@ -1959,3 +2016,15 @@ enum CommitKind {
 #[cfg(test)]
 #[path = "history_sweep_tests.rs"]
 mod history_sweep_tests;
+
+/// What the box standing with no menu around it calls the control `node` describes: the target of
+/// its own control of the same name, which its keys and pointer reach as well.
+fn box_control(described: &crate::a11y::AccessNode, node: &accesskit::Node) -> Option<String> {
+    described.children.iter().find_map(|child| {
+        child
+            .action_target
+            .clone()
+            .filter(|_| child.name.is_some() && child.name.as_deref() == node.label())
+            .or_else(|| box_control(child, node))
+    })
+}

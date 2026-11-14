@@ -387,11 +387,18 @@ impl App {
                 report_point::Taken::Picked(about, bounds) => {
                     let to = pointing.to().to_vec();
                     app.report_pointing = None;
-                    crate::shared_selection::open_send_box(Some(about), bounds, None, &to);
+                    app.open_send_box(Some(about), bounds, None, &to);
                     handled = true;
                     window.request_redraw();
                 }
             }
+        }
+
+        // The box the window stands with no menu around it has the pointer and
+        // the keys before what the app shows, until it sends or goes.
+        if !handled && app.window_box.send_to_alone_open() {
+            handled = app.window_box_event(&event, window.scale_factor());
+            window.request_redraw();
         }
 
         // Runs FIRST so it wins over Tab/arrow handling.
