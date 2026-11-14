@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceSlot,
+    Workspace, WorkspaceId,
 };
 use tilo_desktop_policy::Window;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
@@ -80,7 +80,7 @@ fn salted(seat: &Seat, tree: &DesktopTree) -> DesktopTree {
     tree.active_strip = tree
         .active_strip
         .iter()
-        .map(|(slot, strip)| (*slot, StripId(seat.id(strip.0))))
+        .map(|(workspace_id, strip)| (*workspace_id, StripId(seat.id(strip.0))))
         .collect();
     tree.active_group = tree
         .active_group
@@ -93,22 +93,27 @@ fn salted(seat: &Seat, tree: &DesktopTree) -> DesktopTree {
 /// Leave `tree` as the desk a session on `seat` ends with, its ids numbered as `seat` numbers them
 /// ([`salted`]): the first of `tree`'s workspaces is the one the session opened, the others are
 /// put beside it, each is laid out as `tree` does, and a workspace's layout is written while it is
-/// in front. The slots the desk gave `tree`'s workspaces, in order.
-fn save_desk(seat: &Seat, tree: &DesktopTree) -> Vec<WorkspaceSlot> {
+/// in front. The ids the desk gave `tree`'s workspaces, in order.
+fn save_desk(seat: &Seat, tree: &DesktopTree) -> Vec<WorkspaceId> {
     let tree = salted(seat, tree);
     let mut session = session_keeping(&seat.state, None);
     session.step(Duration::from_millis(1)).expect("step");
     let mut desk = session.handle().read(Clone::clone);
     for laid in tree.workspaces.iter().skip(desk.workspaces.len()) {
-        desk.workspaces.push(Workspace::create(laid.name.clone()));
+        desk.workspaces
+            .push(Workspace::new(WorkspaceId::new(), laid.name.clone()));
     }
-    let slots: Vec<WorkspaceSlot> = desk.workspaces.iter().map(|held| held.slot).collect();
+    let workspace_ids: Vec<WorkspaceId> = desk
+        .workspaces
+        .iter()
+        .map(tilo_desktop_model::Workspace::id)
+        .collect();
     for (index, laid) in tree.workspaces.iter().enumerate() {
         let held = &mut desk.workspaces[index];
         held.name.clone_from(&laid.name);
         held.strips.clone_from(&laid.strips);
-        if let Some(strip) = tree.active_strip.get(&laid.slot) {
-            desk.active_strip.insert(slots[index], *strip);
+        if let Some(strip) = tree.active_strip.get(&laid.id()) {
+            desk.active_strip.insert(workspace_ids[index], *strip);
         }
         for strip in &laid.strips {
             if let Some(group) = tree.active_group.get(&strip.id) {
@@ -121,7 +126,7 @@ fn save_desk(seat: &Seat, tree: &DesktopTree) -> Vec<WorkspaceSlot> {
             continue;
         }
         // A workspace's layout is written while it is in front.
-        desk.active = slots[index];
+        desk.active = workspace_ids[index];
         session.handle().replace_tree(desk);
         until(
             &mut session,
@@ -133,12 +138,12 @@ fn save_desk(seat: &Seat, tree: &DesktopTree) -> Vec<WorkspaceSlot> {
     let front = tree
         .workspaces
         .iter()
-        .position(|held| held.slot == tree.active)
+        .position(|held| held.id() == tree.active)
         .unwrap_or_default();
-    desk.active = slots[front];
+    desk.active = workspace_ids[front];
     session.handle().replace_tree(desk);
     session.step(Duration::from_millis(1)).expect("step");
-    slots
+    workspace_ids
 }
 
 /// Run frames until the desk shows the windows its workspaces' layouts hold.
@@ -176,14 +181,15 @@ fn group(id: u64, tabs: Vec<Tab>, front: u64, width: WindowWidth) -> WindowGroup
 
 /// The one workspace `strips` make up, in front.
 fn on_desk(strips: Vec<Strip>) -> DesktopTree {
-    let mut home = Workspace::new(WorkspaceSlot(1), "Home");
+    let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
     home.strips = strips;
     let mut tree = DesktopTree {
-        active: home.slot,
+        active: home.id(),
         workspaces: vec![home],
         ..DesktopTree::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(1));
     tree.set_active_group(StripId(1), 10);
     tree
 }
@@ -215,7 +221,7 @@ fn wide_desk() -> DesktopTree {
         WindowWidth::Normal,
     )];
 
-    let mut away = Workspace::new(WorkspaceSlot(2), "Away");
+    let mut away = Workspace::new(WorkspaceId::from_u128(2), "Away");
     away.strips = vec![Strip::new(StripId(3), "Later")];
 
     let mut tree = on_desk(vec![writing, reference]);
@@ -374,7 +380,7 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let seat = Seat::in_home(&mut home);
-    let slots = save_desk(&seat, &wide_desk());
+    let workspace_ids = save_desk(&seat, &wide_desk());
 
     // Nothing is asked of any app: this is the shape of the desk coming back.
     let mut session = session_keeping(&seat.state, None);
@@ -396,7 +402,7 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
                     .collect::<Vec<_>>(),
                 home.strips[0].window_groups[1].maximized,
                 tilo_desktop_surface::navigation::active_route(tree).map(|route| route.tab),
-                tree.active_strip.get(&slots[0]).copied(),
+                tree.active_strip.get(&workspace_ids[0]).copied(),
             )
         });
     assert_eq!(workspaces, 2, "the workspace behind came back too");
@@ -777,7 +783,7 @@ fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
 }
 
 fn two_workspaces() -> DesktopTree {
-    let mut away = Workspace::new(WorkspaceSlot(2), "Away");
+    let mut away = Workspace::new(WorkspaceId::from_u128(2), "Away");
     away.strips = vec![Strip::new(StripId(3), "Later")];
     let mut tree = on_desk(vec![Strip::new(StripId(1), "Main")]);
     tree.workspaces.push(away);
@@ -785,7 +791,7 @@ fn two_workspaces() -> DesktopTree {
 }
 
 /// The workspace the tab `id` stands in.
-fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceSlot> {
+fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceId> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
@@ -797,7 +803,7 @@ fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceSlot> {
                         .any(|group| group.tabs.iter().any(|tab| tab.id == id))
                 })
             })
-            .map(|workspace| workspace.slot)
+            .map(tilo_desktop_model::Workspace::id)
     })
 }
 
@@ -844,7 +850,7 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let launcher = recording_launcher(&home, &started, &arguments);
     let seat = Seat::in_home(&mut home);
     let state = seat.state.clone();
-    let slots = save_desk(&seat, &two_workspaces());
+    let workspace_ids = save_desk(&seat, &two_workspaces());
 
     let apps = apps_at(&home, Some(launcher.path().to_owned()));
     let mut session = session_keeping(&state, Some(Rc::clone(&apps)));
@@ -852,14 +858,17 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
     let (away, away_id) = session
         .handle()
         .read(|tree| {
-            let away = tree.workspaces.iter().find(|held| held.slot != slots[0])?;
-            Some((away.slot, away.id().to_string()))
+            let away = tree
+                .workspaces
+                .iter()
+                .find(|held| held.id() != workspace_ids[0])?;
+            Some((away.id(), away.id().to_string()))
         })
         .expect("a workspace to move it to");
 
     session
         .handle()
-        .choose_window_menu(window_tab, &format!("{MOVE_TO_WORKSPACE}:{}", away.0), None)
+        .choose_window_menu(window_tab, &format!("{MOVE_TO_WORKSPACE}:{away}"), None)
         .expect("the person moves the window");
 
     until(&mut session, "the app runs in the other workspace", |_| {
@@ -909,10 +918,10 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     session.step(Duration::from_millis(1)).expect("step");
     // Someone else is in the workspace the person moves the window to: it is another person's, and
     // this device holds no governance of it.
-    let mut away = Workspace::create("Away");
+    let mut away = Workspace::new(WorkspaceId::new(), "Away");
     away.set_owner("bb".repeat(32));
     let away_id = away.id().to_string();
-    let slots = [session.handle().read(|tree| tree.active), away.slot];
+    let workspace_ids = [session.handle().read(|tree| tree.active), away.id()];
     let mut desk = session.handle().read(Clone::clone);
     desk.workspaces.push(away);
     session.handle().replace_tree(desk);
@@ -922,7 +931,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
         .handle()
         .choose_window_menu(
             window_tab,
-            &format!("{MOVE_TO_WORKSPACE}:{}", slots[1].0),
+            &format!("{MOVE_TO_WORKSPACE}:{}", workspace_ids[1]),
             None,
         )
         .expect("the person moves the window");
@@ -958,7 +967,7 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
     );
     assert_eq!(
         workspace_of(&session, window_tab),
-        Some(slots[0]),
+        Some(workspace_ids[0]),
         "nothing moves until they answer"
     );
     assert_eq!(starts(&started), 1, "and nothing starts");
@@ -970,5 +979,5 @@ fn moving_a_window_into_a_shared_workspace_asks_first() {
         starts(&started) == 2
     });
     assert_eq!(handed(&arguments, "--workspace-id"), away_id);
-    assert_eq!(workspace_of(&session, window_tab), Some(slots[1]));
+    assert_eq!(workspace_of(&session, window_tab), Some(workspace_ids[1]));
 }

@@ -6,8 +6,8 @@
 //! its own under this device's state ([`FILE`]). Joining redeems the invitation its
 //! door answered with ([`tilo_peer_state::owner::enroll::prepare_and_complete`]),
 //! and a late joiner reads the whole history, not only what is recorded from now
-//! on. The engine keeps the id each workspace on the desk is held under
-//! ([`Slots`]), because an enrollment installs into the workspace made for it.
+//! on. The engine keeps which workspaces are on the desk ([`Shown`]), because an enrollment
+//! installs into the workspace made for it.
 
 // The page's session constructs no engine: it wires its workspaces with its own host, so only a
 // desktop's build reads the state held here.
@@ -18,14 +18,14 @@
         reason = "the page's session wires its workspaces with its own host"
     )
 )]
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use tilo_clock::time::SystemTime;
 
 use tilo_action_policy::WorkspacePolicy;
-use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::WorkspaceId;
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -83,56 +83,32 @@ pub struct Issued {
     pub expires_at_ns: u64,
 }
 
-/// The workspace id each workspace on the desk is held under, as the engine's record names them and
-/// the desk names its own.
+/// The workspaces on this device's desk: an enrollment installs into the workspace made for it.
 #[derive(Default)]
-pub struct Slots(std::sync::Mutex<BTreeMap<WorkspaceSlot, WorkspaceId>>);
+pub struct Shown(std::sync::Mutex<BTreeSet<WorkspaceId>>);
 
-impl std::fmt::Debug for Slots {
+impl std::fmt::Debug for Shown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_map().entries(self.0.lock_recover().iter()).finish()
-    }
-}
-
-impl Slots {
-    fn of(workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>) -> Self {
-        Self(std::sync::Mutex::new(workspaces.into_iter().collect()))
+        f.debug_set().entries(self.0.lock_recover().iter()).finish()
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl FileHost for Slots {
-    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
-        self.0.lock_recover().get(&slot).copied()
+impl FileHost for Shown {
+    fn shows(&self, workspace: WorkspaceId) -> bool {
+        self.0.lock_recover().contains(&workspace)
     }
 
-    /// Bind the workspace an enrollment installs into to its workspace id before the record reaches
-    /// the disk: a publication refused here installs nothing.
+    /// A workspace this device lets go of leaves its desk with the record that drops it.
     fn publish(
         &self,
         _next: &tilo_peer_state::owner::NativeAuthorityStorage,
-        change: Change<'_>,
+        change: Change,
         write: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
-        let bound = match change {
-            Change::Workspace {
-                workspace,
-                into: Some(target),
-                ..
-            } => Some((target.workspace, workspace)),
-            _ => None,
-        };
-        if let Some((workspace, held)) = bound {
-            self.0.lock_recover().insert(workspace, held);
-        }
         let written = write();
-        if written.is_err()
-            && let Some((workspace, _)) = bound
-        {
-            self.0.lock_recover().remove(&workspace);
-        }
         if let Change::Released { workspace } = change {
-            self.0.lock_recover().retain(|_, held| *held != workspace);
+            self.0.lock_recover().remove(&workspace);
         }
         written
     }
@@ -195,7 +171,7 @@ impl Admission {
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
     owner: NativeWorkspaceOwner,
-    slots: Arc<Slots>,
+    shown: Arc<Shown>,
     identity: HostIdentity,
     /// Where the workspaces' channels find this device's keys, once the channel service is running:
     /// the session opens the workspaces before it opens the service, and every reader of a sealed
@@ -374,7 +350,7 @@ impl Engine {
     #[must_use]
     pub fn holding(
         owner: NativeWorkspaceOwner,
-        slots: Arc<Slots>,
+        shown: Arc<Shown>,
         identity: HostIdentity,
         custody: Arc<dyn Custody>,
     ) -> Self {
@@ -382,7 +358,7 @@ impl Engine {
         owner.keep_sealed_histories(Arc::new(HistoryKeys(keys.clone())));
         Self {
             owner,
-            slots,
+            shown,
             identity,
             keys,
             custody,
@@ -409,7 +385,7 @@ impl Engine {
     pub fn open(
         identity: HostIdentity,
         state: Option<&Path>,
-        workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>,
+        workspaces: impl IntoIterator<Item = WorkspaceId>,
         custody: Arc<dyn Custody>,
     ) -> Result<Self, String> {
         let state = state.ok_or("this session keeps no state, so it holds no workspace")?;
@@ -417,12 +393,14 @@ impl Engine {
         if let Some(directory) = path.parent() {
             std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
         }
-        let slots = Arc::new(Slots::of(workspaces));
+        let shown = Arc::new(Shown(std::sync::Mutex::new(
+            workspaces.into_iter().collect(),
+        )));
         let owner = open_file_with(
             &owner_file_of(&path),
-            Arc::clone(&slots) as Arc<dyn FileHost>,
+            Arc::clone(&shown) as Arc<dyn FileHost>,
         )?;
-        let mut engine = Self::holding(owner.clone(), slots, identity, custody);
+        let mut engine = Self::holding(owner.clone(), shown, identity, custody);
         // What the workspaces' other devices reach this one at, keeping the frames each brings: a
         // device that holds a workspace is a store device of it.
         engine.directed = match tilo_peer_state::store::Store::open(frames_path(state), FRAMES_KEPT)
@@ -445,7 +423,7 @@ impl Engine {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn for_this_device(
         state: Option<&Path>,
-        workspaces: impl IntoIterator<Item = (WorkspaceSlot, WorkspaceId)>,
+        workspaces: impl IntoIterator<Item = WorkspaceId>,
         custody: Arc<dyn Custody>,
     ) -> Result<Self, String> {
         let identity = identity::device_identity()
@@ -1648,7 +1626,7 @@ impl Engine {
         .map_err(|error| error.to_string())
     }
 
-    /// Found `workspace` — made on this desk in `slot` , under `name` — when this device made it
+    /// Found `workspace` — made on this desk under `name` — when this device made it
     /// and nothing here holds it yet: who is in it, who may invite and what its apps record become
     /// the workspace's own, hosted here. `endpoint` is where other devices reach this one, which
     /// the workspace's record keeps as its host's address. A workspace this device may not own, or
@@ -1656,7 +1634,6 @@ impl Engine {
     #[cfg(target_os = "linux")]
     pub async fn found(
         &self,
-        slot: WorkspaceSlot,
         workspace: WorkspaceId,
         name: &str,
         endpoint: Option<&iroh_base::EndpointAddr>,
@@ -1667,7 +1644,7 @@ impl Engine {
         {
             return;
         }
-        self.found_here(slot, workspace, name, endpoint).await;
+        self.found_here(workspace, name, endpoint).await;
         self.founding.lock_recover().remove(&workspace);
     }
 
@@ -1675,7 +1652,6 @@ impl Engine {
     #[cfg(target_os = "linux")]
     async fn found_here(
         &self,
-        slot: WorkspaceSlot,
         workspace: WorkspaceId,
         name: &str,
         endpoint: Option<&iroh_base::EndpointAddr>,
@@ -1710,7 +1686,7 @@ impl Engine {
             tilo_clock::wall(),
         );
         match founded.await {
-            Ok(_) => self.bind(slot, workspace),
+            Ok(_) => self.bind(workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
                 self.unfounded.lock_recover().insert(workspace);
@@ -1782,16 +1758,16 @@ impl Engine {
         })
     }
 
-    /// Name the workspace a join is installing into by the workspace id it holds: an enrollment
-    /// only installs into the workspace made for it, and says so before the host is asked.
-    pub fn bind(&self, workspace: WorkspaceSlot, workspace_id: WorkspaceId) {
-        self.slots.0.lock_recover().insert(workspace, workspace_id);
+    /// Put the workspace a join is installing into on this device's desk: an enrollment only
+    /// installs into the workspace made for it, and says so before the host is asked.
+    pub fn bind(&self, workspace: WorkspaceId) {
+        self.shown.0.lock_recover().insert(workspace);
     }
 
     /// Let go of a workspace a join did not install into, so this device keeps nothing it does not
     /// hold.
-    pub fn unbind(&self, workspace: WorkspaceSlot) {
-        self.slots.0.lock_recover().remove(&workspace);
+    pub fn unbind(&self, workspace: WorkspaceId) {
+        self.shown.0.lock_recover().remove(&workspace);
     }
 }
 
@@ -2001,11 +1977,10 @@ mod tests {
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        let slot = WorkspaceSlot(7);
 
-        pollster::block_on(engine.found(slot, workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
         // Again, as every pass over the desk does: one workspace, still the one the desk made.
-        pollster::block_on(engine.found(slot, workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
 
         assert!(
             engine.holds(workspace),
@@ -2033,7 +2008,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
 
         let hint = engine
             .owner
@@ -2060,7 +2035,7 @@ mod tests {
             .expect("a device endpoint");
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
         let named = || {
             engine
                 .owner
@@ -2109,7 +2084,7 @@ mod tests {
         let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
 
         let hints = engine.host_hints();
         assert_eq!(hints.len(), 1, "one hint for the one workspace held");
@@ -2128,7 +2103,7 @@ mod tests {
         let (identity, _) = identity(DeviceCapabilities::member());
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", None));
+        pollster::block_on(engine.found(workspace, "Desk", None));
 
         assert!(
             engine.holds(workspace),
@@ -2153,7 +2128,7 @@ mod tests {
         let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
 
         assert!(
             engine.may_delete(workspace),
@@ -2192,7 +2167,7 @@ mod tests {
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+        pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));
@@ -2218,7 +2193,7 @@ mod tests {
         .expect("the group's keys");
         {
             let engine = engine(state.path(), laptop);
-            pollster::block_on(engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at)));
+            pollster::block_on(engine.found(workspace, "Desk", Some(&at)));
             engine.hand_keys(workspace, keys.clone());
             pollster::block_on(engine.write_record(
                 workspace,

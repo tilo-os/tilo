@@ -463,7 +463,8 @@ mod tests {
     #[test]
     fn the_shared_desktop_names_its_tabs_records() {
         use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, Workspace};
-        let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Workspace");
+        let mut workspace =
+            Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Workspace");
         let mut strip = Strip::new(StripId(2), "Main");
         strip.window_groups.push(WindowGroup {
             id: 3,

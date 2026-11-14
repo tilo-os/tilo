@@ -1770,11 +1770,7 @@ fn write_windows(
     windows: &[tilo_desktop_model::Strip],
 ) {
     let identity = tilo_desktop_model::WorkspaceId::parse(workspace).unwrap();
-    let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-        tilo_desktop_model::WorkspaceSlot::of_workspace(identity),
-        identity,
-        "Room",
-    );
+    let mut workspace = tilo_desktop_model::Workspace::new(identity, "Room");
     if let Some(held) = tilo_desktop_model::shared_record::read(&*doc, None) {
         workspace.strips = held
             .tree

@@ -7,7 +7,7 @@ use std::sync::Mutex;
 
 use super::*;
 use crate::services::HostServices;
-use crate::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Grantee, Grants as _, KindSet, Role, WorkspaceId, WorkspaceTree};
 
 fn owner_id() -> String {
     "a1".repeat(32)
@@ -104,7 +104,7 @@ struct Fixture {
 /// Notes, and agent `porter` that may upload content to the workspace.
 fn fixture() -> Fixture {
     let home = tempfile::tempdir().unwrap();
-    let mut workspace = Workspace::new(WorkspaceSlot(61), "Content puts");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(61), "Content puts");
     workspace.set_owner(owner_id());
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);

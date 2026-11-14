@@ -73,7 +73,7 @@ impl Desk {
         }
         // A second workspace with a strip of its own, so a switch one level out has somewhere to
         // go.
-        let mut elsewhere = Workspace::create("Elsewhere");
+        let mut elsewhere = Workspace::new(WorkspaceId::new(), "Elsewhere");
         let elsewhere_strip = tilo_desktop_model::Strip {
             id: StripId(minter.mint()),
             name: "Main".into(),
@@ -110,7 +110,7 @@ impl Desk {
     fn go_to(&mut self, strip: StripId, source: ui::tokens::MotionSource) {
         let workspace = self
             .handle
-            .read(|tree| tree.active_workspace().map(|w| w.slot.0.to_string()))
+            .read(|tree| tree.active_workspace().map(|w| w.id().to_string()))
             .expect("a workspace");
         ui::motion::note_source(source);
         self.handle
@@ -325,11 +325,7 @@ fn a_workspace_switch_is_a_whole_view_change() {
     let mut desk = Desk::new();
     let workspace = desk
         .handle
-        .read(|tree| {
-            tree.workspaces
-                .get(1)
-                .map(|w| (w.slot.0.to_string(), w.id()))
-        })
+        .read(|tree| tree.workspaces.get(1).map(|w| (w.id().to_string(), w.id())))
         .expect("a second workspace");
     ui::motion::note_source(ui::tokens::MotionSource::Pointer);
     desk.handle

@@ -5,7 +5,6 @@ use tilo_desktop_model::{DesktopTree, GroupId, IdMinter, StripId, Tab, TabId, Wo
 /// Note every id `tree` holds, so the desk never mints one of them again.
 pub(super) fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
     for workspace in &tree.workspaces {
-        minter.observe(workspace.slot.0);
         for strip in &workspace.strips {
             minter.observe(strip.id.0);
             for group in &strip.window_groups {

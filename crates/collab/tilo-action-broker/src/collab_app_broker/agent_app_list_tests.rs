@@ -5,7 +5,7 @@
 
 use super::super::{AppBrokerState, BrokerChannels, FanoutState, PeerPublisher};
 use crate::test_support::{
-    Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
+    Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceId, WorkspaceTree,
 };
 use std::sync::{Arc, Mutex};
 use tilo_actions::remote::{
@@ -61,7 +61,7 @@ fn turn_caller(agent: &str, person: &str, workspace: &str) -> Caller {
 /// A workspace owned by a person, whose agent `scribe` may not open Sheets:
 /// the bound its record keeps, as the document holds it.
 fn workspace() -> Workspace {
-    let mut workspace = Workspace::new(WorkspaceSlot(14), "Home");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(14), "Home");
     workspace.set_owner("owner");
     workspace.deny(
         Grantee::agent("scribe"),
@@ -219,7 +219,7 @@ tilo_test_env::scenario! {
         assert!(why.contains("no longer a member"), "{why}");
 
         // The workspace it was admitted to is gone from this device.
-        let elsewhere = Workspace::new(WorkspaceSlot(15), "Elsewhere");
+        let elsewhere = Workspace::new(WorkspaceId::from_u128(15), "Elsewhere");
         let gone = turn_caller("scribe", "owner", &elsewhere.id().to_string());
         let why = reason(publishers(&state, &gone));
         assert!(why.contains("no longer on this device"), "{why}");

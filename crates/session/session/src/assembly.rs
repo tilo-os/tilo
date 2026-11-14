@@ -254,7 +254,7 @@ pub(crate) struct Shared {
     /// The question deleting a workspace asks, and the workspace it is about.
     #[cfg(target_os = "linux")]
     pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceSeat>,
-    pub(crate) delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceSlot>>,
+    pub(crate) delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceId>>,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     #[cfg(target_os = "linux")]
@@ -472,7 +472,7 @@ pub struct Session {
     pub(crate) first_frame: bool,
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
-    pub(crate) active_workspace: Option<u64>,
+    pub(crate) active_workspace: Option<tilo_desktop_model::WorkspaceId>,
     /// The workspace in front as the login's own programs read it, which
     /// they join ([`crate::published_workspace`]).
     #[cfg(target_os = "linux")]

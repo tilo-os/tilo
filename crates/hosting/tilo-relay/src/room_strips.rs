@@ -7,7 +7,7 @@
 //! is kept.
 
 use tilo_desktop_model::{
-    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, WorkspaceSlot, shared_record,
+    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, shared_record,
 };
 
 /// The workspace record members' pages keep the shared desktop in.
@@ -45,8 +45,8 @@ pub(crate) fn settle_strips(
         // The desktop's workspace is the workspace itself, by its id, as every member's desk is.
         let identity = WorkspaceId::parse(workspace)
             .ok_or_else(|| format!("{workspace:?} is not a workspace id"))?;
-        let workspace = Workspace::in_workspace(WorkspaceSlot(minter.mint()), identity, shown);
-        tree.active = workspace.slot;
+        let workspace = Workspace::new(identity, shown);
+        tree.active = workspace.id();
         tree.workspaces.push(workspace);
     }
     let Some(workspace) = tree.workspaces.first_mut() else {
@@ -84,7 +84,6 @@ impl Minter {
         let salt = tilo_desktop_model::ids::device_salt(u16::from_le_bytes([a, b]));
         let mut taken = std::collections::HashSet::new();
         for workspace in &tree.workspaces {
-            taken.insert(workspace.slot.0);
             for strip in &workspace.strips {
                 taken.insert(strip.id.0);
                 for group in &strip.window_groups {
@@ -146,7 +145,7 @@ mod tests {
             let tree: DesktopTree = desktop(&doc).tree;
             assert_eq!(tree.workspaces[0].name, "Hangout");
             assert_eq!(tree.workspaces[0].id().to_string(), ROOM);
-            assert_eq!(tree.active, tree.workspaces[0].slot);
+            assert_eq!(tree.active, tree.workspaces[0].id());
         }
 
         phase settling_adds_only_what_is_missing;

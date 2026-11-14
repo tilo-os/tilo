@@ -49,7 +49,7 @@ struct PersistedNotification {
     severity: PersistedSeverity,
     app_name: Option<String>,
     app_id: Option<String>,
-    source_workspace: Option<u64>,
+    source_workspace: Option<tilo_desktop_model::WorkspaceId>,
     show_preview: bool,
     posted_unix_ms: u64,
     /// The person has not seen it yet: the bell counts it in the next session too.
@@ -169,7 +169,7 @@ mod tests {
         let mut notification = Notification::new("Timer finished", "Tea is ready");
         notification.app_id = Some("so.tilo.clocks".into());
         notification.app_name = Some("Clocks".into());
-        notification.source_workspace = Some(7);
+        notification.source_workspace = Some(tilo_desktop_model::WorkspaceId::from_u128(7));
         notification.actions = vec![("default".into(), "Open".into())];
         let bytes = encode_history(&[notification], |_| true, wall, now).unwrap();
         let restored = decode_history(&bytes, wall + Duration::from_secs(30), now).unwrap();
@@ -179,7 +179,10 @@ mod tests {
         assert_eq!(notice.title, "Timer finished");
         assert_eq!(notice.body, "Tea is ready");
         assert_eq!(notice.app_id.as_deref(), Some("so.tilo.clocks"));
-        assert_eq!(notice.source_workspace, Some(7));
+        assert_eq!(
+            notice.source_workspace,
+            Some(tilo_desktop_model::WorkspaceId::from_u128(7))
+        );
         assert_eq!(
             now.duration_since(notice.created_at),
             Duration::from_secs(30)

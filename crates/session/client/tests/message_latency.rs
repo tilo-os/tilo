@@ -22,7 +22,7 @@ use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
-use tilo_desktop_model::{StripId, WindowWidth, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{StripId, WindowWidth, Workspace};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session_client::{Cmd, Link, Outbox};
 
@@ -295,19 +295,21 @@ fn window_opened(
     let heads = doc.get_heads();
     let mut desk = tilo_desktop_model::shared_record::read(&doc, None).unwrap_or_default();
     let identity = tilo_desktop_model::WorkspaceId::parse(crate::support::WORKSPACE).unwrap();
-    let slot = WorkspaceSlot::of_workspace(identity);
-    if !desk.tree.workspaces.iter().any(|held| held.slot == slot) {
-        desk.tree.workspaces.push(Workspace::in_workspace(
-            slot,
-            identity,
-            "Workspace".to_owned(),
-        ));
+    if !desk
+        .tree
+        .workspaces
+        .iter()
+        .any(|held| held.id() == identity)
+    {
+        desk.tree
+            .workspaces
+            .push(Workspace::new(identity, "Workspace".to_owned()));
     }
     let workspace = desk
         .tree
         .workspaces
         .iter_mut()
-        .find(|held| held.slot == slot)
+        .find(|held| held.id() == identity)
         .expect("the workspace the window opens in");
     if workspace.strips.is_empty() {
         workspace.strips.push(Strip::new(STRIP, "Workspace"));

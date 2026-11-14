@@ -677,9 +677,9 @@ impl Desk {
                 .workspaces
                 .iter()
                 .map(|workspace| shell::WorkspaceReading {
-                    key: workspace.slot.0.to_string(),
+                    key: workspace.id().to_string(),
                     name: tilo_desktop_surface::names::workspace(&workspace.name),
-                    current: workspace.slot == tree.active,
+                    current: workspace.id() == tree.active,
                 })
                 .collect(),
             here: self.surfaces.overlays.here(),
@@ -763,7 +763,7 @@ impl Desk {
                 Some(key) => tree
                     .workspaces
                     .iter()
-                    .find(|candidate| candidate.slot.0.to_string() == key),
+                    .find(|candidate| candidate.id().to_string() == key),
                 None => tree.active_workspace(),
             };
             workspace.map(Workspace::id)
@@ -933,14 +933,14 @@ impl Desk {
                 .handle
                 .read(|tree| {
                     tree.active_workspace()
-                        .map(|active| active.slot.0.to_string())
+                        .map(|active| active.id().to_string())
                 })
                 .ok_or_else(|| DoorError::Failed("no workspace is in front".to_owned()))?,
         };
         let known = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .any(|candidate| candidate.slot.0.to_string() == workspace)
+                .any(|candidate| candidate.id().to_string() == workspace)
         });
         if !known {
             return Err(DoorError::InvalidArguments(format!(
@@ -949,7 +949,7 @@ impl Desk {
         }
         let active = self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|active| active.slot.0.to_string())
+                .map(|active| active.id().to_string())
         });
         if active.as_deref() != Some(workspace.as_str()) {
             self.handle
@@ -1160,7 +1160,7 @@ impl Service for Desk {
         let known = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .any(|candidate| candidate.slot.0.to_string() == workspace)
+                .any(|candidate| candidate.id().to_string() == workspace)
         });
         if !known {
             return Err(DoorError::InvalidArguments(format!(

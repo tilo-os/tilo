@@ -2655,7 +2655,7 @@ mod tests {
     #[test]
     fn a_window_row_says_the_window_and_where_its_frame_draws_it() {
         use tilo_desktop_model::{
-            DesktopTree, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceSlot,
+            DesktopTree, Strip, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
             ids::StripId, width::WindowWidth,
         };
         let tab = |id: u64, title: &str, tile: TileContent| Tab {
@@ -2693,14 +2693,15 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         }];
-        let mut home = Workspace::new(WorkspaceSlot(1), "Home");
+        let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
         home.strips = vec![strip];
         let mut tree = DesktopTree {
-            active: home.slot,
+            active: home.id(),
             workspaces: vec![home],
             ..DesktopTree::default()
         };
-        tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
+        tree.active_strip
+            .insert(WorkspaceId::from_u128(1), StripId(1));
         tree.set_active_group(StripId(1), 10);
         // The frame draws the one window it has mapped; the other tab is an app to open again, with
         // no window of its own yet.
@@ -2726,7 +2727,7 @@ mod tests {
         let dump = |locked: bool| {
             json!({"state": {
                 "workspace_tree": {"workspaces": [{"name": "Work"}]},
-                "held_workspaces": [{"workspace": 1, "room": "room-1"}],
+                "held_workspaces": [{"workspace": "00000000-0000-0000-0000-000000000001"}],
                 "chrome": {
                     "session_locked": locked,
                     "in_transition": false,

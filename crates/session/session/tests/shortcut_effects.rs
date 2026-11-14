@@ -24,7 +24,7 @@ const HOST_SEARCH: &str = "tilo.host:search";
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    WorkspaceId,
 };
 use tilo_session::shell::state::WINDOW_MENU;
 use tilo_session::{Options, Session, SessionConfig, quick_settings};
@@ -98,18 +98,19 @@ fn desk_tree() -> DesktopTree {
         maximized: false,
         focus_history: Vec::new(),
     };
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
         window_groups: vec![first, second],
     }];
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree.active_group.insert(StripId(2), 3);
     tree
 }

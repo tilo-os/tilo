@@ -19,7 +19,7 @@ use key_group::{KeyGroup, MemberKey, VaultKey};
 use runtime_collab::native_media::{Command, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_network_actor::HostIdentity;
 use tilo_workspace_keys::{
     GovernanceTransport, InboundGovernance, KeyAccess, KeyDirectory, KeyProvider, KeysConfig,
@@ -80,14 +80,10 @@ fn target() -> CallTarget {
 /// A desk showing one workspace, as this device holds it.
 fn desk_tree() -> DesktopTree {
     let workspace_id = workspace_id();
-    let workspace = Workspace::in_workspace(
-        WorkspaceSlot::of_workspace(workspace_id),
-        workspace_id,
-        "Desk",
-    );
+    let workspace = Workspace::new(workspace_id, "Desk");
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.slot,
+        active: workspace.id(),
         ..DesktopTree::default()
     }
 }

@@ -1411,7 +1411,7 @@ pub(crate) struct SessionDoors {
     tabs: std::sync::Mutex<HashMap<u64, String>>,
     /// The desk's workspaces, as of the loop's last pass: each one's decimal id, name and the id it
     /// is shared under, by which an action names a workspace.
-    workspaces: std::sync::Mutex<Vec<[String; 3]>>,
+    workspaces: std::sync::Mutex<Vec<[String; 2]>>,
     /// The runs the broker reads, which an admitted agent's connection starts its own run among
     /// ([`DoorRun`]): `None` on a session that hands the broker none.
     runs: std::sync::OnceLock<Arc<crate::conversations::Runs>>,
@@ -1585,9 +1585,8 @@ impl SessionDoors {
                 .iter()
                 .map(|workspace| {
                     [
-                        workspace.slot.0.to_string(),
-                        tilo_desktop_surface::names::workspace(&workspace.name),
                         workspace.id().to_string(),
+                        tilo_desktop_surface::names::workspace(&workspace.name),
                     ]
                 })
                 .collect()

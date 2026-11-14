@@ -40,7 +40,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
             .iter()
             .map(|workspace| {
                 (
-                    workspace.slot.0.to_string(),
+                    workspace.id().to_string(),
                     workspace.name.clone(),
                     workspace.id().to_string(),
                 )
@@ -106,9 +106,7 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
         let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace");
         assert_eq!(
             id,
-            tilo_desktop_model::WorkspaceSlot::of_workspace(workspace)
-                .0
-                .to_string(),
+            workspace.to_string(),
             "the workspace the desk starts from is known by that id"
         );
         assert!(
@@ -395,7 +393,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
                 .iter()
                 .map(|strip| strip.name.clone())
                 .collect::<Vec<_>>(),
-            tree.active == made.slot,
+            tree.active == made.id(),
             made.owner().cloned(),
         )
     });
@@ -527,7 +525,8 @@ fn a_workspace_that_is_someone_elses_is_not_branched() {
     });
     session.step(Duration::from_millis(1)).expect("a frame");
     let mut tree = session.handle().read(Clone::clone);
-    let mut theirs = tilo_desktop_model::Workspace::create("Theirs");
+    let mut theirs =
+        tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Theirs");
     theirs.set_owner("someone-else");
     tree.workspaces.push(theirs);
     session.handle().replace_tree(tree);

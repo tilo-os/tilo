@@ -24,7 +24,7 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
@@ -253,12 +253,11 @@ fn principal(root: &[u8; 32]) -> String {
 /// A desk showing the workspace, known by its id, owned by the person.
 fn desk(keys: &Keys) -> DesktopTree {
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let slot = WorkspaceSlot::of_workspace(workspace);
-    let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Desk");
     workspace.set_owner(principal(&keys.root));
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.slot,
+        active: workspace.id(),
         ..DesktopTree::default()
     }
 }

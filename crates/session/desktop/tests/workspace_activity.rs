@@ -2,7 +2,7 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
 use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 
 tilo_test_env::scenario! {
     fn workspace_activity_reads_the_admitted_workspace_document;
@@ -11,7 +11,7 @@ tilo_test_env::scenario! {
     // Removing causal replay or writing to the admitted document while reviewing must fail this
     // regression. The root schema is a real admitted workspace document.
     {
-        let workspace = Workspace::new(WorkspaceSlot(1), "Design");
+        let workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
             .unwrap();
@@ -21,7 +21,7 @@ tilo_test_env::scenario! {
         doc.commit();
         let mut tree = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let before = tree.doc.get_heads();
         let mut pane = WorkspaceActivityPane::new();
-        pane.begin_view(tree.active.raw());
+        pane.begin_view(tree.active);
         pane.refresh(&mut tree);
         assert!(!pane.entries().is_empty(), "the rename is a feed change");
         // Reading the replay, like every review, is a read of the document.
@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
         assert_eq!(filtered.total, 0, "a filter hides the rows nobody names");
         let all = pane.serve_feed(&wire::FeedQuery::default(), &tree);
         assert!(all.total > 0, "the unfiltered history lists the rename");
-        pane.finish_view(tree.active.raw());
+        pane.finish_view(tree.active);
         assert_eq!(tree.doc.get_heads(), before);
     }
 
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
     // shown as a row's words, must fail this regression.
     {
         use automerge::{ObjType, transaction::CommitOptions};
-        let workspace = Workspace::new(WorkspaceSlot(3), "Reading group");
+        let workspace = Workspace::new(WorkspaceId::from_u128(3), "Reading group");
         let mut doc = AutoCommit::new();
         let stamp = |doc: &mut AutoCommit, at: i64| {
             doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
@@ -112,7 +112,7 @@ tilo_test_env::scenario! {
         stamp(&mut doc, 4);
         let mut tree = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -158,14 +158,14 @@ tilo_test_env::scenario! {
     {
         use tilo_desktop::activity::*;
         use ui::record::{RecordCheckout, RecordId, RecordKind};
-        let workspace = Workspace::new(WorkspaceSlot(9), "Design");
+        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
             .unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -240,14 +240,14 @@ tilo_test_env::scenario! {
         use tilo_actions::{ActionContext, ChangeKind};
         use tilo_desktop::activity::*;
         use ui::record::{RecordCheckout, RecordId, RecordKind};
-        let workspace = Workspace::new(WorkspaceSlot(9), "Design");
+        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
             .unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -323,14 +323,14 @@ tilo_test_env::scenario! {
     {
         use tilo_desktop::activity::*;
         use ui::record::{RecordCheckout, RecordId, RecordKind};
-        let workspace = Workspace::new(WorkspaceSlot(9), "Design");
+        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Design");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, WORKSPACE_ID_KEY, workspace.id().to_string())
             .unwrap();
         doc.commit();
         let mut tree = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -378,7 +378,7 @@ tilo_test_env::scenario! {
         use automerge::transaction::CommitOptions;
         use tilo_desktop_model::shared_record::device;
         use tilo_desktop_model::{Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
-        let workspace = Workspace::new(WorkspaceSlot(4), "Planning");
+        let workspace = Workspace::new(WorkspaceId::from_u128(4), "Planning");
         let mut doc = AutoCommit::new();
         let stamp = |doc: &mut AutoCommit, at: i64| {
             doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
@@ -388,7 +388,7 @@ tilo_test_env::scenario! {
         stamp(&mut doc, 0);
         doc.put(ROOT, "name", "Planning").unwrap();
         // Then a device lays the workspace out in its layout record, a window at a time.
-        let mut layout = Workspace::in_workspace(workspace.slot, workspace.id(), "Planning");
+        let mut layout = Workspace::new(workspace.id(), "Planning");
         let mut strip = Strip::new(StripId::from((1 << 48) | 3), "Planning");
         for (at, group, tab, title) in [
             (1, (1 << 48) | 1, (1 << 48) | 2, "Notes"),
@@ -430,7 +430,7 @@ tilo_test_env::scenario! {
         }
         let mut tree = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -438,7 +438,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let mut pane = WorkspaceActivityPane::new();
-        pane.begin_view(tree.active.raw());
+        pane.begin_view(tree.active);
         pane.refresh(&mut tree);
         let replay = pane.serve_replay();
         let first = replay

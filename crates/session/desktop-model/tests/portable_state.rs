@@ -2,7 +2,7 @@
 use serde_json::json;
 use tilo_desktop_model::DropTarget;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
-use tilo_desktop_model::{AppKind, DesktopTree, IdMinter, StripId, WindowWidth, WorkspaceSlot};
+use tilo_desktop_model::{AppKind, DesktopTree, IdMinter, StripId, WindowWidth, WorkspaceId};
 
 fn gap(gap_index: usize) -> DropTarget {
     DropTarget::GroupGap { gap_index }
@@ -15,7 +15,7 @@ fn persisted_tree() -> DesktopTree {
     serde_json::from_value(json!({
         "schema_version": 1,
         "workspaces": [{
-            "id": 10, "room": "6f1c2d9e-4b3a-4e8f-9a7b-1c2d3e4f5a6b", "name": "Research", "strips": [{
+            "id": "00000000-0000-0000-0000-00000000000a", "name": "Research", "strips": [{
                 "id": 11, "name": "Main", "window_groups": [{
                     "id": 12, "active_tab": 9_007_199_254_741_001_u64,
                     "width": {"Fraction": 500}, "tabs": [
@@ -24,8 +24,9 @@ fn persisted_tree() -> DesktopTree {
                     ]
                 }]
             }], "members": [{"id":"stale", "name":"Stale"}]
-        }, {"id":20,"room":"0b9a8c7d-6e5f-4a3b-8c2d-1e0f9a8b7c6d","name":"Other","strips":[]}],
-        "active": 10, "active_strip": {"10":11},
+        }, {"id":"00000000-0000-0000-0000-000000000014","name":"Other","strips":[]}],
+        "active": "00000000-0000-0000-0000-00000000000a",
+        "active_strip": {"00000000-0000-0000-0000-00000000000a": 11},
         "present": [{"member":"stale", "device":"stale"}]
     })).unwrap()
 }
@@ -39,7 +40,7 @@ tilo_test_env::scenario! {
         assert_eq!(tree.schema_version, 1);
         assert_eq!(
             tree.workspaces[0].id().to_string(),
-            "6f1c2d9e-4b3a-4e8f-9a7b-1c2d3e4f5a6b"
+            "00000000-0000-0000-0000-00000000000a"
         );
         assert!(tree.workspaces[0].members.is_empty());
         assert!(tree.workspaces[0].present.is_empty());
@@ -60,10 +61,10 @@ tilo_test_env::scenario! {
     {
         let mut one = persisted_tree();
         let two = one.clone();
-        one.set_active(WorkspaceSlot(20));
+        one.set_active(WorkspaceId::from_u128(20));
         one.set_active_group(StripId(11), 12);
         one.workspaces[0].strips[0].window_groups[0].maximized = true;
-        assert_eq!(two.active, WorkspaceSlot(10));
+        assert_eq!(two.active, WorkspaceId::from_u128(10));
         assert!(two.active_group.is_empty());
         assert!(!two.workspaces[0].strips[0].window_groups[0].maximized);
         assert_eq!(
@@ -71,11 +72,11 @@ tilo_test_env::scenario! {
             two.workspaces[0].strips[0].window_groups[0].tabs[1].id
         );
         assert!(one.switch_up());
-        assert_eq!(one.active, WorkspaceSlot(10));
+        assert_eq!(one.active, WorkspaceId::from_u128(10));
         assert!(!one.switch_up());
         assert!(one.switch_down());
-        one.set_active(WorkspaceSlot(999));
-        assert_eq!(one.active, WorkspaceSlot(20));
+        one.set_active(WorkspaceId::from_u128(999));
+        assert_eq!(one.active, WorkspaceId::from_u128(20));
     }
 
     phase reordering_keeps_tab_identity_selection_and_geometry;
@@ -133,7 +134,7 @@ tilo_test_env::scenario! {
         assert_eq!(moved.target, gap(0));
         assert_eq!(tree.workspaces[0].strips[0].window_groups.len(), 1);
         assert_eq!(tree.workspaces[1].strips[0].window_groups[0].tabs[0].id, 13);
-        assert_eq!(tree.active, WorkspaceSlot(10));
+        assert_eq!(tree.active, WorkspaceId::from_u128(10));
         assert!(
             tree.move_tab_across_strips(StripId(21), StripId(999), 13, 23, gap(0))
                 .is_none()
@@ -152,7 +153,7 @@ tilo_test_env::scenario! {
         desktop.set_active_group(StripId(11), 12);
         let bytes = serde_json::to_vec(&Host { desktop }).unwrap();
         let loaded: Host = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(loaded.desktop.active_strip[&WorkspaceSlot(10)], StripId(11));
+        assert_eq!(loaded.desktop.active_strip[&WorkspaceId::from_u128(10)], StripId(11));
         assert_eq!(loaded.desktop.active_group[&StripId(11)], 12);
     }
 

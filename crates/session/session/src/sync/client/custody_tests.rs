@@ -15,7 +15,7 @@ tilo_automerge_isolate::test_worker!();
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_user_identity::DeviceCapabilities;
 
@@ -81,11 +81,9 @@ impl Device {
     /// is held here.
     fn join(&self, host: &test_relay::Host, request: u8) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
-        let slot = WorkspaceSlot::of_workspace(workspace_id);
-        self.engine.bind(slot, workspace_id);
+        self.engine.bind(workspace_id);
         self.plane
             .enroll(Enrolling {
-                slot,
                 workspace_id,
                 way: tilo_workspace_directory::Way::Invitation(
                     host.invitation(self.person(), request),
@@ -122,7 +120,6 @@ impl Device {
         let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
         self.plane
             .enter(Entering {
-                slot: WorkspaceSlot::of_workspace(workspace_id),
                 workspace_id,
                 name: "Notes".into(),
                 host: host.host_hint(),

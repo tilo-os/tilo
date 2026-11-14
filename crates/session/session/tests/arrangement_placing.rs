@@ -210,11 +210,7 @@ fn a_resource_a_view_and_a_point_make_an_arrangement_entry() {
     let (workspace, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         (
-            tree.active_workspace()
-                .expect("workspace")
-                .slot
-                .0
-                .to_string(),
+            tree.active_workspace().expect("workspace").id().to_string(),
             session.handle().mint_id(),
             session.handle().mint_id(),
         )
@@ -271,11 +267,7 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
     let (workspace, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         (
-            tree.active_workspace()
-                .expect("workspace")
-                .slot
-                .0
-                .to_string(),
+            tree.active_workspace().expect("workspace").id().to_string(),
             session.handle().mint_id(),
             session.handle().mint_id(),
         )
@@ -488,19 +480,19 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
     // front of it either.
     let workspace = {
         let mut tree = session.handle().read(Clone::clone);
-        let slot = tree
+        let workspace_id = tree
             .workspaces
             .first_mut()
             .expect("a workspace is in front");
-        slot.strips.clear();
-        let slot = slot.slot;
-        tree.active_strip.remove(&slot);
+        workspace_id.strips.clear();
+        let workspace_id = workspace_id.id();
+        tree.active_strip.remove(&workspace_id);
         session.handle().replace_tree(tree);
         session.handle().read(|tree| {
             tree.workspaces
                 .iter()
-                .find(|held| held.slot == slot)
-                .map(|held| held.slot.0)
+                .find(|held| held.id() == workspace_id)
+                .map(tilo_desktop_model::Workspace::id)
                 .expect("the workspace is on the desk")
         })
     };
@@ -510,7 +502,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
             let Some(held) = tree.active_workspace() else {
                 return false;
             };
-            held.strips.is_empty() && !tree.active_strip.contains_key(&held.slot)
+            held.strips.is_empty() && !tree.active_strip.contains_key(&held.id())
         }),
         "the workspace in front holds no row, as one just joined does"
     );
@@ -547,7 +539,7 @@ fn a_workspace_with_no_row_yet_takes_a_place_and_the_row_it_stands_in() {
     let rows = session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .find(|held| held.slot.0 == workspace)
+            .find(|held| held.id() == workspace)
             .map(|held| {
                 held.strips
                     .iter()
@@ -576,11 +568,7 @@ fn a_place_asked_to_float_stands_above_the_windows_at_its_corner() {
     let (workspace, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         (
-            tree.active_workspace()
-                .expect("workspace")
-                .slot
-                .0
-                .to_string(),
+            tree.active_workspace().expect("workspace").id().to_string(),
             session.handle().mint_id(),
             session.handle().mint_id(),
         )
@@ -641,11 +629,7 @@ fn the_system_open_brings_what_is_placed_forward() {
     let (workspace, strip, place) = {
         let tree = session.handle().read(Clone::clone);
         (
-            tree.active_workspace()
-                .expect("workspace")
-                .slot
-                .0
-                .to_string(),
+            tree.active_workspace().expect("workspace").id().to_string(),
             session.handle().mint_id(),
             session.handle().mint_id(),
         )

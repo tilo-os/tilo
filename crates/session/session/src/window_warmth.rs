@@ -98,10 +98,10 @@ impl Windows {
                 let workspaces: Vec<_> = tree
                     .workspaces
                     .iter()
-                    .map(|workspace| workspace.slot)
+                    .map(tilo_desktop_model::Workspace::id)
                     .collect();
                 self.warmth.update(&workspaces, active, now, &mut |id| {
-                    let id = id.0.to_string();
+                    let id = id.to_string();
                     ui::theme::workspace_temperature_override(&settings, &id)
                         .or_else(|| wallpapers.hue(&id))
                 });

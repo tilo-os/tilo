@@ -11,9 +11,7 @@ use std::{
 use tilo_action_broker::services::{
     LegacyWorkspaceProjection, WorkspaceAuthority, WorkspaceGrants,
 };
-use tilo_desktop_model::{
-    DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId, WorkspaceSlot,
-};
+use tilo_desktop_model::{DesktopTree, IdMinter, Strip, StripId, Workspace, WorkspaceId};
 use tilo_identity_host::broker::WorkspaceMembership;
 
 /// The desktop session's workspace file. Read, never written, here: its
@@ -156,7 +154,7 @@ impl ProfileWorkspace {
     fn record(
         &self,
         workspace: &str,
-        change: impl FnOnce(&mut DesktopTree, WorkspaceSlot) -> Option<()>,
+        change: impl FnOnce(&mut DesktopTree, WorkspaceId) -> Option<()>,
     ) -> Result<(), String> {
         if !self.governs() {
             return Err("the desktop session's workspace is read only in the runtime".into());
@@ -166,7 +164,7 @@ impl ProfileWorkspace {
                 .workspaces
                 .iter()
                 .find(|held| held.id().to_string() == workspace)?
-                .slot;
+                .id();
             change(tree, workspace)
         })
         .ok_or_else(|| {
@@ -245,7 +243,7 @@ impl ProfileGrants {
                 .workspaces
                 .iter()
                 .find(|held| held.id().to_string() == request.workspace)?
-                .slot;
+                .id();
             let stored = tree
                 .grant_in_workspace_at(workspace, &request.person, grant, now)
                 .ok()?;
@@ -354,7 +352,7 @@ pub(super) fn read_tree(path: &Path) -> io::Result<DesktopTree> {
 /// One empty home workspace with one strip, as a new desktop starts.
 pub(super) fn bootstrap() -> DesktopTree {
     let mut ids = IdMinter::default();
-    let workspace = WorkspaceSlot(ids.mint());
+    let workspace = WorkspaceId::new();
     let strip = StripId(ids.mint());
     // A desk nobody has named keeps no name: the desk that shows it names the workspace and the
     // strip it comes with in the language of whoever reads it.

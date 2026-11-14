@@ -264,10 +264,10 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     keep(&mut session, "shell-bar-workspace-menu");
     press(&mut session, &first.workspace);
     crate::common::until(&mut session, "the first workspace in front", |session| {
-        session.handle().read(|tree| tree.active.0.to_string()) == first_key
+        session.handle().read(|tree| tree.active.to_string()) == first_key
     });
     assert_eq!(
-        session.handle().read(|tree| tree.active.0.to_string()),
+        session.handle().read(|tree| tree.active.to_string()),
         first_key,
         "the first workspace is in front: {:?} {:?}",
         session.shell_work(),
@@ -569,7 +569,7 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == tree.active)
+        .find(|workspace| workspace.id() == tree.active)
         .expect("a workspace is in front");
     let strip = workspace.strips.first_mut().expect("a strip is in front");
     let group = handle.mint_id();
@@ -1889,7 +1889,7 @@ fn show(session: &mut Session, surface: &str) {
 }
 
 /// Where the tab `tab` stands: its workspace's id and its strip's name, while it is open.
-fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
+fn tab_place(session: &Session, tab: u64) -> Option<(tilo_desktop_model::WorkspaceId, String)> {
     session.handle().read(|tree| {
         tree.workspaces.iter().find_map(|workspace| {
             workspace.strips.iter().find_map(|strip| {
@@ -1897,7 +1897,7 @@ fn tab_place(session: &Session, tab: u64) -> Option<(u64, String)> {
                     .window_groups
                     .iter()
                     .any(|group| group.tabs.iter().any(|t| t.id == tab))
-                    .then(|| (workspace.slot.0, strip.name.clone()))
+                    .then(|| (workspace.id(), strip.name.clone()))
             })
         })
     })
@@ -1921,7 +1921,7 @@ fn second_strip(session: &mut Session, first: &str, second: &str, app: &str) -> 
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == tree.active)
+        .find(|workspace| workspace.id() == tree.active)
         .expect("a workspace is in front");
     first.clone_into(&mut workspace.strips[0].name);
     let mut added = tilo_desktop_model::Strip::new(strip, second);

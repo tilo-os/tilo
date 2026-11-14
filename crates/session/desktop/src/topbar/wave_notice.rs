@@ -114,13 +114,13 @@ mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
     use crate::chrome::WaveNotice;
-    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 
     fn bar_waved_at_by(from: &str, at: Instant) -> TopBarChrome {
         ui::i18n::I18nManager::init("en-US");
-        let workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
+        let workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
         let tree = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -139,9 +139,9 @@ mod tests {
         // The bar says who waved for a moment, then lets it go and wakes to take it away.
         {
             ui::i18n::I18nManager::init("en-US");
-            let workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
+            let workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
             let tree = DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             };

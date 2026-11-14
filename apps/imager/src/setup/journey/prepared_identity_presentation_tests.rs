@@ -54,11 +54,7 @@ fn negotiated_real_broker_photo_reaches_default_shared_avatar_paint() {
     )
     .unwrap();
     let room = tilo_desktop_model::WorkspaceId::new();
-    let mut open = tilo_desktop_model::Workspace::in_workspace(
-        tilo_desktop_model::WorkspaceSlot::of_workspace(room),
-        room,
-        "Home",
-    );
+    let mut open = tilo_desktop_model::Workspace::new(room, "Home");
     open.policy.owner = Some(
         tilo_identity_host::registry::identity_for_workspace(&room.to_string())
             .unwrap()

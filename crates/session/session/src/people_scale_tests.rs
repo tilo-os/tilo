@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::platform::surfaces::{Heard, Layer, Placement, Surfaces};
-use tilo_desktop_model::{DesktopTree, Member, Tab, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Member, Tab, Workspace, WorkspaceId};
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::widget::{TileContent, TileHost};
 
@@ -100,11 +100,11 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
     // Someone else is here: kept on screen with nobody to show, the roster waits away from the
     // desk, and there is no panel of it whose Put back in the bar a pointer could press.
     let here = WorkspaceId::new();
-    let mut desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
+    let mut desk = Workspace::new(here, "Desk");
     desk.member_here(Member::keyed("ada", "Ada"));
     let (_desk, handle) = DesktopSurface::new(
         DesktopTree {
-            active: desk.slot,
+            active: desk.id(),
             workspaces: vec![desk],
             ..DesktopTree::default()
         },
@@ -224,10 +224,10 @@ fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
 /// [`agent_here`] on a desk `size` large.
 fn agent_here_at(size: (u32, u32)) -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
     let here = WorkspaceId::new();
-    let desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
+    let desk = Workspace::new(here, "Desk");
     let (_desk, handle) = DesktopSurface::new(
         DesktopTree {
-            active: desk.slot,
+            active: desk.id(),
             workspaces: vec![desk],
             ..DesktopTree::default()
         },

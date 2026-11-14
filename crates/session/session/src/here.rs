@@ -100,10 +100,9 @@ impl Shared {
                         })
                         .collect();
                     WorkspaceHere {
-                        id: workspace.slot.0,
                         workspace: workspace_id,
                         name: tilo_desktop_surface::names::workspace(&workspace.name),
-                        active: workspace.slot == tree.active,
+                        active: workspace.id() == tree.active,
                         people,
                         windows,
                         calls,

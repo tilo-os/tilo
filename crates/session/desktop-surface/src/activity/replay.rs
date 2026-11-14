@@ -37,7 +37,7 @@ pub(super) struct ReplayPointer {
 /// What the desktop looked like at one history entry: every workspace's strips, `None` when the
 /// entry's document state cannot be read back. A change's state is fixed by its hash, so a
 /// checkpoint is computed once.
-pub(super) type ReplayCheckpoint = Option<Vec<(u64, ReplayWorkspace)>>;
+pub(super) type ReplayCheckpoint = Option<Vec<(tilo_desktop_model::WorkspaceId, ReplayWorkspace)>>;
 
 #[cfg(test)]
 thread_local! {
@@ -61,7 +61,7 @@ impl WorkspaceActivityPane {
         &mut self,
         tree: &impl ActivityTree,
         rows: &[HistoryEntry],
-        active_workspace: u64,
+        active_workspace: tilo_desktop_model::WorkspaceId,
     ) {
         self.replay_unavailable = 0;
         let mut ordered = rows.to_vec();
@@ -167,7 +167,7 @@ fn replay_checkpoint<T: ActivityTree>(
                     width_permille: group.width.permille(),
                 })
                 .collect();
-            workspaces.push((workspace.slot.raw(), ReplayWorkspace { name, groups }));
+            workspaces.push((workspace.id(), ReplayWorkspace { name, groups }));
         }
     }
     Some(workspaces)

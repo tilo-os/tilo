@@ -100,8 +100,8 @@ impl Shared {
                 }
                 // The desk was asked to delete a workspace, and the person is the one who answers:
                 // the question stands in its own dialog, wherever deleting was asked from.
-                DesktopAsk::DeleteWorkspace { slot, name } => {
-                    self.ask_to_delete_workspace(slot, &name);
+                DesktopAsk::DeleteWorkspace { workspace, name } => {
+                    self.ask_to_delete_workspace(workspace, &name);
                 }
                 // A workspace the desk deleted, whoever asked it to: what is left of it here in
                 // this device's record goes too.
@@ -112,10 +112,9 @@ impl Shared {
                 // and puts it on the desk once what it holds is there.
                 DesktopAsk::BranchWorkspace {
                     source,
-                    slot,
                     workspace,
                     name,
-                } => self.branch_workspace(source, slot, workspace, name),
+                } => self.branch_workspace(source, workspace, name),
                 // A window that stopped answering offers to keep waiting for its app or to quit it:
                 // the same two choices the desk's own cards make, carried out where the compositor
                 // is.
@@ -739,15 +738,15 @@ impl Shared {
     /// Branch the workspace the person is in through the desk's own published action, so the rules
     /// and the naming are the desk's.
     fn branch_shown_workspace(&self) {
-        let Some(shown) = self
-            .handle
-            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
-        else {
+        let Some(shown) = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        }) else {
             return;
         };
         let args = serde_json::Map::from_iter([(
             "source".to_owned(),
-            serde_json::Value::from(shown.0.to_string()),
+            serde_json::Value::from(shown.to_string()),
         )]);
         self.ask_and_report("branch-workspace", &args);
     }

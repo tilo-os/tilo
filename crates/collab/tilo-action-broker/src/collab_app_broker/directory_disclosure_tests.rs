@@ -357,7 +357,7 @@ impl Fixture {
         let viewer = Person::new(105, 106);
         let other_device = Person::new(101, 107);
         let mut workspace = crate::test_support::Workspace::new(
-            crate::test_support::WorkspaceSlot(71),
+            crate::test_support::WorkspaceId::from_u128(71),
             "Directory disclosure workspace",
         );
         workspace.set_owner(owner.id());
@@ -370,7 +370,7 @@ impl Fixture {
         );
         let mut tree = crate::test_support::WorkspaceTree::default();
         tree.workspaces.push(workspace);
-        tree.set_active(crate::test_support::WorkspaceSlot(71));
+        tree.set_active(crate::test_support::WorkspaceId::from_u128(71));
         let fanout = Arc::new(FanoutState::new());
         let devices = [&owner, &editor, &viewer, &other_device]
             .map(|p| p.certificate.device_public_key)

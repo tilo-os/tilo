@@ -143,7 +143,7 @@ mod own_view_lookup_tests {
 mod invitation_request_tests {
     use crate::collab_app_broker::AppBrokerState;
     use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices};
-    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::session_actions;
     use tilo_actions::remote::{ActionHostError, Caller, Pending, RemoteActionMessage, pending};
@@ -295,7 +295,7 @@ mod invitation_request_tests {
         {
             let owner = hex::encode([7; 32]);
             let viewer = hex::encode([8; 32]);
-            let mut workspace = Workspace::new(WorkspaceSlot(96), "Shared folder");
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(96), "Shared folder");
             workspace.set_owner(owner.clone());
             workspace.admit(viewer.clone(), tilo_action_policy::Role::Viewer);
             let workspace_id = workspace.id().to_string();

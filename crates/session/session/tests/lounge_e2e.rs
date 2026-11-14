@@ -41,7 +41,7 @@ use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    WorkspaceId,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Host;
@@ -369,7 +369,7 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
         (0x41, "Talk", &[(0x42, "Chat"), (0x43, "Notes")]),
         (0x44, "Work", &[(0x45, "Sheets")]),
     ];
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
     for (strip_id, name, windows) in strips {
         let mut strip = Strip::new(StripId::from(strip_id), name);
@@ -400,7 +400,7 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
     }
     SharedDesktop {
         tree: tilo_desktop_model::DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..tilo_desktop_model::DesktopTree::default()
         },
@@ -662,7 +662,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
             .iter()
             .map(|held| {
                 (
-                    held.slot.0.to_string(),
+                    held.id().to_string(),
                     held.name.clone(),
                     held.id().to_string(),
                 )

@@ -88,9 +88,7 @@ pub struct WindowHere {
 /// One workspace and who is here in it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceHere {
-    /// The workspace's id, as the desktop numbers it.
-    pub id: u64,
-    /// The workspace it is, as its id travels: where Chat's call is joined.
+    /// The workspace's id: where Chat's call is joined.
     pub workspace: String,
     pub name: String,
     /// The workspace in front.
@@ -166,7 +164,11 @@ impl Happening {
             )))
         } else {
             Target::Command {
-                id: format!("{}{}", crate::model::WORKSPACE_COMMAND_PREFIX, workspace.id),
+                id: format!(
+                    "{}{}",
+                    crate::model::WORKSPACE_COMMAND_PREFIX,
+                    workspace.workspace
+                ),
             }
         };
         Hit {
@@ -174,7 +176,7 @@ impl Happening {
             preview: None,
             kind: happening_kind(),
             provider: self.id().into(),
-            id: format!("{WORKSPACE_PREFIX}{}", workspace.id),
+            id: format!("{WORKSPACE_PREFIX}{}", workspace.workspace),
             title: workspace.name.clone(),
             subtitle: Some(here_line(&workspace.people)),
             facts: Vec::new(),
@@ -192,7 +194,7 @@ impl Happening {
             preview: None,
             kind: happening_kind(),
             provider: self.id().into(),
-            id: format!("{WINDOW_PREFIX}{}:{}", workspace.id, window.tab),
+            id: format!("{WINDOW_PREFIX}{}:{}", workspace.workspace, window.tab),
             title: window.title.clone(),
             subtitle: Some(with_line(&window.people)),
             facts: Vec::new(),
@@ -321,7 +323,6 @@ mod tests {
 
     fn workspace() -> WorkspaceHere {
         WorkspaceHere {
-            id: 3,
             workspace: "workspace-3".into(),
             name: "Studio".into(),
             active: true,
@@ -350,7 +351,7 @@ mod tests {
             let happening = Happening::new(false, vec![workspace()]);
             let rows = happening.query("");
             let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
-            assert_eq!(ids, ["workspace:3", "window:3:7", "call:c_voice"]);
+            assert_eq!(ids, ["workspace:workspace-3", "window:workspace-3:7", "call:c_voice"]);
             assert_eq!(rows[0].title, "Studio");
             assert_eq!(
                 rows[0].subtitle.as_deref(),
@@ -397,7 +398,6 @@ mod tests {
         // header goes there instead of opening who is here.
         {
             let mut other = WorkspaceHere {
-                id: 4,
                 workspace: "workspace-4".into(),
                 name: "Elsewhere".into(),
                 active: false,
@@ -408,14 +408,14 @@ mod tests {
             let everywhere = Happening::new(true, vec![workspace(), other.clone()]);
             let rows = everywhere.query("");
             let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
-            assert_eq!(ids.first().copied(), Some("workspace:3"), "in front first");
-            assert!(ids.contains(&"workspace:4"), "{ids:?}");
+            assert_eq!(ids.first().copied(), Some("workspace:workspace-3"), "in front first");
+            assert!(ids.contains(&"workspace:workspace-4"), "{ids:?}");
             let here_only = Happening::new(false, vec![workspace(), other]);
             let rows = here_only.query("");
             let ids: Vec<&str> = rows.iter().map(|hit| hit.id.as_str()).collect();
             assert_eq!(
                 ids,
-                ["workspace:3", "window:3:7", "call:c_voice"],
+                ["workspace:workspace-3", "window:workspace-3:7", "call:c_voice"],
                 "the workspace in front, and nothing of the others"
             );
         }

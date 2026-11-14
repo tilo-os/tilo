@@ -160,7 +160,7 @@ mod foreign_ask_tests;
 mod tests {
     use super::super::super::AppBrokerState;
     use crate::services::{OwnDeviceActions, OwnDeviceOutcome};
-    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use std::sync::{Arc, Mutex};
     use tilo_actions::remote::{
         ActionHostError, Caller, Completer, Confirmation, ConfirmationQuestion, InvokeArgument,
@@ -214,7 +214,7 @@ mod tests {
 
     fn broker(network: Arc<Network>) -> (Arc<AppBrokerState>, String, String) {
         let owner = hex::encode([41; 32]);
-        let mut workspace = Workspace::new(WorkspaceSlot(9), "Devices");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Devices");
         workspace.set_owner(owner.clone());
         let workspace_id = workspace.id().to_string();
         let mut tree = WorkspaceTree::default();

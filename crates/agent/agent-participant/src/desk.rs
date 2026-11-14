@@ -22,7 +22,7 @@ use tilo_desktop_model::commands::{
 };
 use tilo_desktop_model::ownership::{OpenedBy, SharedDesktop};
 use tilo_desktop_model::{
-    DesktopTree, IdMinter, TileContent, Workspace, WorkspaceId, WorkspaceSlot, shared_record,
+    DesktopTree, IdMinter, TileContent, Workspace, WorkspaceId, shared_record,
 };
 
 pub(crate) struct View<'a> {
@@ -106,16 +106,16 @@ fn opening(desktop: &SharedDesktop, app: &str) -> bool {
     })
 }
 
-/// The desktop the first page in `workspace` makes: the workspace itself,
-/// by its id and in the slot every device derives from it, under `name`.
+/// The desktop the first page in `workspace` makes: the workspace itself, by its id, under
+/// `name`.
 /// The strip the first window opens on is made with it ("Main"), so a page
 /// that wrote its own before this reached it folds into the same one.
 fn fresh(workspace: &str, name: &str) -> Option<SharedDesktop> {
     let identity = WorkspaceId::parse(workspace)?;
-    let desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(identity), identity, name);
+    let desk = Workspace::new(identity, name);
     Some(SharedDesktop {
         tree: DesktopTree {
-            active: desk.slot,
+            active: desk.id(),
             workspaces: vec![desk],
             ..DesktopTree::default()
         },
@@ -198,7 +198,7 @@ mod tests {
 
     use super::*;
     use tilo_automerge::ApplyIncoming as _;
-    use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
 
     const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
     const PERSON: &str = "ada";
@@ -243,7 +243,7 @@ mod tests {
     /// A desk with the person's strip (Chat) and the strip the agent's task
     /// runs on (Notes, which it works in), as one shared desktop change.
     fn desk() -> Vec<u8> {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
         workspace.strips = vec![
             Strip {
                 id: StripId(10),
@@ -329,7 +329,7 @@ mod tests {
     /// app's primary record, so a primary of another app still gets its window.
     #[test]
     fn a_primary_record_a_persons_window_shows_opens_no_second_window() {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
         workspace.strips = vec![Strip {
             id: StripId(10),
             name: "Main".into(),
@@ -375,7 +375,7 @@ mod tests {
     /// primary record, so the note the agent makes there opens no second window beside it.
     #[test]
     fn a_window_still_opening_its_apps_primary_record_gets_no_second() {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
         workspace.strips = vec![Strip {
             id: StripId(10),
             name: "Main".into(),
@@ -440,9 +440,9 @@ mod tests {
         let workspace = &desktop.tree.workspaces[0];
         assert_eq!(workspace.name, "Visa");
         assert_eq!(
-            workspace.slot,
-            WorkspaceSlot::of_workspace(WorkspaceId::parse(WORKSPACE).unwrap()),
-            "the slot every device derives from the workspace"
+            workspace.id(),
+            WorkspaceId::parse(WORKSPACE).unwrap(),
+            "the workspace by its own id"
         );
         let tab = workspace.strips[0].window_groups[0].tabs[0].id;
         assert_eq!(desktop.records, vec![(tab, "files-record".to_owned())]);

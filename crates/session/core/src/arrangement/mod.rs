@@ -22,7 +22,7 @@ use tilo_actions::{
 };
 use tilo_desktop_model::{
     ArrangementKind, DesktopTree, FloatCorner, FloatPlace, GroupId, Strip, StripId, Tab, TabId,
-    TileContent, WindowGroup, WindowWidth, WorkspaceSlot,
+    TileContent, WindowGroup, WindowWidth, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopHandle;
 
@@ -167,7 +167,7 @@ pub enum ArrangementAction {
     /// never passed in (shell.md §8: showing something is an action on the
     /// arrangement, not on the resource).
     Place {
-        workspace: u64,
+        workspace: WorkspaceId,
         row: u64,
         strip: u64,
         place: u64,
@@ -254,7 +254,7 @@ pub enum ArrangementAction {
 /// place's own strip and the place take.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Surface {
-    pub workspace: u64,
+    pub workspace: WorkspaceId,
     pub row: u64,
     pub strip: u64,
     pub place: u64,
@@ -680,14 +680,18 @@ impl Arrangement {
         self.surface_on(None, strip)
     }
 
-    /// The surface a place made in `workspace` (a slot) in `strip` stands on: as
+    /// The surface a place made in `workspace` in `strip` stands on: as
     /// [`Self::surface_at_strip`], for a place the session makes in a workspace of its own
     /// choosing rather than the one in front. `workspace` `None` is the workspace in front.
     ///
     /// # Errors
     /// The desk has no such workspace, no workspace in front, or `strip` is not a strip on
     /// this desk.
-    fn surface_on(&self, workspace: Option<u64>, strip: Option<u64>) -> Result<Surface, String> {
+    fn surface_on(
+        &self,
+        workspace: Option<WorkspaceId>,
+        strip: Option<u64>,
+    ) -> Result<Surface, String> {
         let tree = self.handle.read(Clone::clone);
         if let Some(strip) = strip {
             let held = tree.workspaces.iter().find_map(|workspace| {
@@ -695,7 +699,7 @@ impl Arrangement {
                     row.window_groups
                         .iter()
                         .any(|group| group.id == strip)
-                        .then_some((workspace.slot.0, row.id.0))
+                        .then_some((workspace.id(), row.id.0))
                 })
             });
             let Some((workspace, row)) = held else {
@@ -710,10 +714,10 @@ impl Arrangement {
         }
         let (workspace, row) = {
             let workspace = match workspace {
-                Some(slot) => tree
+                Some(asked) => tree
                     .workspaces
                     .iter()
-                    .find(|held| held.slot.0 == slot)
+                    .find(|held| held.id() == asked)
                     .ok_or("that workspace is not on this desk")?,
                 None => tree
                     .active_workspace()
@@ -721,10 +725,10 @@ impl Arrangement {
             };
             let row = tree
                 .active_strip
-                .get(&workspace.slot)
+                .get(&workspace.id())
                 .copied()
                 .or_else(|| workspace.strips.first().map(|row| row.id));
-            (workspace.slot, row)
+            (workspace.id(), row)
         };
         drop(tree);
         // A workspace that holds no row yet — one just joined, whose first window is what makes the
@@ -737,7 +741,7 @@ impl Arrangement {
         let strip = self.handle.mint_id();
         let place = self.handle.mint_id();
         Ok(Surface {
-            workspace: workspace.0,
+            workspace,
             row: row.0,
             strip,
             place,
@@ -747,13 +751,13 @@ impl Arrangement {
     /// A row for the workspace `workspace` that holds none: the desk's own first row of it, named
     /// `Main` , which its first window stands in — as a workspace made here starts. Made before the
     /// place, so the record the place is put in is one the desk shows.
-    fn make_row(&self, workspace: WorkspaceSlot) -> Result<StripId, String> {
+    fn make_row(&self, workspace: WorkspaceId) -> Result<StripId, String> {
         let id = StripId(self.handle.mint_id());
         let mut tree = self.handle.read(Clone::clone);
         let Some(held) = tree
             .workspaces
             .iter_mut()
-            .find(|held| held.slot == workspace)
+            .find(|held| held.id() == workspace)
         else {
             return Err("the workspace in front went while a place was made".to_owned());
         };
@@ -1052,7 +1056,7 @@ impl Arrangement {
     pub fn place_root(
         &mut self,
         asked: &str,
-        workspace: u64,
+        workspace: WorkspaceId,
         resource: &str,
         view: &str,
     ) -> Result<Option<u64>, String> {
@@ -1163,14 +1167,14 @@ impl Arrangement {
         Ok(Some(surface.place))
     }
 
-    /// The place of `workspace` (a workspace's slot) that already shows `resource`, if one
+    /// The place of `workspace` that already shows `resource`, if one
     /// stands: what opening an app the workspace already shows brings forward.
-    fn place_in(&self, workspace: u64, resource: &str) -> Option<u64> {
+    fn place_in(&self, workspace: WorkspaceId, resource: &str) -> Option<u64> {
         let records = self.records();
         self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .filter(|held| held.slot.0 == workspace)
+                .filter(|held| held.id() == workspace)
                 .flat_map(|held| held.strips.iter())
                 .flat_map(|row| row.window_groups.iter())
                 .flat_map(|group| group.tabs.iter())
@@ -1782,6 +1786,7 @@ fn move_place(
         strip.is_some_and(|strip| group.id == strip)
             || before.is_some_and(|before| group.tabs.iter().any(|tab| tab.id == before))
     };
+    let workspace_id = held.id();
     let Some(target) = held.strips.get_mut(row) else {
         return Err("that row is not in the arrangement".into());
     };
@@ -1815,8 +1820,8 @@ fn move_place(
     // A place the person moved comes to the front with the window it went into, as one they
     // open does.
     if by_the_person {
-        let (slot, row, into) = (held.slot, target.id, group.id);
-        tree.active_strip.insert(slot, row);
+        let (row, into) = (target.id, group.id);
+        tree.active_strip.insert(workspace_id, row);
         tree.set_active_group(row, into);
     }
     Ok(true)
@@ -1827,7 +1832,7 @@ fn move_place(
 /// `width` by `height` — or floating above them at `float` .
 #[derive(Clone, Copy)]
 struct Placed<'a> {
-    workspace: u64,
+    workspace: WorkspaceId,
     row: u64,
     strip: u64,
     place: u64,
@@ -1877,7 +1882,7 @@ fn place_at(
     let Some(workspace) = tree
         .workspaces
         .iter_mut()
-        .find(|held| held.slot == WorkspaceSlot(asked.workspace))
+        .find(|held| held.id() == asked.workspace)
     else {
         return Err(taken.into());
     };
@@ -2456,9 +2461,8 @@ fn place_action() -> ActionSpec {
         "place",
         "Put a resource on the canvas as one of its views",
         vec![
-            // A workspace's id is its own, across all of u64: text, as the arrangement record
-            // names it, where an integer stops at i64. Each left out is the surface in front's:
-            // its workspace and row, and a strip and place id of its own.
+            // Each left out is the surface in front's: its workspace and row, and a strip and place
+            // id of its own.
             optional(
                 "workspace",
                 ParamType::Text,
@@ -2518,7 +2522,7 @@ fn place_action() -> ActionSpec {
                 )
             });
             ArrangementAction::Place {
-                workspace: id_text(args, "workspace"),
+                workspace: workspace_text(args, "workspace"),
                 row: count(args, "row"),
                 strip: count(args, "strip"),
                 place: count(args, "place"),
@@ -2658,9 +2662,18 @@ fn count(args: &ActionArgs, name: &str) -> u64 {
 /// which the action then refuses as naming no workspace.
 fn id_text(args: &ActionArgs, name: &str) -> u64 {
     tilo_failure::ignored!(
-        "text that is not a number names no workspace, which the action refuses",
+        "text that is not a number names nothing, which the action refuses",
         args.text(name)
             .and_then(|id| id.trim().parse().ok())
+            .unwrap_or_default()
+    )
+}
+
+fn workspace_text(args: &ActionArgs, name: &str) -> WorkspaceId {
+    tilo_failure::ignored!(
+        "text that is not a workspace id names no workspace, which the action refuses",
+        args.text(name)
+            .and_then(|id| WorkspaceId::parse(id.trim()))
             .unwrap_or_default()
     )
 }

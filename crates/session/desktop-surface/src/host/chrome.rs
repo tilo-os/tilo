@@ -6,7 +6,7 @@ use std::cell::{Cell, RefCell};
 use tilo_desktop_model::DesktopTree;
 use tilo_desktop_model::commands::{DesktopCommand, Standing, may_command, may_create_workspace};
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_model::{StripId, WorkspaceSlot};
+use tilo_desktop_model::{StripId, WorkspaceId};
 
 use crate::DesktopHandle;
 use crate::host::contract::DesktopRules;
@@ -520,7 +520,7 @@ pub trait ChromeSource {
     ///
     /// # Errors
     /// The refusal, in words for the person.
-    fn may_delete_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+    fn may_delete_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
         Err(crate::i18n::t("desktop-cannot-delete-workspace"))
     }
     /// Whether the person may branch the workspace `workspace` : they read all of it. Asked after
@@ -528,7 +528,7 @@ pub trait ChromeSource {
     ///
     /// # Errors
     /// The refusal, in words for the person.
-    fn may_branch_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+    fn may_branch_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
         Ok(())
     }
     /// Where the workspace shown is hosted (`example.org`); `None` on a desktop of the person's
@@ -716,11 +716,11 @@ impl<S: ChromeSource + ?Sized> DesktopRules for HostChrome<S> {
         })
     }
 
-    fn may_delete_workspace(&self, workspace: WorkspaceSlot) -> Result<(), String> {
+    fn may_delete_workspace(&self, workspace: WorkspaceId) -> Result<(), String> {
         self.source.may_delete_workspace(workspace)
     }
 
-    fn may_branch_workspace(&self, workspace: WorkspaceSlot) -> Result<(), String> {
+    fn may_branch_workspace(&self, workspace: WorkspaceId) -> Result<(), String> {
         self.may_create_workspace()?;
         self.source.may_branch_workspace(workspace)
     }

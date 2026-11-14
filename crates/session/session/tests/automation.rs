@@ -31,7 +31,7 @@ use tilo_automation::{
     ShortcutChange, TriggerSpec,
 };
 use tilo_compositor::InputEvent;
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::owner::{self, NativeWorkspaceOwner};
@@ -220,11 +220,7 @@ fn save(
 /// [`WORKSPACE`] as `person` 's own, showing the `shortcuts` its document holds: what the desk this
 /// device keeps shows of the workspace, as the session that kept it left it.
 fn room(person: &str, shortcuts: &[SavedShortcut]) -> Workspace {
-    let mut workspace = Workspace::in_workspace(
-        WorkspaceSlot::of_workspace(workspace_id()),
-        workspace_id(),
-        "Chat",
-    );
+    let mut workspace = Workspace::new(workspace_id(), "Chat");
     workspace.set_owner(person.to_owned());
     workspace.shortcuts = shortcuts.to_vec();
     workspace
@@ -260,7 +256,7 @@ fn show(session: &Session, workspace: Workspace) {
     let id = workspace.id();
     let mut tree: DesktopTree = session.handle().read(Clone::clone);
     tree.workspaces.retain(|held| held.id() != id);
-    tree.active = workspace.slot;
+    tree.active = workspace.id();
     tree.workspaces.push(workspace);
     session.handle().replace_tree(tree);
 }

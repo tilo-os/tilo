@@ -40,8 +40,7 @@ JOINING_BOUND = 240.0
 def workspaces(session: Session) -> dict[str, dict]:
     """The workspaces this session's desk holds, each by its durable id."""
     tree = (session.state_dump() or {}).get("workspace_tree") or {}
-    return {workspace["room"]: workspace
-            for workspace in tree.get("workspaces") or [] if workspace.get("room")}
+    return {workspace["id"]: workspace for workspace in tree.get("workspaces") or []}
 
 
 def front_workspace(session: Session) -> dict | None:
@@ -50,7 +49,7 @@ def front_workspace(session: Session) -> dict | None:
     held = workspaces(session)
     front = tree.get("active")
     for workspace in held.values():
-        if workspace.get("id") == front or workspace.get("room") == front:
+        if workspace.get("id") == front:
             return workspace
     return next(iter(held.values()), None)
 
@@ -91,12 +90,10 @@ def stand_in(session: Session, room: str) -> None:
     """Put the desk in `room`, as a person switching to the workspace does, and wait for it: a
     session says where its person is only in the workspace it is in front of."""
     front = front_workspace(session)
-    if front is None or front["room"] != room:
-        # The desk names a workspace by its own key, the slot it holds it in.
-        session.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace",
-                       {"workspace": str(workspaces(session)[room]["id"])})
+    if front is None or front["id"] != room:
+        session.invoke(DESK, f"{WORKSPACE_COMMANDS}\u001fswitch-workspace", {"workspace": room})
     until(f"the desk on {session.tag} to stand in the workspace",
-          lambda: (now["room"] if (now := front_workspace(session)) and now["room"] == room
+          lambda: (now["id"] if (now := front_workspace(session)) and now["id"] == room
                    else None), 60, 0.25)
 
 
@@ -156,7 +153,7 @@ def joined(
         peer.start(apps=apps, fresh=True, out=out, tag="peer", tapps=installed,
                    env={JOIN_INVITATION: str(invitation_path)})
         room = until("the peer to hold the host's workspace",
-                     lambda: (workspace["room"] if workspace["room"] in workspaces(peer) else None),
+                     lambda: (workspace["id"] if workspace["id"] in workspaces(peer) else None),
                      JOINING_BOUND, 0.5)
         for session in (host, peer):
             stand_in(session, room)

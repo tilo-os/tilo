@@ -15,8 +15,7 @@ use crate::overview_panel::OverviewPick;
 use crate::overview_tilo::TiloDesk;
 use crate::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
@@ -46,18 +45,19 @@ fn desk_tree() -> DesktopTree {
         maximized: false,
         focus_history: Vec::new(),
     };
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
         window_groups: vec![group],
     }];
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree.active_group.insert(StripId(2), 3);
     tree
 }
@@ -112,7 +112,7 @@ fn chrome_over_a_desk() -> (DesktopChrome, DesktopHandle) {
 }
 
 /// The workspace in front and every workspace on the desk, by id.
-fn front_and_held(handle: &DesktopHandle) -> (WorkspaceSlot, Vec<WorkspaceId>) {
+fn front_and_held(handle: &DesktopHandle) -> (WorkspaceId, Vec<WorkspaceId>) {
     handle.read(|tree| {
         (
             tree.active,
@@ -139,12 +139,20 @@ fn a_workspace_put_on_the_desk_in_the_background_leaves_the_person_where_they_ar
     assert_eq!(chrome.perform(&put(Some(true))), Ok(true));
     let (front, held) = front_and_held(&handle);
     assert!(held.contains(&arrived), "it is on the desk: {held:?}");
-    assert_eq!(front, WorkspaceSlot(1), "the person stays where they were");
+    assert_eq!(
+        front,
+        WorkspaceId::from_u128(1),
+        "the person stays where they were"
+    );
 
     assert_eq!(chrome.perform(&put(Some(true))), Ok(true));
     let (front, again) = front_and_held(&handle);
     assert_eq!(again, held, "a workspace held already is not made twice");
-    assert_eq!(front, WorkspaceSlot(1), "and still nobody went anywhere");
+    assert_eq!(
+        front,
+        WorkspaceId::from_u128(1),
+        "and still nobody went anywhere"
+    );
 
     assert_eq!(chrome.perform(&put(None)), Ok(true));
     let (front, joined) = front_and_held(&handle);
@@ -152,11 +160,7 @@ fn a_workspace_put_on_the_desk_in_the_background_leaves_the_person_where_they_ar
         joined, held,
         "the workspace the person joins is the one held"
     );
-    assert_eq!(
-        front,
-        WorkspaceSlot::of_workspace(arrived),
-        "a person who joins a workspace lands in it"
-    );
+    assert_eq!(front, arrived, "a person who joins a workspace lands in it");
 }
 
 /// A workspace that arrives on a desk showing none is the one the desk shows, in the background or
@@ -177,7 +181,7 @@ fn a_workspace_arriving_on_a_desk_that_shows_none_is_shown() {
     );
     let (front, held) = front_and_held(&handle);
     assert_eq!(held, [arrived]);
-    assert_eq!(front, WorkspaceSlot::of_workspace(arrived));
+    assert_eq!(front, arrived);
 }
 
 /// The overview's Revoke on an agent's own row reaches the host, which is
@@ -240,7 +244,7 @@ fn the_overview_the_host_opens_shows_the_workspace_in_front() {
     assert!(chrome.overview.is_open());
     let cards = &chrome.overview.desk().cards;
     let here = cards.iter().find(|card| card.is_current).unwrap();
-    assert_eq!(here.id, WorkspaceSlot(1));
+    assert_eq!(here.id, WorkspaceId::from_u128(1));
     assert_eq!(here.strips[0].groups[0].tabs[0].title, "Notes");
 
     open.set(false);

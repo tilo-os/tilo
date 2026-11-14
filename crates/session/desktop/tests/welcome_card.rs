@@ -15,7 +15,7 @@ use std::rc::Rc;
 
 use tilo_desktop::desktop_host::{DeskLayer, DesktopAsk};
 use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
-use tilo_desktop_model::{DesktopTree, Strip, StripId, Tab, TileContent, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Strip, StripId, Tab, TileContent, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use ui::headless::FrameHarness;
@@ -24,14 +24,15 @@ use ui::widget::TileHost;
 
 /// A desk with a workspace, a strip and no window: the welcome card stands on it.
 fn empty_desk() -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip::new(StripId(2), "Main")];
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree
 }
 

@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use tilo_desktop_model::commands::move_tab_to_workspace;
 use tilo_desktop_model::{
-    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceSlot,
+    DesktopTree, Display, GroupId, IdMinter, Tab, TabId, TileContent, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::navigation::{ChromeEffect, DeskEffect, RouteIds, active_route};
 use tilo_desktop_surface::outcome::{Closed, Outcome};
@@ -169,7 +169,7 @@ pub struct CarriedTab {
     /// The tab the person carried.
     pub tab: TabId,
     /// The workspace they carried it to.
-    pub to: WorkspaceSlot,
+    pub to: WorkspaceId,
 }
 
 /// The tabs the person carried to another workspace, waiting for the session.
@@ -360,7 +360,7 @@ impl TileSource for Windows {
         notes.window_record(tab)
     }
 
-    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+    fn carry(&self, tab: TabId, to: WorkspaceId) -> bool {
         self.carried.borrow_mut().push(CarriedTab { tab, to });
         true
     }
@@ -429,7 +429,7 @@ pub struct DesktopPolicy {
     launched_into: Option<LaunchWorkspaces>,
     /// The windows launched into a workspace not in front whose tab the desk has not made yet,
     /// each with where it goes ([`Self::carry_launched`]).
-    to_carry: Vec<(u64, WorkspaceSlot)>,
+    to_carry: Vec<(u64, WorkspaceId)>,
 }
 
 impl DesktopPolicy {
@@ -526,7 +526,7 @@ impl DesktopPolicy {
 
     /// The workspace `window` was launched into, when it is not the one in front: where its tab
     /// goes instead of the front one's strip.
-    fn launched_elsewhere(&self, window: &Window) -> Option<WorkspaceSlot> {
+    fn launched_elsewhere(&self, window: &Window) -> Option<WorkspaceId> {
         let workspaces = self.launched_into.as_ref()?;
         let launched = workspaces(window.pid?, window.app_id.as_deref()?)?;
         self.handle.read(|tree| {
@@ -536,7 +536,7 @@ impl DesktopPolicy {
                     tree.workspaces
                         .iter()
                         .find(|held| held.id().to_string() == launched)
-                        .map(|held| held.slot)
+                        .map(tilo_desktop_model::Workspace::id)
                 })
                 .flatten()
         })
@@ -875,7 +875,7 @@ impl DesktopPolicy {
             let group = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.slot == ids.workspace)?
+                .find(|workspace| workspace.id() == ids.workspace)?
                 .strips
                 .iter()
                 .find(|strip| strip.id == ids.strip)?
@@ -1051,7 +1051,7 @@ impl DesktopPolicy {
     /// # Errors
     /// The tab is not on the desk, it is already in that workspace, or there is no such
     /// workspace.
-    pub fn carry(&mut self, tab: TabId, to: WorkspaceSlot) -> Result<(), String> {
+    pub fn carry(&mut self, tab: TabId, to: WorkspaceId) -> Result<(), String> {
         let mut tree = self.handle.read(Clone::clone);
         let mut mint = || Ok(self.handle.mint_id());
         move_tab_to_workspace(&mut tree, tab, to, &mut mint)?;
@@ -1123,7 +1123,7 @@ impl DesktopPolicy {
             if let Some(group) = tree
                 .workspaces
                 .iter_mut()
-                .find(|workspace| workspace.slot == ids.workspace)
+                .find(|workspace| workspace.id() == ids.workspace)
                 .and_then(|workspace| {
                     workspace
                         .strips
@@ -1682,7 +1682,7 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
                 .iter()
                 .find(|group| group.tabs.iter().any(|candidate| candidate.id == tab))?;
             Some(RouteIds {
-                workspace: workspace.slot,
+                workspace: workspace.id(),
                 strip: strip.id,
                 group: group.id,
                 tab,

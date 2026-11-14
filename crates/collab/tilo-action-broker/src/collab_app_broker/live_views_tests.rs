@@ -1,7 +1,7 @@
 use super::super::AppBrokerState;
 use crate::services::{HostStepOutcome, HostStepRequest, HostStepServices, LiveRead, LiveView};
 use crate::test_support::{
-    Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceSlot, WorkspaceTree,
+    Grantee, Grants as _, KindSet, TreePath, Workspace, WorkspaceId, WorkspaceTree,
     WorkspaceTreeHandle,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -98,7 +98,7 @@ fn broker(
     grants: impl FnOnce(&mut Workspace),
 ) -> (Arc<AppBrokerState>, WorkspaceTreeHandle, String, String) {
     let owner = hex::encode([41; 32]);
-    let mut workspace = Workspace::new(WorkspaceSlot(9), "Live");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Live");
     workspace.set_owner(owner.clone());
     grants(&mut workspace);
     let workspace_id = workspace.id().to_string();

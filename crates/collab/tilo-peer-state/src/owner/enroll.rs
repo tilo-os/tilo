@@ -8,7 +8,7 @@ use crate::join::{
 use crate::join_transport::WorkspaceJoinClient;
 use crate::owner::{
     NativeWorkspaceOwner, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
-    VerifiedNativeEnrollmentIntent, WorkspaceSlot, enrollment::ns as now_ns,
+    VerifiedNativeEnrollmentIntent, enrollment::ns as now_ns,
 };
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -42,12 +42,12 @@ fn active(
     }
     Ok(())
 }
-/// Redeem `invitation` for `local`, the local slot the workspace will show
-/// in where the host has slots. The signed Complete proof is durable before
+/// Redeem `invitation` into `local`, the workspace on the host's desk made for the join, where
+/// the host has a desk. The signed Complete proof is durable before
 /// it is sent, and a retry resends exactly that proof.
 ///
 /// Returns closed response evidence only. The owner still rechecks the
-/// target slot and crosses its single installation barrier
+/// workspace and crosses its single installation barrier
 /// ([`NativeWorkspaceOwner::install`]) before any Joined result.
 #[allow(
     clippy::too_many_lines,
@@ -57,7 +57,7 @@ pub async fn prepare_and_complete(
     client: WorkspaceJoinClient,
     identity: HostIdentity,
     identity_topic: WorkspaceId,
-    local: Option<WorkspaceSlot>,
+    local: Option<WorkspaceId>,
     invitation: String,
     owner: NativeWorkspaceOwner,
 ) -> Result<VerifiedNativeEnrollment, String> {
@@ -70,7 +70,7 @@ pub async fn prepare_and_complete(
         revocations.insert(entry).map_err(|e| e.to_string())?;
     }
     let retained = match local {
-        Some(local) => owner.pending_enrollment_for_slot(local)?,
+        Some(local) => owner.pending_enrollment(local)?,
         None => owner.pending_enrollment_for_invitation(&invitation)?,
     };
     let (intent, id) = if let Some(pending) = retained {
@@ -231,7 +231,7 @@ pub async fn prepare_and_complete(
         // since, so it no longer replays its answer: this device is a
         // member, and takes the workspace's current state through the membership
         // exchange. Resending the proof would be refused forever, keeping
-        // the slot from the workspace it joined. A host from before it said so
+        // this device from the workspace it joined. A host from before it said so
         // for a certificate that ran out since refuses that certificate
         // instead; custody has renewed it, and the exchange presents the
         // renewal.

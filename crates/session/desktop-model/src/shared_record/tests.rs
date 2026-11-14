@@ -21,7 +21,7 @@ fn tab(id: u64) -> Tab {
 
 /// One workspace, strip 10, a group per `(tab, group, who)` unless two share.
 fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
     let mut strip = Strip::new(StripId(10), "Lounge");
     for (tab_id, group, _) in windows {
         match strip.window_groups.iter_mut().find(|g| g.id == *group) {
@@ -39,7 +39,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
     workspace.strips.push(strip);
     SharedDesktop {
         tree: DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         },
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
     {
         // The workspace's desktop: a window, and a second strip.
         let mut document = AutoCommit::new();
-        let mut first = fresh(1, 10, "Lounge");
+        let mut first = fresh(10, "Lounge");
         first.tree.workspaces[0].strips[0]
             .window_groups
             .push(group_of(100, 1));
@@ -143,16 +143,15 @@ tilo_test_env::scenario! {
         // Pages that published a fresh desktop of their own before the workspace's
         // reached them, each from a document of its own: every one adds its
         // own `workspaces` map, concurrent with the workspace's. One of them also
-        // opened a window and made a workspace of another name.
+        // opened a window and made another workspace.
         for page in 2..12_u8 {
             let mut blind = AutoCommit::new().with_actor(automerge::ActorId::from(vec![page; 16]));
-            let id = u64::from(page);
-            let mut written = fresh(id, id * 10, "Lounge");
+            let mut written = fresh(u64::from(page) * 10, "Lounge");
             if page == 5 {
                 written.tree.workspaces[0].strips[0]
                     .window_groups
                     .push(group_of(500, 5));
-                let mut side = Workspace::new(WorkspaceSlot(55), "Side");
+                let mut side = Workspace::new(WorkspaceId::from_u128(55), "Side");
                 side.strips.push(Strip::new(StripId(550), "Main"));
                 written.tree.workspaces.push(side);
             }
@@ -335,14 +334,14 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A page's fresh desktop for a workspace it has not received yet: one workspace
-/// named after the workspace and one empty "Main" strip, under the page's own ids.
-fn fresh(workspace: u64, strip: u64, name: &str) -> SharedDesktop {
-    let mut fresh = Workspace::new(WorkspaceSlot(workspace), name);
+/// A page's fresh desktop for a workspace it has not received yet: the workspace and one empty
+/// "Main" strip under the page's own id.
+fn fresh(strip: u64, name: &str) -> SharedDesktop {
+    let mut fresh = Workspace::new(WorkspaceId::from_u128(1), name);
     fresh.strips.push(Strip::new(StripId(strip), "Main"));
     SharedDesktop {
         tree: DesktopTree {
-            active: fresh.slot,
+            active: fresh.id(),
             workspaces: vec![fresh],
             ..DesktopTree::default()
         },

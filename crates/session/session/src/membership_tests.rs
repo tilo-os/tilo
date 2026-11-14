@@ -10,7 +10,7 @@ use ed25519_dalek::SigningKey;
 use pollster::FutureExt as _;
 use tilo_action_policy::{Change, Grant, Grantee, Role, WorkspacePolicy};
 use tilo_desktop_model::grants::PolicyEdit;
-use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_network_actor::HostIdentity;
 use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
@@ -147,11 +147,7 @@ fn workspace_signed_through(
             )
             .expect("this device takes the workspace as its governor has it");
     }
-    let mut workspace = Workspace::in_workspace(
-        WorkspaceSlot::of_workspace(workspace_id),
-        workspace_id,
-        "Test",
-    );
+    let mut workspace = Workspace::new(workspace_id, "Test");
     workspace
         .policy
         .members
@@ -220,7 +216,7 @@ fn the_owner_admitted_ada() -> TwoDesks {
     let b_engine = Engine::open(
         identity(&b_cert, &b_key),
         Some(b_state.path()),
-        [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+        [workspace_id],
         crate::platform::custody::of_this_desk(),
     )
     .expect("this desk's engine opens");
@@ -337,11 +333,7 @@ fn a_role_another_member_sets_reaches_this_desks_people() {
     let (workspace_id, policy, owner, desk, person) = the_owner_raised_ada();
     // What this desk had of the workspace's people before the change is the owner's and this
     // person's; after it, what the workspace has.
-    let mut workspace = Workspace::in_workspace(
-        WorkspaceSlot::of_workspace(workspace_id),
-        workspace_id,
-        "Test",
-    );
+    let mut workspace = Workspace::new(workspace_id, "Test");
     workspace.set_owner(owner.clone());
     workspace.policy.members.insert(desk.clone(), Role::Editor);
     assert!(
@@ -1007,7 +999,7 @@ fn the_people_another_device_admits_are_on_this_desks_people() {
         let engine = Engine::open(
             identity(&cert, &key),
             Some(state.path()),
-            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+            [workspace_id],
             crate::platform::custody::of_this_desk(),
         )
         .expect("this computer's engine opens");
@@ -1191,7 +1183,7 @@ fn a_second_device(
     let hers = Engine::open(
         identity(&her, &her_key),
         Some(her_state),
-        [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+        [workspace_id],
         crate::platform::custody::of_this_desk(),
     )
     .expect("her engine opens");
@@ -1199,7 +1191,7 @@ fn a_second_device(
     let mine = Engine::open(
         identity(cert, key),
         Some(state),
-        [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+        [workspace_id],
         crate::platform::custody::of_this_desk(),
     )
     .expect("this computer's engine opens");
@@ -1330,7 +1322,7 @@ fn her_device_takes(
     let mine = Engine::open(
         identity(cert, key),
         Some(state),
-        [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+        [workspace_id],
         crate::platform::custody::of_this_desk(),
     )
     .expect("this computer's engine opens");
@@ -1519,7 +1511,7 @@ fn an_agent_cannot_change_a_workspaces_people() {
     let mine = Engine::open(
         crate::sync::device_identity().expect("this computer is a device"),
         Some(state.path()),
-        [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+        [workspace_id],
         crate::platform::custody::of_this_desk(),
     )
     .expect("this computer's engine opens");
@@ -1545,7 +1537,7 @@ fn invite_from_this_device(
     let engine = Engine::open(
         identity(cert, key),
         Some(state),
-        [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
+        [workspace_id],
         crate::platform::custody::of_this_desk(),
     )
     .expect("this computer's engine opens");
@@ -1632,7 +1624,7 @@ fn the_desk_lists_and_cancels_the_invitations_this_device_made() {
         .read(|tree| {
             tree.workspaces
                 .first()
-                .map(|workspace| workspace.slot.0.to_string())
+                .map(|workspace| workspace.id().to_string())
         })
         .expect("a workspace on the desk");
     let listed = listed_invitations(&mut session, &workspace);

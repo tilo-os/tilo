@@ -2239,7 +2239,7 @@ mod transfers_between_devices {
     };
     use tilo_action_broker::services::{NearbyTransferRequestContext, NearbyTransferServices as _};
     use tilo_desktop_model::{
-        Capability, DesktopTree, FsMode, GRANT_SESSION, Workspace, WorkspaceId, WorkspaceSlot,
+        Capability, DesktopTree, FsMode, GRANT_SESSION, Workspace, WorkspaceId,
     };
     use tilo_network_actor::HostIdentity;
     use tilo_user_identity::DeviceCapabilities;
@@ -2321,8 +2321,7 @@ mod transfers_between_devices {
     /// The desk of a device whose Files may read and write `folder` .
     fn desk(folder: &Path) -> Desk {
         let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-        let slot = WorkspaceSlot::of_workspace(workspace_id);
-        let mut workspace = Workspace::in_workspace(slot, workspace_id, "Desk");
+        let mut workspace = Workspace::new(workspace_id, "Desk");
         workspace.grant_app(
             "ada",
             FILES_APP_ID,
@@ -2335,7 +2334,7 @@ mod transfers_between_devices {
         Desk {
             tree: DesktopTree {
                 workspaces: vec![workspace],
-                active: slot,
+                active: workspace_id,
                 ..DesktopTree::default()
             },
         }

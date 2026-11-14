@@ -426,26 +426,21 @@ pub fn windows(site: &Site) -> usize {
     titles_at(site).len()
 }
 
-/// The key `device` gives the workspace `site` serves, while it holds it.
-fn workspace_key(device: &Device, site: &Site) -> Option<u64> {
-    device.state()["state"]["held_workspaces"]
-        .as_array()?
-        .iter()
-        .find(|workspace| workspace["room"].as_str() == Some(site.workspace.as_str()))
-        .and_then(|workspace| workspace["workspace"].as_u64())
+/// Whether `device` holds the workspace `site` serves.
+fn holds_workspace(device: &Device, site: &Site) -> bool {
+    device.held().contains(&site.workspace)
 }
 
 /// Bring the workspace `site` serves to the front on `device`'s desk, so an app it opens is a
 /// window of that workspace's shared desk.
 pub fn show(device: &Device, site: &Site) {
     tilo_test_env::wait_until(format!("{} holds the workspace", device.label), || {
-        workspace_key(device, site).is_some()
+        holds_workspace(device, site)
     });
-    let key = workspace_key(device, site).expect("the device holds the workspace");
     let shown = device.act(
         "so.tilo.session",
         "session:desk\u{1f}switch-workspace",
-        &json!({"workspace": key.to_string()}),
+        &json!({"workspace": site.workspace}),
     );
     assert!(
         shown.get("err").is_none(),
@@ -1410,7 +1405,7 @@ impl Device {
             .as_array()
             .map(|held| {
                 held.iter()
-                    .filter_map(|workspace| workspace["room"].as_str().map(str::to_owned))
+                    .filter_map(|workspace| workspace["workspace"].as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or_default()
@@ -1446,12 +1441,12 @@ impl Device {
     /// The workspace in front on this device's desk, by id: what the door opens an app into.
     pub fn showing(&self) -> Option<String> {
         let tree = &self.state()["state"]["workspace_tree"];
-        let active = tree["active"].as_u64()?;
+        let active = tree["active"].as_str()?;
         tree["workspaces"]
             .as_array()?
             .iter()
-            .find(|workspace| workspace["id"].as_u64() == Some(active))
-            .and_then(|workspace| workspace["room"].as_str().map(str::to_owned))
+            .any(|workspace| workspace["id"].as_str() == Some(active))
+            .then(|| active.to_owned())
     }
 
     /// The workspaces on this device's desk, by id, in the desk's order: the ones it made, the ones
@@ -1462,7 +1457,7 @@ impl Device {
             .map(|workspaces| {
                 workspaces
                     .iter()
-                    .filter_map(|workspace| workspace["room"].as_str().map(str::to_owned))
+                    .filter_map(|workspace| workspace["id"].as_str().map(str::to_owned))
                     .collect()
             })
             .unwrap_or_default()
@@ -1492,7 +1487,7 @@ impl Device {
         let peers = &self.state()["state"]["peers"];
         let Some(members) = peers["workspaces"]
             .as_array()
-            .and_then(|held| held.iter().find(|held| held["room"] == json!(workspace)))
+            .and_then(|held| held.iter().find(|held| held["workspace"] == json!(workspace)))
             .and_then(|held| held["members"].as_array())
         else {
             return Vec::new();

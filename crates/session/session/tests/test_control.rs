@@ -27,8 +27,7 @@ use serde_json::{Value, json};
 use tilo_compositor::KeyRepeat;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE};
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_service::Service as _;
 use tilo_session::shell::state::WINDOW_MENU;
@@ -518,7 +517,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
         let tree = session.handle().read(Clone::clone);
         let workspace = tree.active_workspace().expect("a workspace is in front");
         (
-            workspace.slot.0.to_string(),
+            workspace.id().to_string(),
             workspace.strips.first().expect("a row").id.0,
         )
     };
@@ -607,18 +606,19 @@ fn desk(windows: &[(u64, &str)]) -> DesktopTree {
         })
         .collect();
     let front = groups.last().expect("a window").id;
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
         window_groups: groups,
     }];
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree.active_group.insert(StripId(2), front);
     tree
 }
@@ -637,18 +637,19 @@ fn tabbed(tabs: &[(u64, &str)]) -> DesktopTree {
         maximized: false,
         focus_history: Vec::new(),
     };
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = vec![Strip {
         id: StripId(2),
         name: "Main".into(),
         window_groups: vec![group],
     }];
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree.active_group.insert(StripId(2), 100);
     tree
 }

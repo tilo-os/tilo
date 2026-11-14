@@ -455,7 +455,7 @@ fn a_recording_publisher_cannot_advertise_a_durable_invocation_host() {
     }
     let mut tree = WorkspaceTree::default();
     let mut room = crate::test_support::Workspace::new(
-        crate::test_support::WorkspaceSlot(71),
+        crate::test_support::WorkspaceId::from_u128(71),
         "Explicit native peer",
     );
     room.set_owner(person_id_for_root(

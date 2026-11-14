@@ -18,8 +18,7 @@ use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::shared_record;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 
 fn identity() -> WorkspaceId {
@@ -57,14 +56,14 @@ fn group(id: u64, tabs: &[u64]) -> WindowGroup {
 
 /// One workspace with strip 1 holding group 10 [100, 101].
 fn desk() -> DesktopTree {
-    let mut workspace = Workspace::in_workspace(WorkspaceSlot(1), identity(), "Studio");
+    let mut workspace = Workspace::new(identity(), "Studio");
     workspace.set_owner("ada");
     let mut strip = Strip::new(StripId(1), "A");
     strip.window_groups = vec![group(10, &[100, 101])];
     workspace.strips = vec![strip];
     DesktopTree {
         workspaces: vec![workspace],
-        active: WorkspaceSlot(1),
+        active: WorkspaceId::from_u128(1),
         ..DesktopTree::default()
     }
 }

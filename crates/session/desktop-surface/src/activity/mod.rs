@@ -6,7 +6,7 @@ use std::{
     collections::HashMap,
     ops::{Deref, DerefMut},
 };
-use tilo_desktop_model::DesktopTree;
+use tilo_desktop_model::{DesktopTree, WorkspaceId};
 
 pub mod describer;
 pub mod index;
@@ -46,7 +46,7 @@ pub trait ActivityTree: Clone + Deref<Target = DesktopTree> + DerefMut {
     }
     /// The workspace whose layout the document holds, where it holds one workspace's: every change
     /// of it is that workspace's, whichever part of the record it wrote.
-    fn document_workspace(&self) -> Option<u64> {
+    fn document_workspace(&self) -> Option<WorkspaceId> {
         None
     }
 }
@@ -69,7 +69,7 @@ pub struct ActivitySnapshot {
     /// who owns it, who it is shared with, what it grants — is read from there.
     governance: Option<AutoCommit>,
     /// The workspace whose layout the document holds, where it holds one workspace's.
-    owning: Option<tilo_desktop_model::WorkspaceSlot>,
+    owning: Option<tilo_desktop_model::WorkspaceId>,
     /// What takes a change the model wrote back to the desk it came from: a host that keeps the
     /// workspace's own layout applies it here, and a host whose history is read only keeps none.
     commit: Option<Commit>,
@@ -125,12 +125,12 @@ impl ActivitySnapshot {
         snapshot
     }
 
-    /// Snapshot the desk of `desktop` from `slot`'s layout record: the strips, window groups and
+    /// Snapshot the desk of `desktop` from `workspace_id`'s layout record: the strips, window groups and
     /// windows it holds, and the changes of it a history lists.
     #[must_use]
     pub fn of_layout(
         desktop: DesktopTree,
-        slot: tilo_desktop_model::WorkspaceSlot,
+        workspace_id: tilo_desktop_model::WorkspaceId,
         doc: AutoCommit,
     ) -> Self {
         let mut snapshot = Self {
@@ -139,7 +139,7 @@ impl ActivitySnapshot {
             workspace: None,
             shape: Shape::Layout,
             governance: None,
-            owning: Some(slot),
+            owning: Some(workspace_id),
             commit: None,
         };
         let _ = snapshot.resync_activity_cache();
@@ -184,8 +184,8 @@ impl ActivityTree for ActivitySnapshot {
     fn governance_document(&self) -> Option<&AutoCommit> {
         self.governance.as_ref()
     }
-    fn document_workspace(&self) -> Option<u64> {
-        self.owning.map(|slot| slot.raw())
+    fn document_workspace(&self) -> Option<WorkspaceId> {
+        self.owning
     }
     fn replay_presentation_note(&self) -> Option<String> {
         // A workspace document records which windows the workspace holds and how they are arranged,
@@ -285,20 +285,20 @@ pub trait ActivityHost {
     ) -> Option<String> {
         None
     }
-    fn load_morning_sources(&self) -> HashMap<u64, morning::MorningPreferences> {
+    fn load_morning_sources(&self) -> HashMap<WorkspaceId, morning::MorningPreferences> {
         HashMap::new()
     }
-    fn save_morning_sources(&self, _sources: &HashMap<u64, morning::MorningPreferences>) {}
-    fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
+    fn save_morning_sources(&self, _sources: &HashMap<WorkspaceId, morning::MorningPreferences>) {}
+    fn load_frontiers(&self) -> HashMap<WorkspaceId, WorkspaceSeenFrontier> {
         HashMap::new()
     }
-    fn save_frontiers(&self, _frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {}
+    fn save_frontiers(&self, _frontiers: &HashMap<WorkspaceId, WorkspaceSeenFrontier>) {}
     /// When this device last left each workspace, for the away recap. Private to the device, like
     /// the seen frontiers.
-    fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
+    fn load_departures(&self) -> HashMap<WorkspaceId, WorkspaceDeparture> {
         HashMap::new()
     }
-    fn save_departures(&self, _departures: &HashMap<u64, WorkspaceDeparture>) {}
+    fn save_departures(&self, _departures: &HashMap<WorkspaceId, WorkspaceDeparture>) {}
     fn mutations_available(&self) -> bool {
         false
     }
@@ -376,14 +376,14 @@ pub struct ActivityDeepLink {
 mod admitted_history_tests {
     use super::*;
     use automerge::{ROOT, transaction::Transactable};
-    use tilo_desktop_model::{Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{Workspace, WorkspaceId};
 
     #[test]
     fn workspace_activity_real_workspace_topology_enters_pane_feed_and_replay() {
         use tilo_desktop_model::{
             AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
         };
-        let workspace = Workspace::new(WorkspaceSlot(9), "Actual workspace");
+        let workspace = Workspace::new(WorkspaceId::from_u128(9), "Actual workspace");
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "room", workspace.id().to_string()).unwrap();
         doc.put(ROOT, "name", "Actual workspace").unwrap();
@@ -432,7 +432,7 @@ mod admitted_history_tests {
         write(&mut doc, &strips);
         let mut snapshot = ActivitySnapshot::new(
             DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..Default::default()
             },
@@ -441,7 +441,7 @@ mod admitted_history_tests {
         .unwrap();
         let heads = snapshot.doc.get_heads();
         let mut pane = WorkspaceActivityPane::new();
-        pane.begin_view(9);
+        pane.begin_view(tilo_desktop_model::WorkspaceId::from_u128(9));
         pane.refresh(&mut snapshot);
         // The window opened and the title change are listed; setup and layout commits are not.
         let summaries = pane

@@ -9,13 +9,13 @@ use tilo_action_policy::{Change, Grant, Preset, Refusal};
 use tilo_actions::{ActionContext, ActionKey, Described, Did, Scalar};
 use tilo_sort::CompactSort as _;
 
-use crate::ids::WorkspaceSlot;
+use crate::ids::WorkspaceId;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
 use crate::workspace::{UserId, WORKSPACE_GOVERNANCE_APP_ID};
 
 impl DesktopTree {
-    /// Grant `grant` in `slot` at `now`, as `grantor` who must be allowed to
+    /// Grant `grant` in `workspace_id` at `now`, as `grantor` who must be allowed to
     /// grant in the workspace: the grant as stored, or why it was refused (the
     /// workspace is gone, the grantor may not grant, or not this much). The
     /// stored grant keeps the grantor its change names, which is not always
@@ -27,7 +27,7 @@ impl DesktopTree {
     /// The governance refusal.
     pub fn grant_in_workspace_at(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         grantor: &UserId,
         grant: Grant,
         now: u64,
@@ -35,7 +35,7 @@ impl DesktopTree {
         let workspace = self
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == slot)
+            .find(|workspace| workspace.id() == workspace_id)
             .ok_or_else(|| Refusal::OutsideWorkspace(grant.node.clone()))?;
         workspace.govern_as_at(grantor, Change::Grant(grant.clone()), now)?;
         Ok(workspace
@@ -47,7 +47,7 @@ impl DesktopTree {
             .unwrap_or(grant))
     }
 
-    /// Record one terminal effect in `slot`'s history, exactly once
+    /// Record one terminal effect in `workspace_id`'s history, exactly once
     /// per invocation: the receipt as stored, or `None` when the workspace is
     /// gone or already holds a receipt for the invocation. An application's
     /// effect is recorded [`WorkspaceEffectReceipt::redacted`]; a record the
@@ -55,13 +55,13 @@ impl DesktopTree {
     /// [`WorkspaceEffectReceipt::recorded`].
     pub fn append_workspace_effect_receipt(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         receipt: WorkspaceEffectReceipt,
     ) -> Option<WorkspaceEffectReceipt> {
         let workspace = self
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == slot)?;
+            .find(|workspace| workspace.id() == workspace_id)?;
         if workspace
             .effect_receipts
             .iter()
@@ -122,13 +122,13 @@ mod tests {
     };
 
     use super::*;
-    use crate::ids::{WorkspaceId, WorkspaceSlot};
+    use crate::ids::WorkspaceId;
     use crate::workspace::{Workspace, preset_assign_node};
     use tilo_actions::{EffectReceiptStatus, InvocationId};
 
-    fn tree() -> (DesktopTree, WorkspaceSlot) {
-        let id = WorkspaceSlot(1);
-        let mut workspace = Workspace::in_workspace(id, WorkspaceId::new(), "Home");
+    fn tree() -> (DesktopTree, WorkspaceId) {
+        let id = WorkspaceId::from_u128(1);
+        let mut workspace = Workspace::new(id, "Home");
         workspace.set_owner("owner");
         (
             DesktopTree {
@@ -240,7 +240,7 @@ mod tests {
             );
             assert!(
                 tree.grant_in_workspace_at(
-                    WorkspaceSlot(2),
+                    WorkspaceId::from_u128(2),
                     &"owner".to_string(),
                     app_grant(&workspace_id),
                     10

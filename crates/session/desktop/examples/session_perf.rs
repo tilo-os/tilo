@@ -27,8 +27,7 @@ use tilo_desktop::resolver::{
     ApplicationCatalogTileResolver, ComponentContextSource, TileRequest, TileResolver,
 };
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopSurface, TileSource};
 use ui::application::{
@@ -209,7 +208,7 @@ fn fixture(
     let mut workspaces = vec![];
     let mut next_tab: u64 = 10;
     for (w, name) in ["Work", "Design", "Reading"].into_iter().enumerate() {
-        let mut workspace = Workspace::new(WorkspaceSlot(w as u64 + 1), name);
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(w as u128 + 1), name);
         let mut strips = vec![];
         for s in 0..2usize {
             let mut groups = vec![];
@@ -269,7 +268,7 @@ fn fixture(
         workspaces.push(workspace);
     }
     let tree = DesktopTree {
-        active: workspaces[0].slot,
+        active: workspaces[0].id(),
         workspaces,
         ..Default::default()
     };

@@ -41,7 +41,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::WorkspaceId;
 
 /// The layout an index is: one snapshot per workspace, named with the
 /// revision it was written at, and that snapshot's journal beside it. A build
@@ -69,9 +69,9 @@ pub fn owner_file_of(state: &Path) -> PathBuf {
 /// What a host that keeps state derived from the record does around each
 /// publication of it.
 pub trait FileHost: std::any::Any + Send + Sync {
-    /// The workspace a local slot is, where the host has slots.
-    fn slot_workspace(&self, _slot: WorkspaceSlot) -> Option<WorkspaceId> {
-        None
+    /// Whether the host's desk holds `workspace`.
+    fn shows(&self, _workspace: WorkspaceId) -> bool {
+        false
     }
     /// Run `write`, which makes `next` durable and installs it, with
     /// whatever the host keeps beside the record: it may refuse the
@@ -84,7 +84,7 @@ pub trait FileHost: std::any::Any + Send + Sync {
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
-        change: Change<'_>,
+        change: Change,
         write: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<(), String> {
         let _ = (next, change);
@@ -694,14 +694,14 @@ impl Store for FileStore {
         self.uncertain.read().contains(&workspace)
     }
 
-    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
-        self.host.slot_workspace(slot)
+    fn shows(&self, workspace: WorkspaceId) -> bool {
+        self.host.shows(workspace)
     }
 
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
-        change: Change<'_>,
+        change: Change,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
         if !self.healthy() {

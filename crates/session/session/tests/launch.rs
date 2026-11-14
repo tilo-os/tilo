@@ -1010,7 +1010,7 @@ fn stand_in(session: &Session, workspace: &str) {
         tree.workspaces
             .iter()
             .find(|held| held.id().to_string() == workspace)
-            .map(|held| held.slot.0.to_string())
+            .map(|held| held.id().to_string())
     });
     let slot = slot.unwrap_or_else(|| panic!("the desk holds the workspace {workspace}"));
     session

@@ -16,7 +16,7 @@ use tilo_action_policy::{
 use crate::app::AppId;
 use crate::arrangement::Arrangement;
 use crate::capability::Capability;
-use crate::ids::{WorkspaceId, WorkspaceSlot};
+use crate::ids::WorkspaceId;
 use crate::layout::Strip;
 use crate::present::Present;
 use crate::receipt::WorkspaceEffectReceipt;
@@ -26,17 +26,6 @@ use collab_types::Member;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(from = "StoredWorkspace")]
 pub struct Workspace {
-    /// The desk's own handle for this workspace, in the salted strip/window
-    /// id space. Stored under `id`, the key it has always been written with.
-    #[serde(rename = "id")]
-    pub slot: WorkspaceSlot,
-    /// Durable identity of this workspace: the same value on every device.
-    /// Given once, when the workspace is made ([`Self::new`] mints one,
-    /// [`Self::in_workspace`] takes the identity of the workspace created or
-    /// joined), and never changed: read it with [`Self::id`]. Joining the
-    /// same workspace again lands in the same workspace. Stored under `room`,
-    /// the key it has always been written with.
-    #[serde(rename = "room")]
     id: WorkspaceId,
     pub name: String,
     pub strips: Vec<Strip>,
@@ -114,9 +103,6 @@ pub struct Workspace {
 /// absent for a workspace that names no authority yet.
 #[derive(Deserialize)]
 struct StoredWorkspace {
-    #[serde(rename = "id")]
-    slot: WorkspaceSlot,
-    #[serde(rename = "room")]
     id: WorkspaceId,
     name: String,
     strips: Vec<Strip>,
@@ -153,7 +139,6 @@ impl From<StoredWorkspace> for Workspace {
             None => WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
         };
         Self {
-            slot: stored.slot,
             id: identity,
             name: stored.name,
             strips: stored.strips,
@@ -436,21 +421,21 @@ impl Workspace {
     /// one. A re-grant of the same (grantee, app, scope, effect, access) merges,
     /// keeping the longer-lived expiry.
     pub fn grant_sandbox(&mut self, mut cap: CapOverride) -> String {
-        if let Some(slot) = self.sandbox.iter_mut().find(|c| {
+        if let Some(held) = self.sandbox.iter_mut().find(|c| {
             c.grantee == cap.grantee
                 && c.app == cap.app
                 && c.scope == cap.scope
                 && c.effect == cap.effect
                 && c.access == cap.access
         }) {
-            slot.expiry = collab_types::caps::Expiry::longest(slot.expiry, cap.expiry);
+            held.expiry = collab_types::caps::Expiry::longest(held.expiry, cap.expiry);
             if !cap.id.is_empty() {
-                slot.id = cap.id;
+                held.id = cap.id;
             }
             if cap.granted_by.is_some() {
-                slot.granted_by = cap.granted_by;
+                held.granted_by = cap.granted_by;
             }
-            return slot.id.clone();
+            return held.id.clone();
         }
         if cap.id.is_empty() {
             cap.id = mint_capability_id();
@@ -962,44 +947,16 @@ impl Workspace {
 pub use tilo_action_policy::roles::preset_assign_node;
 
 impl Workspace {
-    /// A workspace whose durable identity is minted here: it exists from the
-    /// moment it is made, not lazily.
-    pub fn new(slot: WorkspaceSlot, name: impl Into<String>) -> Self {
-        Self::in_workspace(slot, WorkspaceId::new(), name)
-    }
-
-    /// A new workspace named `name`, whose durable identity is minted here, in
-    /// the slot every device derives from that identity ([`WorkspaceSlot::of_workspace`]).
-    pub fn create(name: impl Into<String>) -> Self {
-        let identity = WorkspaceId::new();
-        Self::in_workspace(WorkspaceSlot::of_workspace(identity), identity, name)
-    }
-
-    /// Every window of this workspace, in its order: strip by strip, group by group.
-    pub fn tabs(&self) -> impl Iterator<Item = &crate::Tab> {
-        self.strips
-            .iter()
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-    }
-
-    /// The workspace that is `identity`, created or joined, in the local slot
-    /// `slot`: new workspaces take [`WorkspaceSlot::of_workspace`], an existing
-    /// one keeps the slot it was stored under.
-    pub fn in_workspace(
-        slot: WorkspaceSlot,
-        identity: WorkspaceId,
-        name: impl Into<String>,
-    ) -> Self {
+    /// The workspace `id`, named `name`, with nothing in it yet.
+    pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self {
-            slot,
-            id: identity,
+            id,
             name: name.into(),
             strips: Vec::new(),
             arrangement: Arrangement::default(),
             members: Vec::new(),
             present: Vec::new(),
-            policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
+            policy: WorkspacePolicy::unowned(id.to_string(), &Grantee::role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
             default_apps: desktop_policy::WorkspaceDefaults::default(),
@@ -1012,6 +969,14 @@ impl Workspace {
         }
     }
 
+    /// Every window of this workspace, in its order: strip by strip, group by group.
+    pub fn tabs(&self) -> impl Iterator<Item = &crate::Tab> {
+        self.strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+    }
+
     /// A copy holding what authority decisions read — identity, the workspace's
     /// policy, sandbox, presets, defaults — and none of the layout or
     /// history: no strips, effect receipts, shortcuts or schedule claims. For
@@ -1021,7 +986,6 @@ impl Workspace {
     pub fn policy_view(&self) -> Self {
         // Destructured, so a new field has to be sorted into one side.
         let Self {
-            slot,
             id,
             name,
             strips: _,
@@ -1040,7 +1004,6 @@ impl Workspace {
             closed_tabs: _,
         } = self;
         Self {
-            slot: *slot,
             id: *id,
             name: name.clone(),
             strips: Vec::new(),
@@ -1089,29 +1052,9 @@ impl Workspace {
 }
 
 impl Default for Workspace {
-    /// Workspace is minted, not left at [`WorkspaceId::nil`] — two workspaces
-    /// built this way must not silently become the same workspace.
+    /// A workspace with a fresh id: two made this way are never the same workspace.
     fn default() -> Self {
-        let identity = WorkspaceId::new();
-        Self {
-            slot: WorkspaceSlot::default(),
-            id: identity,
-            name: String::new(),
-            strips: Vec::new(),
-            arrangement: Arrangement::default(),
-            members: Vec::new(),
-            present: Vec::new(),
-            policy: WorkspacePolicy::unowned(identity.to_string(), &Grantee::role(Role::Owner)),
-            sandbox: Vec::new(),
-            presets: Vec::new(),
-            default_apps: desktop_policy::WorkspaceDefaults::default(),
-            effect_receipts: Vec::new(),
-            shortcuts: Vec::new(),
-            schedule_claims: Vec::new(),
-            bots: Vec::new(),
-            shared_surfaces: SharedSurfaces::default(),
-            closed_tabs: crate::closed_tabs::ClosedTabs::default(),
-        }
+        Self::new(WorkspaceId::new(), String::new())
     }
 }
 

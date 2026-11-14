@@ -63,8 +63,8 @@ impl Store for PageWorkspaces {
         !self.healthy()
     }
 
-    fn slot_workspace(&self, _slot: tilo_desktop_model::WorkspaceSlot) -> Option<WorkspaceId> {
-        None
+    fn shows(&self, _workspace: WorkspaceId) -> bool {
+        false
     }
 
     fn put_custody(&self, workspace: WorkspaceId, bytes: &[u8]) -> Result<[u8; 32], String> {
@@ -88,7 +88,7 @@ impl Store for PageWorkspaces {
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
-        _change: Change<'_>,
+        _change: Change,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
         let bytes = serde_json::to_vec(next).map_err(|error| error.to_string())?;

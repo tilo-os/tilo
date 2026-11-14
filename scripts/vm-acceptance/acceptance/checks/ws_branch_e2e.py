@@ -155,7 +155,7 @@ def answered_id(value) -> str | None:
 def by_answer(state: dict, answer: str, before: set) -> dict | None:
     """The new workspace the answer names, by any of its ids."""
     for w in workspace_rows(state):
-        if w["id"] not in before and answer in (str(w.get("id")), str(w.get("room"))):
+        if w["id"] not in before and answer == str(w.get("id")):
             return w
     return None
 
@@ -273,7 +273,7 @@ def new_note(ctx, ws: dict, title: str) -> None:
             "journalctl --no-pager -o cat | sed 's/\\x1b\\[[0-9;]*m//g' | grep -a 'so.tilo.notes' "
             "| grep -avE 'FRAME-LIFECYCLE|paint-stats|andlock|DBUS_SESSION|optional service' "
             "| tail -n 120 | cut -c1-600", timeout=180, check=False)
-        kept = ctx.vm.exec(f'cd "$HOME/{APP_ROOMS}/{ws.get("room")}/{ae.NOTES}" 2>/dev/null && '
+        kept = ctx.vm.exec(f'cd "$HOME/{APP_ROOMS}/{ws.get("id")}/{ae.NOTES}" 2>/dev/null && '
                            "find . -type f -printf '%s %p\\n' | sort -k2 | head -n 80", check=False)
         ctx.write(f"{ws.get('name')}-notes-said.txt", everything + "\n---\n" + kept)
         raise CheckFailed(f"{ws.get('name')}: Notes' new-note {title!r} did not succeed: {exc.reason()}; "
@@ -360,7 +360,7 @@ print("E2E-RUNTIME " + data.decode(errors="replace").strip())
 def runtime_environments(ctx, ws: dict) -> list[dict]:
     """The environments of `ws` as the runtime that keeps them lists them (`list-environments`,
     which Terminal's picker asks when it opens): `[{record, name}]`."""
-    out = ctx.vm.exec(f"python3 -c {shlex.quote(RUNTIME_LIST)} {shlex.quote(str(ws.get('room')))}", check=False)
+    out = ctx.vm.exec(f"python3 -c {shlex.quote(RUNTIME_LIST)} {shlex.quote(str(ws.get('id')))}", check=False)
     line = next((l for l in out.splitlines() if l.startswith("E2E-RUNTIME ")), None)
     try:
         reply = json.loads(line[len("E2E-RUNTIME "):]) if line else {}
@@ -377,7 +377,7 @@ def terminal_in(ctx, ws: dict, label: str) -> ae.Terminal:
     ae.select_workspace(ctx, ws)
 
     def mine():
-        rows = [r for r in ae.terminal_rows(ctx) if r.get("room") in (None, "", ws.get("room"))]
+        rows = [r for r in ae.terminal_rows(ctx) if r.get("room") in (None, "", ws.get("id"))]
         return sorted({ae.identity(r) for r in rows}, key=str) or None
 
     there = wait_until(mine, 5, interval=1.0)
@@ -552,10 +552,9 @@ fi
     if "E2E-WROTE" not in wrote:
         raise CheckFailed(f"the data did not go into {tree} within 1800 s: {wrote[-400:]}")
     ws.update(tree=tree, tilo_workspace=facts.get("TILO_WORKSPACE", ""), record=entered["record"])
-    # Which of the desk's ids names the workspace to its environments.
-    field = next((f for f in ("id", "room") if ws_key(ws, f) == ws["tilo_workspace"]), None)
-    problems.want(field is not None, f"TILO_WORKSPACE {ws['tilo_workspace']!r} is neither the desk's id "
-                                     f"{ws.get('id')!r} nor room {ws.get('room')!r} of the workspace")
+    field = "id" if ws_key(ws, "id") == ws["tilo_workspace"] else None
+    problems.want(field is not None, f"TILO_WORKSPACE {ws['tilo_workspace']!r} is not the workspace's id "
+                                     f"{ws.get('id')!r}")
     problems.want(tree.endswith("/" + ws["tilo_workspace"]),
                   f"the workspace's tree {tree} is not named for {ws['tilo_workspace']}")
     state = ctx.state()
@@ -571,7 +570,7 @@ fi
         "files": tree_count(ctx, tree, DATA_DIR), "bytes": size,
         "git": facts.get("git", "absent"),
     }
-    res.metrics.update(workspace={k: ws.get(k) for k in ("id", "room", "name", "tilo_workspace", "tree", "record")},
+    res.metrics.update(workspace={k: ws.get(k) for k in ("id", "name", "tilo_workspace", "tree", "record")},
                        desk=apps, bytes=size, git=facts.get("git"))
     try:
         titles = note_titles(ctx, ws)
@@ -671,12 +670,12 @@ def branch_by_cli(ctx, source: dict, name: str, field: str) -> tuple[dict, dict]
     text = out.rsplit("E2E-STATUS", 1)[0].strip()
     # The branch goes on the desk once what it holds is copied; the command says its id at once.
     made = wait_until(lambda: awake(ctx) and next((w for w in workspace_rows(ctx.state())
-                                    if w["id"] not in before and (w.get("name") == name or str(w.get("room")) in text)),
+                                    if w["id"] not in before and (w.get("name") == name or str(w.get("id")) in text)),
                                    None), BRANCH_S, interval=1.0)
     if made is None:
         raise CheckFailed(f"`tilo workspace branch` said {text[-300:]!r}; the desk shows no workspace {name!r}")
     ctx.wait_state(lambda s: ae.held_here(s, made["id"]), 120, f"{name} held on this device")
-    named = [w for w in (str(made.get("id")), str(made.get("room"))) if w in text]
+    named = [w for w in (str(made.get("id")),) if w in text]
     return made, {"seconds": seconds, "said": text[-300:], "names_it": bool(named)}
 
 
@@ -708,7 +707,7 @@ def branch(ctx, res):
                            BRANCH_S, interval=2.0)
         timing["data_s"] = round(timing["held_s"] + (time.monotonic() - started), 2)
         made["tree"] = tree
-        timing["said"] = branch_said(ctx, name, str(made.get("room")))
+        timing["said"] = branch_said(ctx, name, str(made.get("id")))
         problems.want(not timing["said"]["missing"], f"{name} is not complete: {timing['said']}")
         during = timing["desk_during_s"]
         timing["desk_max_s"] = max(during) if during else None
@@ -733,7 +732,7 @@ def branch(ctx, res):
         made["name"] = made.get("name") or name
         made["tree"] = scene["source"]["tree"].rsplit("/", 1)[0] + "/" + ws_key(made, field)
         timings[CLI_BRANCH] = timing
-        timing["said_complete"] = branch_said(ctx, name, str(made.get("room")))
+        timing["said_complete"] = branch_said(ctx, name, str(made.get("id")))
         problems.want(not timing["said_complete"]["missing"], f"{name} is not complete: {timing['said_complete']}")
         problems.want(timing["names_it"], f"`tilo workspace branch` did not say the new workspace's id: "
                                           f"{timing['said']!r}")
@@ -742,7 +741,7 @@ def branch(ctx, res):
         problems.append(str(exc))
     ids = [source["id"]] + [b["id"] for b in branches] + ([scene["cli_branch"]["id"]] if "cli_branch" in scene else [])
     problems.want(len(set(ids)) == len(ids), f"the branches are not workspaces of their own: {ids}")
-    res.metrics["branches"] = [{k: b.get(k) for k in ("id", "room", "name", "tree")} for b in branches]
+    res.metrics["branches"] = [{k: b.get(k) for k in ("id", "name", "tree")} for b in branches]
     res.metrics["timings"] = {k: {x: v for x, v in t.items() if x not in ("desk_during_s", "answer")}
                               for k, t in timings.items()}
     scene["branches"] = branches
@@ -774,7 +773,7 @@ def chat_rows(ctx, operation: str) -> list[dict]:
 
 def chat_dir(ctx, ws: dict) -> bool:
     """Whether this device keeps Chat's data for `ws` (an app's data in a workspace)."""
-    out = ctx.vm.exec(f'[ -d "$HOME/{APP_ROOMS}/{ws["room"]}/{CHAT}" ] && echo E2E-YES || echo E2E-NO',
+    out = ctx.vm.exec(f'[ -d "$HOME/{APP_ROOMS}/{ws["id"]}/{CHAT}" ] && echo E2E-YES || echo E2E-NO',
                       check=False)
     return "E2E-YES" in out
 

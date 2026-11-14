@@ -41,7 +41,7 @@ use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
     GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot, shared_record,
+    WorkspaceId, shared_record,
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay::workspaces::RemoveMemberRequest;
@@ -98,7 +98,7 @@ fn held(session: &Session) -> Vec<(String, String, String)> {
             .iter()
             .map(|held| {
                 (
-                    held.slot.0.to_string(),
+                    held.id().to_string(),
                     held.name.clone(),
                     held.id().to_string(),
                 )
@@ -637,7 +637,7 @@ fn joining_a_listed_workspace_enters_through_its_door_and_lands_in_it() {
         "the workspace goes by the name it was listed under"
     );
     assert_eq!(
-        session.handle().read(|tree| tree.active.0.to_string()),
+        session.handle().read(|tree| tree.active.to_string()),
         joined.0,
         "and the person lands in it"
     );
@@ -728,9 +728,10 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     open_directory(&mut session);
     look_up_site(&mut session, &lounge.entry);
     let desk_before: Vec<(String, String, String)> = held(&session);
-    let in_front_before = session
-        .handle()
-        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot));
+    let in_front_before = session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(tilo_desktop_model::Workspace::id)
+    });
     ask_to_join(&mut session, &lounge.workspace);
     wait_until(&mut session, "the door answered", |session| {
         listing(session, "Lounge").action == ListingAction::TryAgain
@@ -753,9 +754,9 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     // The person stays where they were: no empty workspace was ever shown to arrive in, and none
     // was taken away again.
     assert_eq!(
-        session
-            .handle()
-            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot)),
+        session.handle().read(|tree| tree
+            .active_workspace()
+            .map(tilo_desktop_model::Workspace::id)),
         in_front_before,
         "the person is where they were: the workspace in front did not move"
     );
@@ -1400,7 +1401,7 @@ type HeldStrip<'a> = (u64, &'a str, &'a [(u64, &'a str)]);
 /// A workspace's shared desktop, as the people in it left it: `strips` names each strip with the
 /// windows opened in it, all of them `person` 's.
 fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
     for (strip_id, name, windows) in strips {
         let mut strip = Strip::new(StripId::from(*strip_id), *name);
@@ -1431,7 +1432,7 @@ fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
     }
     SharedDesktop {
         tree: tilo_desktop_model::DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..tilo_desktop_model::DesktopTree::default()
         },

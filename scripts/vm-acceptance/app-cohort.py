@@ -84,7 +84,7 @@ class AppDoor:
 
 
 def windows(state, app):
-    return {(str(w["room"]), str(t["id"]), str(f["surface_id"]))
+    return {(str(w["id"]), str(t["id"]), str(f["surface_id"]))
             for w in state["workspace_tree"]["workspaces"]
             for strip in w["strips"] for group in strip["window_groups"] for t in group["tabs"]
             if (f := (t.get("tile") or {}).get("Foreign")) and f.get("app_id") == app}

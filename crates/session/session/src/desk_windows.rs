@@ -122,7 +122,7 @@ fn window_reading(tab: &Tab, at: Standing<'_>, handle: &DesktopHandle) -> Window
         strip: at.strip_name.to_owned(),
         strip_key: at.strip.id.0.to_string(),
         workspace: at.workspace_name.to_owned(),
-        workspace_key: at.workspace.slot.0.to_string(),
+        workspace_key: at.workspace.id().to_string(),
         group_key: at.group.id.to_string(),
         tab_index: at.tab_index,
         share: at.share,
@@ -153,7 +153,7 @@ pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<Window>
     };
     let active_strip = tree
         .active_strip
-        .get(&front.slot)
+        .get(&front.id())
         .copied()
         .or_else(|| front.strips.first().map(|strip| strip.id));
     // The tabs the focus history remembers, most recent first.
@@ -164,11 +164,11 @@ pub(crate) fn windows(tree: &DesktopTree, handle: &DesktopHandle) -> Vec<Window>
         .flat_map(|group| group.focus_history.iter().rev().copied())
         .collect();
     let mut workspaces: Vec<&_> = tree.workspaces.iter().collect();
-    workspaces.sort_by_key(|workspace| workspace.slot != front.slot);
+    workspaces.sort_by_key(|workspace| workspace.id() != front.id());
     let mut readings = Vec::new();
     let mut focused_tab = None;
     for workspace in workspaces {
-        let in_front = workspace.slot == front.slot;
+        let in_front = workspace.id() == front.id();
         let workspace_name = tilo_desktop_surface::names::workspace(&workspace.name);
         let mut place = 0_i64;
         for (at_strip, strip) in workspace.strips.iter().enumerate() {

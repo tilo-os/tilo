@@ -215,16 +215,16 @@ pub(super) fn reading_of(
     let mut reading = Reading::default();
     for workspace in &tree.workspaces {
         reading.workspaces.push(WorkspaceReading {
-            key: workspace.slot.0.to_string(),
+            key: workspace.id().to_string(),
             name: workspace.name.clone(),
             // A desk holds every workspace the person is in and shows one: the shell draws the
             // rows of the one in front, so the reading says which that is.
-            current: workspace.slot == tree.active,
+            current: workspace.id() == tree.active,
         });
         for row in &workspace.strips {
             reading.rows.push(RowReading {
                 key: row.id.0.to_string(),
-                workspace: workspace.slot.0.to_string(),
+                workspace: workspace.id().to_string(),
                 name: row.name.clone(),
                 shell: SHELL.to_owned(),
             });
@@ -233,7 +233,7 @@ pub(super) fn reading_of(
                 let float = workspace.arrangement.float_of(group.id);
                 reading.strips.push(StripReading {
                     key: group.id.to_string(),
-                    workspace: workspace.slot.0.to_string(),
+                    workspace: workspace.id().to_string(),
                     row: row.id.0.to_string(),
                     width: i64::from(group.width.permille()),
                     maximized: group.maximized,

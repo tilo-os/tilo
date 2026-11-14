@@ -262,7 +262,7 @@ mod tests {
     use collab_types::presence::{Payload, Presence};
     use tilo_desktop_model::{
         DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-        Workspace, WorkspaceId, WorkspaceSlot,
+        Workspace, WorkspaceId,
     };
     use tilo_relay_protocol::live::LiveRecord;
     use tilo_session_core::presence::{Follow, Place, Step, Target};
@@ -284,8 +284,7 @@ mod tests {
     /// A desk showing one workspace, with one window called Notes showing [`RECORD`].
     fn desk() -> DesktopTree {
         let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-        let slot = WorkspaceSlot::of_workspace(workspace);
-        let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
+        let mut workspace = Workspace::new(workspace, "Desk");
         let mut strip = Strip::new(StripId::from(1), "Main");
         strip.window_groups.push(WindowGroup {
             id: GroupId::from(1_u64),
@@ -309,7 +308,7 @@ mod tests {
         workspace.strips.push(strip);
         DesktopTree {
             workspaces: vec![workspace.clone()],
-            active: workspace.slot,
+            active: workspace.id(),
             ..DesktopTree::default()
         }
     }

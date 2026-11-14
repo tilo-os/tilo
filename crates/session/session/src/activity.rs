@@ -18,7 +18,7 @@ use ui::time::Instant;
 
 use durable_store::{DurableStore, StorageKey, WriteOp};
 use serde_json::Value;
-use tilo_desktop_model::{DesktopTree, TabId, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
@@ -67,15 +67,15 @@ type ToldRefusal = (String, [u8; 32], neighbour_wire::RefusalReason);
 /// Where the pane reads the desk's own history, and writes what a model says of its changes: the
 /// workspaces' layout records.
 pub trait DeskHistory {
-    /// The history of the desk in the workspace `slot` of `tree`.
-    fn history(&self, tree: &DesktopTree, slot: WorkspaceSlot) -> Option<ActivitySnapshot>;
+    /// The history of the desk in the workspace `workspace_id` of `tree`.
+    fn history(&self, tree: &DesktopTree, workspace_id: WorkspaceId) -> Option<ActivitySnapshot>;
     /// The layout of each workspace `tree` shows, as this host holds it.
-    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, automerge::AutoCommit)>;
-    /// Write what `write` changes in the layout of `slot`. Whether anything was written.
+    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceId, automerge::AutoCommit)>;
+    /// Write what `write` changes in the layout of `workspace_id`. Whether anything was written.
     fn describe(
         &self,
         tree: &DesktopTree,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
     ) -> bool;
     /// A number that moves whenever the desk's layout does.
@@ -171,7 +171,7 @@ struct Inner {
     describer: RefCell<Describer>,
     /// Answers the model gave, waiting for the desk's thread to write them, each with the workspace
     /// whose layout it was asked about.
-    described: Arc<Mutex<Vec<(WorkspaceSlot, Job, String)>>>,
+    described: Arc<Mutex<Vec<(WorkspaceId, Job, String)>>>,
     /// One request at a time keeps a long history from spending the person's provider on a burst.
     describing: Arc<AtomicBool>,
     /// The desk's changes the describer last read, so a pass with nothing new asks nothing.
@@ -485,15 +485,15 @@ impl Activity {
         let answers = std::mem::take(&mut *self.0.described.lock_recover());
         {
             let mut describer = self.0.describer.borrow_mut();
-            for (slot, job, answer) in answers {
+            for (workspace_id, job, answer) in answers {
                 wrote |= if answer.is_empty() {
                     // No model answered: nothing is described in its place.
                     describer.failed(&job);
                     false
                 } else {
-                    self.0
-                        .layouts
-                        .describe(tree, slot, &mut |doc| describer.apply(doc, &job, &answer))
+                    self.0.layouts.describe(tree, workspace_id, &mut |doc| {
+                        describer.apply(doc, &job, &answer)
+                    })
                 };
             }
         }
@@ -513,13 +513,13 @@ impl Activity {
         let mut describer = self.0.describer.borrow_mut();
         describer.set_enabled(self.0.models.is_some());
         let mut asked = None;
-        for (slot, mut doc) in self.0.layouts.documents(tree) {
+        for (workspace_id, mut doc) in self.0.layouts.documents(tree) {
             if let Some(job) = describer.next(&mut doc) {
-                asked = Some((slot, job));
+                asked = Some((workspace_id, job));
                 break;
             }
         }
-        let Some((slot, job)) = asked else {
+        let Some((workspace_id, job)) = asked else {
             self.0.looked_for_model.set(Some(Instant::now()));
             return wrote;
         };
@@ -533,7 +533,7 @@ impl Activity {
         let models = self.0.models.clone();
         let ask = move || async move {
             let answer = crate::activity_models::answer(models.as_deref(), &job).await;
-            answers.lock_recover().push((slot, job, answer));
+            answers.lock_recover().push((workspace_id, job, answer));
             describing.store(false, Ordering::Release);
             // The desk draws a frame to write the answer where it belongs.
             ask_for_frame(&woken, wake.as_ref());
@@ -551,10 +551,10 @@ impl Activity {
     }
 
     /// The `WorkspaceId` of `workspace` , as `tree` holds it.
-    fn id_of(tree: &DesktopTree, workspace: WorkspaceSlot) -> Option<WorkspaceId> {
+    fn id_of(tree: &DesktopTree, workspace: WorkspaceId) -> Option<WorkspaceId> {
         tree.workspaces
             .iter()
-            .find(|held| held.slot == workspace)
+            .find(|held| held.id() == workspace)
             .map(Workspace::id)
     }
 
@@ -654,7 +654,7 @@ impl HistorySource for Activity {
     fn workspace_history(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
     ) -> Option<ActivitySnapshot> {
         Self::id_of(tree, workspace)?;
         let mut snapshot = self.0.layouts.history(tree, workspace)?;
@@ -672,7 +672,7 @@ impl HistorySource for Activity {
     fn record_histories(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
     ) -> Vec<DetachedRecordHistory> {
         let mut records = Vec::new();
         if let Some(workspace_id) = Self::id_of(tree, workspace) {
@@ -837,27 +837,27 @@ impl ActivityHost for Host {
         (!self.0.person.is_empty()).then(|| self.0.person.clone())
     }
 
-    fn load_morning_sources(&self) -> HashMap<u64, morning::MorningPreferences> {
+    fn load_morning_sources(&self) -> HashMap<WorkspaceId, morning::MorningPreferences> {
         self.0.maps.map("morning_sources")
     }
 
-    fn save_morning_sources(&self, sources: &HashMap<u64, morning::MorningPreferences>) {
+    fn save_morning_sources(&self, sources: &HashMap<WorkspaceId, morning::MorningPreferences>) {
         self.0.maps.save("morning_sources", sources);
     }
 
-    fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
+    fn load_frontiers(&self) -> HashMap<WorkspaceId, WorkspaceSeenFrontier> {
         self.0.maps.map("seen_frontiers")
     }
 
-    fn save_frontiers(&self, frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {
+    fn save_frontiers(&self, frontiers: &HashMap<WorkspaceId, WorkspaceSeenFrontier>) {
         self.0.maps.save("seen_frontiers", frontiers);
     }
 
-    fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
+    fn load_departures(&self) -> HashMap<WorkspaceId, WorkspaceDeparture> {
         self.0.maps.map("departures")
     }
 
-    fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
+    fn save_departures(&self, departures: &HashMap<WorkspaceId, WorkspaceDeparture>) {
         self.0.maps.save("departures", departures);
     }
 
@@ -1027,7 +1027,7 @@ impl Activity {
     pub fn own_actions(
         &self,
         tree: &DesktopTree,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
         author: &str,
         since_ms: u64,
     ) -> Vec<OwnAction> {
@@ -1040,7 +1040,7 @@ impl Activity {
             .layouts
             .documents(tree)
             .into_iter()
-            .find(|(slot, _)| *slot == workspace)
+            .find(|(workspace_id, _)| *workspace_id == workspace)
             .and_then(|(_, doc)| tilo_desktop_model::shared_record::read(&doc, None))
             .map(|layout| {
                 layout
@@ -1314,7 +1314,7 @@ impl HistoryMaps {
     }
 
     /// `key` 's per-workspace map, as this session last kept it.
-    fn map<T: serde::de::DeserializeOwned>(&self, key: &str) -> HashMap<u64, T> {
+    fn map<T: serde::de::DeserializeOwned>(&self, key: &str) -> HashMap<WorkspaceId, T> {
         self.known
             .borrow()
             .get(key)
@@ -1331,7 +1331,7 @@ impl HistoryMaps {
     }
 
     /// Keep `values` as `key` 's map, for this session and the next.
-    fn save<T: serde::Serialize>(&self, key: &str, values: &HashMap<u64, T>) {
+    fn save<T: serde::Serialize>(&self, key: &str, values: &HashMap<WorkspaceId, T>) {
         let map = Value::Object(
             values
                 .iter()
@@ -1460,7 +1460,7 @@ mod tests {
     /// The workspaces as a test session keeps them: each one's layout record and its own document,
     /// written from the desk on each frame as the person here.
     #[derive(Clone, Default)]
-    struct Records(std::rc::Rc<RefCell<HashMap<WorkspaceSlot, Kept>>>);
+    struct Records(std::rc::Rc<RefCell<HashMap<WorkspaceId, Kept>>>);
 
     #[derive(Clone)]
     struct Kept {
@@ -1479,7 +1479,7 @@ mod tests {
             let layout = tilo_desktop_model::ownership::SharedDesktop {
                 tree: DesktopTree {
                     workspaces: vec![workspace.clone()],
-                    active: workspace.slot,
+                    active: workspace.id(),
                     ..DesktopTree::default()
                 },
                 ..Default::default()
@@ -1497,7 +1497,7 @@ mod tests {
                 );
             };
             let mut held = self.0.borrow_mut();
-            let kept = held.entry(workspace.slot).or_insert_with(|| {
+            let kept = held.entry(workspace.id()).or_insert_with(|| {
                 let doc = || {
                     let mut doc = ui::automerge::AutoCommit::new();
                     doc.set_actor(tilo_session_core::desk::actor_of_person("ada"));
@@ -1534,41 +1534,48 @@ mod tests {
             }
         }
 
-        fn of(&self, slot: WorkspaceSlot) -> Option<ui::automerge::AutoCommit> {
-            self.0.borrow().get(&slot).map(|kept| kept.layout.clone())
+        fn of(&self, workspace_id: WorkspaceId) -> Option<ui::automerge::AutoCommit> {
+            self.0
+                .borrow()
+                .get(&workspace_id)
+                .map(|kept| kept.layout.clone())
         }
     }
 
     impl DeskHistory for Records {
-        fn history(&self, tree: &DesktopTree, slot: WorkspaceSlot) -> Option<ActivitySnapshot> {
-            let kept = self.0.borrow().get(&slot)?.clone();
+        fn history(
+            &self,
+            tree: &DesktopTree,
+            workspace_id: WorkspaceId,
+        ) -> Option<ActivitySnapshot> {
+            let kept = self.0.borrow().get(&workspace_id)?.clone();
             Some(
-                ActivitySnapshot::of_layout(tree.clone(), slot, kept.layout)
+                ActivitySnapshot::of_layout(tree.clone(), workspace_id, kept.layout)
                     .governing(kept.governance),
             )
         }
 
-        fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, ui::automerge::AutoCommit)> {
+        fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceId, ui::automerge::AutoCommit)> {
             tree.workspaces
                 .iter()
-                .filter_map(|workspace| Some((workspace.slot, self.of(workspace.slot)?)))
+                .filter_map(|workspace| Some((workspace.id(), self.of(workspace.id())?)))
                 .collect()
         }
 
         fn describe(
             &self,
             _tree: &DesktopTree,
-            slot: WorkspaceSlot,
+            workspace_id: WorkspaceId,
             write: &mut dyn FnMut(&mut ui::automerge::AutoCommit) -> bool,
         ) -> bool {
-            let Some(mut record) = self.of(slot) else {
+            let Some(mut record) = self.of(workspace_id) else {
                 return false;
             };
             if !write(&mut record) {
                 return false;
             }
             let _ = tilo_resource::history::commit_stamped(&mut record);
-            if let Some(kept) = self.0.borrow_mut().get_mut(&slot) {
+            if let Some(kept) = self.0.borrow_mut().get_mut(&workspace_id) {
                 kept.layout = record;
             }
             true
@@ -1590,7 +1597,7 @@ mod tests {
         surface: DesktopSurface,
         handle: DesktopHandle,
         activity: Activity,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
         records: Records,
     }
 
@@ -1656,7 +1663,7 @@ mod tests {
         fn open_history(&mut self) {
             self.handle
                 .dispatch(ChromeEffect::Activity {
-                    workspace: self.workspace.raw().to_string(),
+                    workspace: self.workspace.to_string(),
                     view: ActivityView::Explore,
                     author: None,
                 })

@@ -12,7 +12,7 @@ use tilo_desktop::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::commands::Standing;
 use tilo_desktop_model::ownership::Authors;
-use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
 use tilo_desktop_surface::host::chrome::{ChromeSource, Facts, HostChrome, Notices};
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::headless::FrameHarness;
@@ -79,14 +79,15 @@ impl ChromeSource for Page {
 
 /// A person's own workspace, one strip and no window: the bare desk.
 fn own_desk() -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
     workspace.strips = vec![Strip::new(StripId(2), "Main")];
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree
 }
 

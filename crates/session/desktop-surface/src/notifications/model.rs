@@ -202,7 +202,7 @@ pub struct Notification {
     pub app_image: Option<ui::icons::AppImage>,
     /// The launcher-attributed id: the only key policy and grouping may use.
     pub app_id: Option<String>,
-    pub source_workspace: Option<u64>,
+    pub source_workspace: Option<tilo_desktop_model::WorkspaceId>,
     /// `(key, label)` pairs; activating the banner invokes the default, or the first.
     pub actions: Vec<(String, String)>,
     /// Whether it counts on the redacted lock screen; its content is never rendered there.

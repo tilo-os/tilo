@@ -1,8 +1,8 @@
 use crate::owner::{
     Change, NativeAuthorityStorage, NativeCommittedView, NativeWorkspaceOwner, NeighbourMsg,
     PendingEnrollmentId, PendingEnrollmentStatus, StatePeer, SystemTime, TransportOrigin,
-    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, WorkspaceSlot, limits,
-    publication, record,
+    VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent, WorkspaceId, limits, publication,
+    record,
 };
 use record::{StoredPendingEnrollment, StoredWorkspace};
 
@@ -129,12 +129,11 @@ pub(crate) fn migrate_intents(storage: &mut NativeAuthorityStorage) -> Result<bo
 impl NativeWorkspaceOwner {
     /// Persist the signed Complete proof before it is sent, so a lost
     /// response is retried with the exact same proof. `local` is the
-    /// local slot the enrolled workspace will be shown in, where the host has
-    /// slots.
+    /// workspace on the host's desk the enrollment installs into, made for it.
     pub fn prepare_enrollment_into(
         &self,
         intent: &VerifiedNativeEnrollmentIntent,
-        local: Option<WorkspaceSlot>,
+        local: Option<WorkspaceId>,
         _now: SystemTime,
     ) -> Result<PendingEnrollmentId, String> {
         let bytes = intent.durable_bytes()?;
@@ -165,40 +164,17 @@ impl NativeWorkspaceOwner {
                     .into(),
             );
         }
-        // The slot a join installs into is the workspace's own, made for it:
-        // never a slot of another workspace, which would have to be re-pointed
-        // at this one.
-        let target = local
-            .map(|slot| match self.0.store.slot_workspace(slot) {
-                Some(shown) if shown == workspace => Ok(record::EnrollmentTarget {
-                    workspace: slot,
-                    prior_workspace: workspace,
-                }),
-                Some(_) => Err("enrollment workspace is another workspace's"),
-                None => Err("enrollment local slot no longer exists"),
-            })
-            .transpose()?;
-        if let Some(target) = &target
-            && next.pending.values().any(|pending| {
-                pending
-                    .target
-                    .as_ref()
-                    .is_some_and(|other| other.workspace == target.workspace)
-                    && pending.id.workspace() != workspace
-            })
-        {
-            return Err("local slot already has an unresolved enrollment proof".into());
+        if local.is_some_and(|local| local != workspace) {
+            return Err("enrollment workspace is another workspace's".into());
         }
-
+        let shown = local.is_some();
+        if shown && !self.0.store.shows(workspace) {
+            return Err("the workspace the enrollment installs into is gone".into());
+        }
         if let Some(pending) = next.pending.get(&workspace) {
-            let same_target = match (&pending.target, &target) {
-                (Some(stored), Some(target)) => stored.workspace == target.workspace,
-                (None, None) => true,
-                _ => false,
-            };
             if pending.intent == bytes
                 && pending.status == PendingEnrollmentStatus::Active
-                && same_target
+                && pending.shown == shown
             {
                 return Ok(pending.id.clone());
             }
@@ -216,7 +192,7 @@ impl NativeWorkspaceOwner {
         next.pending.insert(
             workspace,
             StoredPendingEnrollment {
-                target,
+                shown,
                 id: id.clone(),
                 intent: bytes,
                 status: PendingEnrollmentStatus::Active,
@@ -234,8 +210,7 @@ impl NativeWorkspaceOwner {
         }
         Ok(self.0.authority.read().pending.get(&workspace).cloned())
     }
-    /// The in-flight enrollment redeeming `invitation`, where the host has
-    /// no slots to find it by.
+    /// The in-flight enrollment redeeming `invitation`, into no workspace on the host's desk.
     pub fn pending_enrollment_for_invitation(
         &self,
         invitation: &str,
@@ -243,16 +218,16 @@ impl NativeWorkspaceOwner {
         if !self.0.store.healthy() {
             return Err("native state writer is fenced".into());
         }
-        let slotless: Vec<_> = self
+        let unshown: Vec<_> = self
             .0
             .authority
             .read()
             .pending
             .values()
-            .filter(|pending| pending.target.is_none())
+            .filter(|pending| !pending.shown)
             .cloned()
             .collect();
-        for pending in slotless {
+        for pending in unshown {
             let intent = VerifiedNativeEnrollmentIntent::restore(&pending.intent)?;
             if crate::join::encode_invitation_text(intent.verified_join().signed_invitation())
                 == invitation
@@ -261,31 +236,6 @@ impl NativeWorkspaceOwner {
             }
         }
         Ok(None)
-    }
-    pub fn pending_enrollment_for_slot(
-        &self,
-        local: WorkspaceSlot,
-    ) -> Result<Option<StoredPendingEnrollment>, String> {
-        if !self.0.store.healthy() {
-            return Err("native state writer is fenced".into());
-        }
-        let authority = self.0.authority.read();
-        if authority.pending.len() > limits::MAX_PENDING {
-            return Err("native pending enrollment quota exceeded".into());
-        }
-        let mut found = authority.pending.values().filter(|pending| {
-            pending
-                .target
-                .as_ref()
-                .is_some_and(|target| target.workspace == local)
-        });
-        let result = found.next().cloned();
-        let ambiguous = found.next().is_some();
-        drop(authority);
-        if ambiguous {
-            return Err("ambiguous native pending enrollment slot".into());
-        }
-        Ok(result)
     }
     /// # Errors
     /// `id` names another attempt, or the record cannot be published.

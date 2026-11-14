@@ -870,21 +870,21 @@ def make_workspace(vm: TiloVm) -> dict:
     made = wait_until(lambda: next((w for w in workspaces(vm.state()) if w["id"] not in before), None),
                       30, interval=0.5)
     expect(made, "workspace.create made no workspace")
-    select_workspace(vm, made["room"])
+    select_workspace(vm, made["id"])
     expect(wait_until(lambda: held(vm.state(), made["id"]), 60, interval=1.0),
            f"box does not hold the workspace it made: {made}")
-    return {"id": made["id"], "room": made["room"]}
+    return {"id": made["id"]}
 
 
 def find_workspace(state: dict, room: str) -> dict | None:
-    return next((w for w in workspaces(state) if w.get("room") == room), None)
+    return next((w for w in workspaces(state) if w.get("id") == room), None)
 
 
 def select_workspace(vm: TiloVm, room: str) -> None:
     state = vm.state()
     ws = find_workspace(state, room)
     expect(ws, f"{vm.vm} has no workspace {room} on its desk: "
-               f"{[(w.get('room'), w.get('name')) for w in workspaces(state)]}")
+               f"{[(w.get('id'), w.get('name')) for w in workspaces(state)]}")
     if (state.get("workspace_tree") or {}).get("active") != ws["id"]:
         act(vm, "so.tilo.session", CHROME + "switch-workspace", {"workspace": str(ws["id"])},
             wait=True)
@@ -907,22 +907,22 @@ WINDOW_APPS = ("so.tilo.terminal", "so.tilo.notes", "so.tilo.calculator", "so.ti
 def open_window(vm: TiloVm, ws: dict) -> object:
     """A new window on the workspace's desk, from the first app that opens one there. Its
     group id."""
-    select_workspace(vm, ws["room"])
-    before = {g["id"] for g in groups_in(vm.state(), ws["room"])}
+    select_workspace(vm, ws["id"])
+    before = {g["id"] for g in groups_in(vm.state(), ws["id"])}
     new = None
     for app in WINDOW_APPS:
         try:
             open_app(vm, app)
         except (Failed, VmError):
             continue
-        new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["room"])
+        new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["id"])
                                   if g["id"] not in before], 30, interval=0.5)
         if new:
             break
     if not new:
         st = vm.state()
-        where = {w.get("name"): [g["id"] for g in groups_in(st, w.get("room"))] for w in workspaces(st)}
-        raise Failed(f"{vm.vm} opened no window in the workspace {ws['room']}: its desk holds {where}")
+        where = {w.get("name"): [g["id"] for g in groups_in(st, w.get("id"))] for w in workspaces(st)}
+        raise Failed(f"{vm.vm} opened no window in the workspace {ws['id']}: its desk holds {where}")
     return new[0]["id"]
 
 
@@ -1015,8 +1015,8 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
     group `reader` did not show before, the one the writer opened (by id, or by its tabs'
     titles where the desk names it differently there)."""
     w, r = run.vm(writer), run.vm(reader)
-    select_workspace(r, ws["room"])
-    before = tabs_in(r.state(), ws["room"])
+    select_workspace(r, ws["id"])
+    before = tabs_in(r.state(), ws["id"])
     gid = open_window(w, ws)
 
     def arrived():
@@ -1025,8 +1025,8 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
         keep_awake(w)
         keep_awake(r)
         try:
-            mine = tabs_in(w.state(), ws["room"]).get(gid)
-            theirs = tabs_in(r.state(), ws["room"])
+            mine = tabs_in(w.state(), ws["id"]).get(gid)
+            theirs = tabs_in(r.state(), ws["id"])
         except VmError:
             return None
         new = {g: t for g, t in theirs.items() if g not in before}
@@ -1040,13 +1040,13 @@ def edit_shows_on(run: Run, ws: dict, writer: str, reader: str, label: str, time
         run.write(f"{label}-{reader}-sync-session.txt", notices(r) + sync_excerpt(r))
         def desk(vm):
             st = vm.state()
-            return {"workspaces": [(w.get("room"), w.get("name"), len(groups_in(st, w.get("room"))))
+            return {"workspaces": [(w.get("id"), w.get("name"), len(groups_in(st, w.get("id"))))
                                    for w in workspaces(st)],
                     "held": st.get("held_workspaces")}
         raise Failed(f"desks: {writer} {desk(w)}; {reader} {desk(r)}. "
                      f"A window {writer} opened in the workspace (group {gid}, "
-                     f"{tabs_in(w.state(), ws['room']).get(gid)}) did not show on {reader} within "
-                     f"{timeout:.0f}s; {reader} shows {tabs_in(r.state(), ws['room'])}")
+                     f"{tabs_in(w.state(), ws['id']).get(gid)}) did not show on {reader} within "
+                     f"{timeout:.0f}s; {reader} shows {tabs_in(r.state(), ws['id'])}")
     return {"group": gid, "shown": {str(k): v for k, v in seen.items()}}
 
 

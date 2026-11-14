@@ -106,7 +106,7 @@ pub fn adopted(
 
 #[cfg(test)]
 mod tests {
-    use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace, WorkspaceId};
 
     use super::*;
 
@@ -127,7 +127,7 @@ mod tests {
 
     /// One strip (10) with a window per `(tab, app, record)` the desk shows.
     fn desk(windows: &[(TabId, &str, &str)]) -> SharedDesktop {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         let mut strip = Strip::new(StripId(10), "Lounge");
         for (id, app, _) in windows {
             strip.window_groups.push(WindowGroup {
@@ -143,7 +143,7 @@ mod tests {
         workspace.strips.push(strip);
         SharedDesktop {
             tree: DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             },

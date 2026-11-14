@@ -42,7 +42,7 @@ fn numbered(held: &[Workspace]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::WorkspaceSlot;
+    use tilo_desktop_model::WorkspaceId;
 
     /// `names` held as workspaces here, the way a desk keeps them.
     fn held(names: &[&str]) -> Vec<Workspace> {
@@ -50,8 +50,10 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(index, name)| {
-                let slot = u64::try_from(index.saturating_add(1)).expect("a small index");
-                Workspace::new(WorkspaceSlot(slot), *name)
+                let id = u128::try_from(index)
+                    .expect("a small index")
+                    .saturating_add(1);
+                Workspace::new(WorkspaceId::from_u128(id), *name)
             })
             .collect()
     }

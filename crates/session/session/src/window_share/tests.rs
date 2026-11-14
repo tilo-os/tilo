@@ -46,7 +46,7 @@ use tilo_desktop::desk_verbs::{DESK_RESOURCE, WINDOW_KIND, tab_resource_id};
 use tilo_desktop_model::window_share::window_share_id;
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, WorkspaceSlot,
+    Workspace, WorkspaceId,
 };
 use tilo_network_actor::WorkspaceId as Topic;
 use tilo_window_share::streaming::InputEvent as SharedInput;
@@ -168,8 +168,7 @@ fn workspace_id() -> WorkspaceId {
 /// shows another member's window in.
 fn desk(tile: TileContent, tab: u64) -> DesktopTree {
     let workspace_id = workspace_id();
-    let slot = WorkspaceSlot::of_workspace(workspace_id);
-    let mut workspace = Workspace::in_workspace(slot, workspace_id, "Desk");
+    let mut workspace = Workspace::new(workspace_id, "Desk");
     let mut strip = Strip::new(StripId::from(1), "Main");
     strip.window_groups.push(WindowGroup {
         id: GroupId::from(1_u64),
@@ -189,7 +188,7 @@ fn desk(tile: TileContent, tab: u64) -> DesktopTree {
     workspace.strips.push(strip);
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.slot,
+        active: workspace.id(),
         ..DesktopTree::default()
     }
 }

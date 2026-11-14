@@ -1593,8 +1593,7 @@ SHARED_SESSION_LOG = (
 
 def _select_workspace(ctx, wid) -> None:
     if ctx.state()["workspace_tree"]["active"] != wid:
-        workspace_id = next(w["room"] for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == wid)
-        ctx.vm.invoke("actions", f"workspace.select.{workspace_id}")
+        ctx.vm.invoke("actions", f"workspace.select.{wid}")
         ctx.wait_state(lambda s: s["workspace_tree"]["active"] == wid, 8, f"workspace {wid} active")
 
 
@@ -1657,7 +1656,7 @@ def idle_shared(ctx, res):
     home = ctx.state()["workspace_tree"]["active"]
     try:
         shared = new_hosted_workspace(ctx)
-        res.metrics["workspace"] = {"id": shared["id"], "room": shared["room"]}
+        res.metrics["workspace"] = {"id": shared["id"]}
         opened = _open_several(ctx, SHARED_APPS, "R09")
         res.metrics["opened"] = opened
         here = next(w for w in ctx.state()["workspace_tree"]["workspaces"] if w["id"] == shared["id"])

@@ -5,7 +5,7 @@ use tilo_desktop_model::apps::{canonical_app_id, record_routes};
 use tilo_desktop_model::ownership::SharedDesktop;
 use tilo_desktop_model::{
     AppId, AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceSlot, compose_id, shared_record,
+    Workspace, WorkspaceId, compose_id, shared_record,
 };
 
 #[test]
@@ -32,7 +32,7 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
             compose_id(salt, 2),
             compose_id(salt, 3),
         );
-        let mut workspace = Workspace::new(WorkspaceSlot(compose_id(salt, 4)), "Home");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(4), "Home");
         let mut strip = Strip::new(StripId(strip_id), "Main");
         strip.window_groups.push(WindowGroup {
             id: group_id,
@@ -56,7 +56,7 @@ fn app_tiles_have_one_canonical_id_that_routes_and_labels_them() {
         workspace.strips.push(strip);
         let mut desktop = SharedDesktop {
             tree: DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             },

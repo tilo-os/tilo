@@ -35,7 +35,7 @@ use tilo_desktop_model::width::{
     WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE, equalize_widths,
 };
 use tilo_desktop_model::{
-    DesktopTree, GroupId, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceSlot,
+    DesktopTree, GroupId, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
 use ui::icons::Icon;
 
@@ -241,9 +241,9 @@ fn move_to_strip_id(strip: StripId) -> String {
     format!("{MOVE_TO_STRIP}:{}", strip.0)
 }
 
-/// The id of the row taking the window into workspace `workspace` .
-fn move_to_workspace_id(workspace: WorkspaceSlot) -> String {
-    format!("{MOVE_TO_WORKSPACE}:{}", workspace.0)
+/// The id of the row taking the window into workspace `workspace`.
+fn move_to_workspace_id(workspace: WorkspaceId) -> String {
+    format!("{MOVE_TO_WORKSPACE}:{workspace}")
 }
 
 /// The id of the row showing the window on display `display` .
@@ -525,10 +525,10 @@ fn move_rows(tree: &DesktopTree, route: &RouteIds) -> Vec<Row> {
     let workspaces: Vec<Row> = tree
         .workspaces
         .iter()
-        .filter(|workspace| workspace.slot != route.workspace)
+        .filter(|workspace| workspace.id() != route.workspace)
         .map(|workspace| {
             Row::offered(
-                move_to_workspace_id(workspace.slot),
+                move_to_workspace_id(workspace.id()),
                 crate::names::workspace(&workspace.name),
             )
         })
@@ -659,7 +659,10 @@ pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str
                 }
             } else if let Some(workspace) = place.strip_prefix(MOVE_TO_WORKSPACE) {
                 Destination {
-                    workspace: Some(place_number(workspace)?.to_string()),
+                    workspace: Some(
+                        tilo_desktop_model::WorkspaceId::parse(workspace.strip_prefix(':')?)?
+                            .to_string(),
+                    ),
                     ..Destination::default()
                 }
             } else {
@@ -717,7 +720,7 @@ fn holder_of<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<(&'a Workspa
 fn workspace_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a Workspace> {
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.slot == route.workspace)
+        .find(|workspace| workspace.id() == route.workspace)
 }
 
 /// The window group at `route` , while the tree still holds it.
@@ -779,7 +782,7 @@ fn move_to_strip(
     let moved = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == ids.workspace)
+        .find(|workspace| workspace.id() == ids.workspace)
         .is_some_and(|workspace| {
             let command = if strip == ids.strip {
                 DesktopCommand::ReorderGroup {
@@ -820,7 +823,7 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
     let moved = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == ids.workspace)
+        .find(|workspace| workspace.id() == ids.workspace)
         .is_some_and(|workspace| {
             let command = DesktopCommand::MoveTab {
                 location: TabLocation {
@@ -864,7 +867,7 @@ fn join_group(shared: &mut Shared, ids: RouteIds, into: GroupId) -> bool {
 }
 
 /// Carry the tab at `ids` into workspace `to` , with a window of its own.
-fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceSlot) -> bool {
+fn move_to_workspace(shared: &mut Shared, ids: RouteIds, to: WorkspaceId) -> bool {
     let Shared { tree, minter, .. } = shared;
     let moved = move_tab_to_workspace(tree, ids.tab, to, &mut || Ok(minter.mint())).is_ok();
     shared.replaced |= moved;
@@ -907,7 +910,7 @@ fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op::Row
         .tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == ids.workspace)
+        .find(|workspace| workspace.id() == ids.workspace)
         .and_then(|workspace| {
             workspace
                 .strips
@@ -964,12 +967,12 @@ fn stop_desktop_control(shared: &mut Shared, ids: RouteIds) -> bool {
     let Some((workspace, app)) = holder_of(&shared.tree, &ids) else {
         return false;
     };
-    let workspace = workspace.slot;
+    let workspace = workspace.id();
     shared
         .tree
         .workspaces
         .iter_mut()
-        .find(|held| held.slot == workspace)
+        .find(|held| held.id() == workspace)
         .is_some_and(|held| held.stop_desktop_control(&app))
 }
 

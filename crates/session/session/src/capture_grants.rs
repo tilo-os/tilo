@@ -52,7 +52,7 @@ mod tests {
     use tilo_desktop_model::Workspace;
 
     fn desk(grant: CapOverride) -> DesktopTree {
-        let mut workspace = Workspace::create("Studio");
+        let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Studio");
         workspace.sandbox.push(grant);
         DesktopTree {
             workspaces: vec![workspace],

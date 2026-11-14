@@ -5,7 +5,7 @@
 mod tests {
     use crate::collab_app_broker::{BrokerActor, PublishedAction, PublishedSurface};
     use crate::route::CrdtRoute;
-    use crate::test_support::{Workspace, WorkspaceSlot};
+    use crate::test_support::{Workspace, WorkspaceId};
     use tilo_action_policy::{Grant, Grantee, KindSet, Lifetime, Role};
 
     const OWNER: &str = "owner-person";
@@ -28,7 +28,7 @@ mod tests {
     }
 
     fn workspace() -> Workspace {
-        let mut w = Workspace::new(WorkspaceSlot(7), "Workspace");
+        let mut w = Workspace::new(WorkspaceId::from_u128(7), "Workspace");
         w.set_owner(OWNER.to_string());
         w
     }

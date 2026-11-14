@@ -42,8 +42,6 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
 #[cfg(target_os = "linux")]
 #[derive(Debug)]
 pub struct Enrolling {
-    /// The slot the desk made for it.
-    pub slot: tilo_desktop_model::WorkspaceSlot,
     /// The workspace joined.
     pub workspace_id: tilo_desktop_model::WorkspaceId,
     /// How this device comes in: through the workspace's door, entered on a session with the
@@ -65,8 +63,6 @@ pub struct Enrolling {
 #[cfg(target_os = "linux")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entering {
-    /// The slot the desk makes for it.
-    pub slot: tilo_desktop_model::WorkspaceSlot,
     /// The workspace the person's list names.
     pub workspace_id: tilo_desktop_model::WorkspaceId,
     /// What the person's list calls it.

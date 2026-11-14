@@ -17,10 +17,10 @@ mod workspace_activity {
     fn causal_workspace() -> ActivitySnapshot {
         let mut desktop = DesktopTree {
             workspaces: vec![tilo_desktop_model::Workspace::new(
-                tilo_desktop_model::WorkspaceSlot(1),
+                tilo_desktop_model::WorkspaceId::from_u128(1),
                 "Home",
             )],
-            active: tilo_desktop_model::WorkspaceSlot(1),
+            active: tilo_desktop_model::WorkspaceId::from_u128(1),
             ..DesktopTree::default()
         };
         desktop.workspaces[0]
@@ -53,11 +53,7 @@ mod workspace_activity {
                 view: String::new(),
                 pinned: false,
             });
-            let mut layout = tilo_desktop_model::Workspace::in_workspace(
-                tilo_desktop_model::WorkspaceSlot(1),
-                workspace,
-                "Design",
-            );
+            let mut layout = tilo_desktop_model::Workspace::new(workspace, "Design");
             layout.strips = vec![strip.clone()];
             tilo_desktop_model::shared_record::device::write(
                 &mut doc,
@@ -102,7 +98,7 @@ mod workspace_activity {
             .read(&record.id, |doc| doc.clone().get_heads())
             .unwrap();
         let mut pane = WorkspaceActivityPane::new();
-        pane.begin_view(tree.active.raw());
+        pane.begin_view(tree.active);
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         pane.period = Period::AllTime;
@@ -146,7 +142,7 @@ mod workspace_activity {
             .expect("session presence is retained against durable checkpoint");
         assert_eq!(pointer.name, "Ada");
         assert!(pointer.desktop_space);
-        pane.finish_view(tree.active.raw());
+        pane.finish_view(tree.active);
         assert!(!(pane.view == ActivityView::Replay && pane.replay_playing));
         assert_eq!(tree.doc.get_heads(), heads_before);
         assert_eq!(

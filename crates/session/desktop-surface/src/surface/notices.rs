@@ -753,7 +753,8 @@ impl ui::notify::Notifier for AppNotifier {
 }
 
 /// The application a window runs: its id, display name and workspace.
-pub(super) type AppOf<'a> = &'a dyn Fn(u64) -> Option<(String, String, Option<u64>)>;
+pub(super) type AppOf<'a> =
+    &'a dyn Fn(u64) -> Option<(String, String, Option<tilo_desktop_model::WorkspaceId>)>;
 
 impl AppInbox {
     /// Show and withdraw what applications asked since the last call. `app_of` names the
@@ -1768,8 +1769,14 @@ mod tests {
         (notifier, platform, background)
     }
 
-    fn clocks(tab: u64) -> Option<(String, String, Option<u64>)> {
-        (tab == 7).then(|| ("so.tilo.clocks".to_owned(), "Clocks".to_owned(), Some(1)))
+    fn clocks(tab: u64) -> Option<(String, String, Option<tilo_desktop_model::WorkspaceId>)> {
+        (tab == 7).then(|| {
+            (
+                "so.tilo.clocks".to_owned(),
+                "Clocks".to_owned(),
+                Some(tilo_desktop_model::WorkspaceId::from_u128(1)),
+            )
+        })
     }
 
     #[test]

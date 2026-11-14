@@ -4,9 +4,7 @@ use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_desktop_model::commands::{DesktopCommand, apply_to_active_workspace};
-use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId, WorkspaceSlot,
-};
+use tilo_desktop_model::{DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId};
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination};
 use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer, names};
 use tilo_resource::Effect;
@@ -831,7 +829,7 @@ impl DesktopChrome {
     pub fn activity_by(&self, author: Option<String>) {
         let workspace = self
             .handle
-            .read(|tree| tree.active_workspace().map(|w| w.slot.0.to_string()));
+            .read(|tree| tree.active_workspace().map(|w| w.id().to_string()));
         if let Some(workspace) = workspace {
             self.dispatch(ChromeEffect::Activity {
                 workspace,
@@ -847,9 +845,9 @@ impl DesktopChrome {
         match intent {
             ChromeIntent::SwitchWorkspace(delta) => {
                 let next = self.handle.read(|tree| {
-                    let index = tree.workspaces.iter().position(|w| w.slot == tree.active)?;
+                    let index = tree.workspaces.iter().position(|w| w.id() == tree.active)?;
                     let next = index.checked_add_signed(isize::try_from(delta).ok()?)?;
-                    tree.workspaces.get(next).map(|w| w.slot.0.to_string())
+                    tree.workspaces.get(next).map(|w| w.id().to_string())
                 });
                 match next {
                     Some(workspace) => self.dispatch(ChromeEffect::SwitchWorkspace {
@@ -992,7 +990,10 @@ impl DesktopChrome {
             can_add_strip: self.may_add_or_rename(true),
             can_delete: self
                 .handle
-                .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
+                .read(|tree| {
+                    tree.active_workspace()
+                        .map(tilo_desktop_model::Workspace::id)
+                })
                 .is_some_and(|workspace| self.rules.may_delete_workspace(workspace).is_ok()),
         }
     }
@@ -1136,7 +1137,7 @@ impl DesktopChrome {
                 None
             }
             OverviewPick::Workspace(id) => Some(ChromeEffect::SwitchWorkspace {
-                workspace: Some(id.0.to_string()),
+                workspace: Some(id.to_string()),
                 delta: None,
             }),
             OverviewPick::NewWorkspace => {
@@ -1145,7 +1146,7 @@ impl DesktopChrome {
             }
             OverviewPick::JoinWorkspace => Some(ChromeEffect::JoinWorkspace),
             OverviewPick::LeaveWorkspace(id) => Some(ChromeEffect::LeaveWorkspace {
-                workspace: Some(id.0.to_string()),
+                workspace: Some(id.to_string()),
             }),
             OverviewPick::CloseWindow(tab) => {
                 self.close_window(*tab);
@@ -1154,7 +1155,7 @@ impl DesktopChrome {
             OverviewPick::MoveWindow { tab, to } => Some(ChromeEffect::MoveTab {
                 tab: tab.to_string(),
                 to: Destination {
-                    workspace: Some(to.0.to_string()),
+                    workspace: Some(to.to_string()),
                     ..Destination::default()
                 },
             }),
@@ -1208,20 +1209,13 @@ impl DesktopChrome {
     }
 
     /// The workspace `key` names: its id, or its name.
-    fn workspace_named(&self, key: &str) -> Result<WorkspaceSlot, String> {
+    fn workspace_named(&self, key: &str) -> Result<WorkspaceId, String> {
         let key = key.trim();
         self.handle
             .read(|tree| {
                 tree.workspaces
                     .iter()
                     .find(|workspace| workspace.name.eq_ignore_ascii_case(key))
-                    .or_else(|| {
-                        key.parse::<u64>().ok().and_then(|id| {
-                            tree.workspaces
-                                .iter()
-                                .find(|workspace| workspace.slot.0 == id)
-                        })
-                    })
                     .or_else(|| {
                         // The id it is shared under, the same on every device.
                         WorkspaceId::parse(key).and_then(|id| {
@@ -1230,7 +1224,7 @@ impl DesktopChrome {
                                 .find(|workspace| workspace.id() == id)
                         })
                     })
-                    .map(|workspace| workspace.slot)
+                    .map(tilo_desktop_model::Workspace::id)
             })
             .ok_or_else(|| crate::i18n::t_args("desktop-no-workspace", &[("name", key.into())]))
     }
@@ -1258,7 +1252,7 @@ impl DesktopChrome {
 
     /// Leave the workspace `id` (the one the person is in when absent): struck from this device's
     /// desktop, the person going to the next one when it was the one they were in.
-    fn leave_workspace(&self, id: Option<WorkspaceSlot>) -> Result<(), String> {
+    fn leave_workspace(&self, id: Option<WorkspaceId>) -> Result<(), String> {
         if self.handle.read(|tree| tree.workspaces.len()) <= 1 {
             return Err(crate::i18n::t("desktop-only-workspace"));
         }
@@ -1274,12 +1268,14 @@ impl DesktopChrome {
     /// and only an answer that says so deletes.
     fn delete_workspace(
         &self,
-        id: Option<WorkspaceSlot>,
+        id: Option<WorkspaceId>,
         confirmed: Option<bool>,
     ) -> Result<(), String> {
         let here = id.or_else(|| {
-            self.handle
-                .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
+            self.handle.read(|tree| {
+                tree.active_workspace()
+                    .map(tilo_desktop_model::Workspace::id)
+            })
         });
         let id = here.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-delete"))?;
         self.rules.may_delete_workspace(id)?;
@@ -1288,14 +1284,17 @@ impl DesktopChrome {
             .read(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|workspace| workspace.slot == id)
+                    .find(|workspace| workspace.id() == id)
                     .map(|workspace| (workspace.id(), names::workspace(&workspace.name)))
             })
             .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
         let (workspace, name) = named;
         if confirmed != Some(true) {
             // The person answers first: nothing of it goes until they do.
-            self.ask(DesktopAsk::DeleteWorkspace { slot: id, name });
+            self.ask(DesktopAsk::DeleteWorkspace {
+                workspace: id,
+                name,
+            });
             return Ok(());
         }
         let name = self.take_workspace_off(Some(id))?;
@@ -1310,22 +1309,25 @@ impl DesktopChrome {
 
     /// Take the workspace `id` (the one the person is in when absent) off this desk, the person
     /// going to the next one along when it was the one they were in. Answers what it was called.
-    fn take_workspace_off(&self, id: Option<WorkspaceSlot>) -> Result<String, String> {
+    fn take_workspace_off(&self, id: Option<WorkspaceId>) -> Result<String, String> {
         let mut tree = self.handle.read(Clone::clone);
-        let id = id.or_else(|| tree.active_workspace().map(|workspace| workspace.slot));
+        let id = id.or_else(|| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        });
         let id = id.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-leave"))?;
         let at = tree
             .workspaces
             .iter()
-            .position(|workspace| workspace.slot == id)
+            .position(|workspace| workspace.id() == id)
             .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
         let left = tree.workspaces.remove(at);
-        if left.slot == tree.active {
+        if left.id() == tree.active {
             // The next one along, or the one before it when this was the last: what stood where the
             // person was.
             let next_at = at.min(tree.workspaces.len().saturating_sub(1));
             if let Some(next) = tree.workspaces.get(next_at) {
-                tree.active = next.slot;
+                tree.active = next.id();
             }
         }
         tree.active_strip.remove(&id);
@@ -1345,7 +1347,7 @@ impl DesktopChrome {
     fn fresh_workspace(&self) {
         let tree = self.handle.read(Clone::clone);
         let workspace = Workspace::new(
-            WorkspaceSlot(self.handle.mint_id()),
+            WorkspaceId::new(),
             crate::workspace_names::made(None, &tree.workspaces),
         );
         self.open_workspace(tree, workspace, true, true);
@@ -1362,7 +1364,7 @@ impl DesktopChrome {
         fresh_strip: bool,
         go: bool,
     ) {
-        let id = workspace.slot;
+        let id = workspace.id();
         let go = go || tree.active_workspace().is_none();
         if fresh_strip {
             let strip = Strip::new(StripId(self.handle.mint_id()), "");
@@ -1400,29 +1402,25 @@ impl DesktopChrome {
                 // one the session reads and writes its workspaces' records for again, and this
                 // workspace has just taken this device in.
                 if !background {
-                    tree.active = held.slot;
+                    tree.active = held.id();
                 }
                 self.handle.replace_tree(tree);
                 return;
             }
-            Workspace::in_workspace(
-                WorkspaceSlot::of_workspace(joined),
-                joined,
-                crate::workspace_names::made(name, &tree.workspaces),
-            )
+            Workspace::new(joined, crate::workspace_names::made(name, &tree.workspaces))
         } else {
             if let Err(refusal) = self.rules.may_create_workspace() {
                 self.handle.acknowledge(refusal);
                 return;
             }
             let name = crate::workspace_names::made(name, &tree.workspaces);
-            Workspace::new(WorkspaceSlot(self.handle.mint_id()), name)
+            Workspace::new(WorkspaceId::new(), name)
         };
         self.open_workspace(tree, workspace, !joining, !background);
     }
 
     /// Branch the workspace `source` names into a new one called `name` (the source's name with
-    /// "branch" when none is given): the new workspace's id and slot are made here, and the host
+    /// "branch" when none is given): the new workspace's id is made here, and the host
     /// makes the workspace with what the source holds and puts it on the desk once it does
     /// ([`DesktopAsk::BranchWorkspace`]), so nothing opens in it before its records are there.
     /// Answers the new workspace's id.
@@ -1433,7 +1431,7 @@ impl DesktopChrome {
         let held = tree
             .workspaces
             .iter()
-            .find(|held| held.slot == source)
+            .find(|held| held.id() == source)
             .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
         let asked = name.map(str::trim).filter(|name| !name.is_empty());
         let name = asked.map_or_else(
@@ -1447,10 +1445,8 @@ impl DesktopChrome {
         );
         let name = crate::workspace_names::made(Some(&name), &tree.workspaces);
         let workspace = WorkspaceId::new();
-        let slot = WorkspaceSlot(self.handle.mint_id());
         self.ask(DesktopAsk::BranchWorkspace {
             source,
-            slot,
             workspace,
             name,
         });
@@ -1462,7 +1458,7 @@ impl DesktopChrome {
     fn window_tab(&self, step: Option<isize>, nth: Option<usize>) -> Option<u64> {
         self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip_id = tree.active_strip.get(&workspace.slot).copied()?;
+            let strip_id = tree.active_strip.get(&workspace.id()).copied()?;
             let strip = workspace.strips.iter().find(|s| s.id == strip_id)?;
             let index = match (step, nth) {
                 (_, Some(nth)) => nth,
@@ -1486,11 +1482,11 @@ impl DesktopChrome {
             let workspace = tree.active_workspace()?;
             let current = tree
                 .active_strip
-                .get(&workspace.slot)
+                .get(&workspace.id())
                 .and_then(|id| workspace.strips.iter().position(|s| s.id == *id))
                 .unwrap_or(0);
             let strip = workspace.strips.get(pick(current)?)?;
-            Some((workspace.slot.0.to_string(), strip.id.0.to_string()))
+            Some((workspace.id().to_string(), strip.id.0.to_string()))
         });
         if let Some((workspace, strip)) = next {
             self.dispatch(ChromeEffect::ShowStrip { workspace, strip });
@@ -1516,7 +1512,7 @@ impl DesktopChrome {
     fn maximize_focused(&self, want: Option<bool>) {
         let maximized = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip = *tree.active_strip.get(&workspace.slot)?;
+            let strip = *tree.active_strip.get(&workspace.id())?;
             let group = tree.active_group_for(strip)?;
             workspace
                 .strips

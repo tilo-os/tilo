@@ -28,7 +28,7 @@ tilo_test_env::scenario! {
         // empty workspace must deny rather than default-allow.
         for ws in [
             Workspace::default(),
-            Workspace::new(WorkspaceSlot::from(1), "Demo"),
+            Workspace::new(WorkspaceId::from_u128(1), "Demo"),
         ] {
             assert!(ws.sandbox.is_empty());
             assert!(ws.app_grants_snapshot_at(NOW).is_empty());
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
 
     phase grants_round_trip_via_serde_json;
     {
-        let mut ws = Workspace::new(WorkspaceSlot::from(1), "Demo");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Demo");
         ws.grant_app(
             "ada",
             "org.gnome.gedit",
@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
                 None => grant,
             }
         };
-        let mut first = Workspace::new(WorkspaceSlot::from(1), "First");
+        let mut first = Workspace::new(WorkspaceId::from_u128(1), "First");
         first.grant(member("forever", None));
         assert_eq!(first.next_grant_expiry_after(NOW), None);
         first.grant(member("past", Some(NOW)));
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
             "a grant ending at `now` is already over"
         );
         first.grant(member("later", Some(LATER)));
-        let mut second = Workspace::new(WorkspaceSlot::from(2), "Second");
+        let mut second = Workspace::new(WorkspaceId::from_u128(2), "Second");
         second.grant(member("sooner", Some(SOON)));
         assert_eq!(first.next_grant_expiry_after(NOW), Some(LATER));
         assert_eq!(second.next_grant_expiry_after(NOW), Some(SOON));
@@ -210,7 +210,7 @@ tilo_test_env::scenario! {
     // app's other grants are none of its business.
     {
         const TERMINAL: &str = "org.example.terminal";
-        let mut ws = Workspace::new(WorkspaceSlot::from(1), "Desk");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Desk");
         assert!(!ws.holds_desktop_control_at(TERMINAL, NOW));
         assert!(!ws.stop_desktop_control(TERMINAL), "nothing to take back");
         ws.grant_app(

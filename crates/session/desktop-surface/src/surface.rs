@@ -18,7 +18,7 @@ use shown::ShownTabs;
 
 use tilo_desktop_model::{
     DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent, WindowWidth,
-    Workspace, WorkspaceSlot,
+    Workspace, WorkspaceId,
 };
 use ui::automerge::ObjId;
 use ui::collaboration::PresencePayload;
@@ -178,7 +178,7 @@ pub trait TileSource {
     /// ([`tilo_desktop_policy::DesktopPolicy::take_carried`]).
     /// Whether the session took it: false keeps the move the desk's own, and nothing else about it
     /// changes.
-    fn carry(&self, _tab: TabId, _to: WorkspaceSlot) -> bool {
+    fn carry(&self, _tab: TabId, _to: WorkspaceId) -> bool {
         false
     }
 
@@ -701,7 +701,7 @@ impl DesktopHandle {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == active)
+            .find(|workspace| workspace.id() == active)
             .ok_or("there is no active workspace")?;
         let before: Vec<StripId> = workspace.strips.iter().map(|strip| strip.id).collect();
         apply_command(
@@ -797,7 +797,7 @@ fn route_of(tree: &DesktopTree, tab: TabId) -> Option<RouteIds> {
         workspace.strips.iter().find_map(|strip| {
             strip.window_groups.iter().find_map(|group| {
                 group.tabs.iter().any(|t| t.id == tab).then_some(RouteIds {
-                    workspace: workspace.slot,
+                    workspace: workspace.id(),
                     strip: strip.id,
                     group: group.id,
                     tab,
@@ -1107,7 +1107,7 @@ impl DesktopSurface {
                 let (workspace, model) = find_tab(tree, ids.strip, tab)?;
                 match &model.tile {
                     tilo_desktop_model::TileContent::LocalApp { app_id, label, .. } => {
-                        Some((app_id.clone(), label.clone(), Some(workspace.slot.raw())))
+                        Some((app_id.clone(), label.clone(), Some(workspace.id())))
                     }
                     _ => None,
                 }
@@ -1723,7 +1723,7 @@ impl DesktopSurface {
                 row.pan_max_scroll_x()
             };
             DesktopPan {
-                workspace: tree_active.0.to_string(),
+                workspace: tree_active.to_string(),
                 strip: strip.0.to_string(),
                 offset: row.scroll_x().clamp(0.0, max),
                 viewport,

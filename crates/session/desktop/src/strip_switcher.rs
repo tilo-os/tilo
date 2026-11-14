@@ -171,7 +171,7 @@ impl SwitcherModel {
             .collect();
         let focused = desktop
             .active_strip
-            .get(&workspace.slot)
+            .get(&workspace.id())
             .and_then(|id| strips.iter().position(|strip| strip.id == *id))
             .unwrap_or(0);
         Self {

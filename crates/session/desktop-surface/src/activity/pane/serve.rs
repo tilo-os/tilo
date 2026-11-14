@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
+use tilo_desktop_model::WorkspaceId;
 
 use tilo_actions::remote::workspace_activity as wire;
 
@@ -741,19 +742,19 @@ impl WorkspaceActivityPane {
     /// Start showing what changed since this device last looked, from the frontier it holds now.
     /// What it marks seen moves the frontier only when the showing ends ([`Self::end_summary`]) or
     /// it says so.
-    pub fn begin_summary(&mut self, workspace: u64) {
+    pub fn begin_summary(&mut self, workspace: WorkspaceId) {
         self.begin_view(workspace);
         self.view = ActivityView::CatchUp;
     }
 
     /// Stop showing what changed: what was shown counts as seen.
-    pub fn end_summary(&mut self, workspace: u64) {
+    pub fn end_summary(&mut self, workspace: WorkspaceId) {
         self.finish_view(workspace);
     }
 
     /// Count the changes `viewed` names as shown to the person in `workspace` ; with `now` , as
     /// seen at once.
-    pub fn mark_viewed(&mut self, workspace: u64, viewed: &wire::Viewed) {
+    pub fn mark_viewed(&mut self, workspace: WorkspaceId, viewed: &wire::Viewed) {
         if self.scope != WorkspaceScope::ThisWorkspace || self.last_active != Some(workspace) {
             return;
         }
@@ -879,7 +880,7 @@ impl WorkspaceActivityPane {
                 Ok(handled_outcome())
             }
             wire::MARK_VIEWED => {
-                let workspace = tree.active.raw();
+                let workspace = tree.active;
                 self.mark_viewed(workspace, &read(arguments)?);
                 Ok(handled_outcome())
             }

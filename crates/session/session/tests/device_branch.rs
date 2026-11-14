@@ -445,7 +445,7 @@ fn held_row(device: &Device, site: &Site) -> serde_json::Value {
         .as_array()
         .and_then(|held| {
             held.iter()
-                .find(|row| row["room"].as_str() == Some(site.workspace.as_str()))
+                .find(|row| row["workspace"].as_str() == Some(site.workspace.as_str()))
                 .cloned()
         })
         .unwrap_or_default()

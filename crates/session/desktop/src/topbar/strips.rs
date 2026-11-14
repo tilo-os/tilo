@@ -68,7 +68,7 @@ impl TopBarChrome {
     }
 
     pub(super) fn sync_strips(&mut self, tree: &DesktopTree) {
-        let workspace = tree.workspaces.iter().find(|w| w.slot == tree.active);
+        let workspace = tree.workspaces.iter().find(|w| w.id() == tree.active);
         self.strips.strips = workspace
             .map(|w| {
                 w.strips
@@ -457,7 +457,7 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
     use tilo_desktop_model::{Member, Strip, Tab, TileContent, WindowGroup, WindowWidth};
-    use tilo_desktop_model::{Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{Workspace, WorkspaceId};
     use ui::headless::Framed;
 
     struct Host {
@@ -501,7 +501,7 @@ mod tests {
 
     /// A workspace of three named strips, the first shown, with people on the other two.
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
         let mut games = Strip::new(StripId(11), "Games");
         games.window_groups = vec![group(1)];
         let mut quiet = Strip::new(StripId(12), "Quiet");
@@ -513,11 +513,12 @@ mod tests {
         workspace.present[0].tab = Some(1001);
         workspace.present[1].tab = Some(1002);
         let mut tree = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
-        tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
+        tree.active_strip
+            .insert(WorkspaceId::from_u128(1), StripId(10));
         tree
     }
 
@@ -605,8 +606,12 @@ mod tests {
             Some(1),
             "the monitor is in use"
         );
-        assert!(tree.outputs.set_shown(0, WorkspaceSlot(1), StripId(11)));
-        tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
+        assert!(
+            tree.outputs
+                .set_shown(0, WorkspaceId::from_u128(1), StripId(11))
+        );
+        tree.active_strip
+            .insert(WorkspaceId::from_u128(1), StripId(10));
 
         let full = TopBarChrome::from_tree_with_local_user(&tree, "me".into());
         assert_eq!(full.strip_name(), Some("Main"), "the display in use");

@@ -95,8 +95,8 @@ def app_home(session: "ra.Session", state: Path) -> Path:
     desk's workspace holds, where the launcher mounts it, so the file planted
     here is the file the window lists."""
     workspaces = session.state_dump()["workspace_tree"]["workspaces"]
-    room = next((workspace["room"] for workspace in workspaces if workspace.get("room")), None)
-    assert room, f"no workspace of the desk names its room: {workspaces!r}"
+    room = next((workspace["id"] for workspace in workspaces), None)
+    assert room, f"the desk holds no workspace: {workspaces!r}"
     home = state / "data/tilo-workspaces" / room / "so.tilo.file-explorer"
     home.mkdir(parents=True, exist_ok=True)
     return home

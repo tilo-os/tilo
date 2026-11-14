@@ -62,8 +62,7 @@ mod durable_local_matrix {
             let start = cert.issued_at_ns + 1_000_000_000;
             let (clock, control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
             let origin = clock.new_origin();
-            let mut workspace = crate::test_support::Workspace::in_workspace(
-                crate::test_support::WorkspaceSlot(84),
+            let mut workspace = crate::test_support::Workspace::new(
                 tilo_desktop_model::WorkspaceId::parse(owner.peer().workspace_id()).unwrap(),
                 "Durable actual RPC",
             );
@@ -143,8 +142,7 @@ mod durable_local_matrix {
                 .first()
                 .cloned()
                 .expect("the environment has one workspace");
-            let mut moved =
-                tilo_desktop_model::Workspace::in_workspace(before.slot, workspace_id, before.name);
+            let mut moved = tilo_desktop_model::Workspace::new(workspace_id, before.name);
             moved.strips = before.strips;
             moved.policy = before.policy;
             moved.policy.rehome(workspace_id.to_string());

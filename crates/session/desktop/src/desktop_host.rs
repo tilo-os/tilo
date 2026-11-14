@@ -125,7 +125,7 @@ pub struct DeskLayer {
     area: Stack,
     handle: DesktopHandle,
     /// The workspace whose picture the backdrop shows.
-    workspace: Cell<Option<u64>>,
+    workspace: Cell<Option<tilo_desktop_model::WorkspaceId>>,
     /// Where the pointer is, in the desk's own coordinates: a press carries no place, and the menu
     /// a secondary press opens stands at the pointer.
     cursor: Option<Point>,
@@ -183,8 +183,10 @@ impl DeskLayer {
         asks: Rc<RefCell<Vec<DesktopAsk>>>,
         beneath: Vec<Box<dyn Widget>>,
     ) -> Self {
-        let workspace =
-            handle.read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0));
+        let workspace = handle.read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        });
         // The room the bar takes above the strips, at the same height it takes itself. The bar
         // docks in this desktop's column, so its room is there until a window covers its display; a
         // desk that follows the reveal (see [`Self::with_reveals`]) replaces this with whether the
@@ -483,9 +485,10 @@ impl Widget for DeskLayer {
         presence: &PresenceCtx,
     ) {
         // The picture is the one of the workspace in front.
-        let front = self
-            .handle
-            .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0));
+        let front = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(tilo_desktop_model::Workspace::id)
+        });
         if self.workspace.replace(front) != front {
             self.backdrop
                 .set_workspace(front.map_or_else(String::new, |id| id.to_string()));

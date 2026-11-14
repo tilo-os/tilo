@@ -26,13 +26,13 @@ pub(super) fn open_tab_beside(
         .tree
         .workspaces
         .iter()
-        .find(|workspace| workspace.slot == ids.workspace)?;
+        .find(|workspace| workspace.id() == ids.workspace)?;
     let tab = tiles.launch(workspace, tab_id, app, Some(ids.tab))?;
     let group = shared
         .tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == ids.workspace)?
+        .find(|workspace| workspace.id() == ids.workspace)?
         .strips
         .iter_mut()
         .find(|strip| strip.id == ids.strip)?

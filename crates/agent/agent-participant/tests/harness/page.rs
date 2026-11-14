@@ -261,8 +261,8 @@ impl Page {
     /// Write the workspace's shared desk as a page first writes it: one
     /// strip and no window yet.
     pub fn put_desk(&mut self) {
-        use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceId};
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
         workspace.strips = vec![Strip::new(StripId(10), "Main")];
         let desktop = tilo_desktop_model::ownership::SharedDesktop {
             tree: DesktopTree {

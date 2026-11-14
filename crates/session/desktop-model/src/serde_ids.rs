@@ -95,12 +95,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::{StripId, WorkspaceSlot};
+    use crate::ids::{GroupId, StripId};
 
     #[derive(serde::Deserialize)]
     struct Inner {
         #[serde(deserialize_with = "deserialize_id_map")]
-        map: HashMap<WorkspaceSlot, StripId>,
+        map: HashMap<StripId, GroupId>,
     }
 
     #[derive(serde::Deserialize)]
@@ -113,7 +113,7 @@ mod tests {
     fn id_keyed_maps_flatten_to_numeric_string_keys_only() {
         {
             let outer: Outer = serde_json::from_str(r#"{"map":{"7":9}}"#).unwrap();
-            assert_eq!(outer.inner.map[&WorkspaceSlot(7)], StripId(9));
+            assert_eq!(outer.inner.map[&StripId(7)], 9);
         }
         {
             assert!(serde_json::from_str::<Outer>(r#"{"map":{"seven":9}}"#).is_err());

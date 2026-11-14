@@ -9,9 +9,7 @@
 
 use std::collections::HashMap;
 
-use tilo_desktop_model::{
-    CanvasPlace, DesktopTree, FloatPlace, StripId, TabId, Workspace, WorkspaceSlot,
-};
+use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, TabId, Workspace};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
 use ui::widget::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
@@ -124,16 +122,6 @@ pub(super) fn floats_of(shared: &Shared, strip: StripId, area: CanvasPlace) -> H
         .collect()
 }
 
-/// The workspace `strip` is on, writable, with the slot it takes.
-fn slot_with(tree: &DesktopTree, strip: StripId) -> Option<WorkspaceSlot> {
-    Some(
-        tree.workspaces
-            .iter()
-            .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))?
-            .slot,
-    )
-}
-
 /// Ask for the float `group` of the workspace `strip` is on to be `float` , `None` putting it back
 /// in its strip: an arranging action the host makes. Returns whether that changes where it stands.
 pub(super) fn set(
@@ -142,7 +130,7 @@ pub(super) fn set(
     group: u64,
     float: Option<FloatPlace>,
 ) -> bool {
-    let Some(slot) = slot_with(&shared.tree, strip) else {
+    let Some(workspace_id) = workspace_with(&shared.tree, strip).map(Workspace::id) else {
         return false;
     };
     let Some(tab) = workspace_with(&shared.tree, strip)
@@ -153,7 +141,7 @@ pub(super) fn set(
         return false;
     };
     if float.is_some() {
-        shared.tree.active_strip.insert(slot, strip);
+        shared.tree.active_strip.insert(workspace_id, strip);
     }
     if shared.float_of(strip, group) == float {
         return false;

@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::roles::MODERATION_FIELD;
 use tilo_action_policy::{Level, TreePath};
 
-use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::tree::DesktopTree;
 
 /// The app a workspace's shared desktop is published under.
@@ -167,7 +167,7 @@ pub fn released(authors: &Authors, id: u64, members: Option<&BTreeSet<String>>) 
 }
 
 /// Where a window is: its workspace, strip and group.
-type Place = (WorkspaceSlot, StripId, GroupId);
+type Place = (WorkspaceId, StripId, GroupId);
 
 struct Index {
     tabs: HashMap<TabId, Place>,
@@ -182,7 +182,7 @@ fn index(tree: &DesktopTree) -> Index {
             strips.insert(strip.id, strip.name.clone());
             for group in &strip.window_groups {
                 for tab in &group.tabs {
-                    tabs.insert(tab.id, (workspace.slot, strip.id, group.id));
+                    tabs.insert(tab.id, (workspace.id(), strip.id, group.id));
                 }
             }
         }
@@ -229,7 +229,7 @@ pub fn foreign_acts(
             .tree
             .workspaces
             .iter()
-            .find(|w| w.slot == workspace.slot);
+            .find(|w| w.id() == workspace.id());
         for tab in moved_on_canvas(workspace, later, &foreign) {
             note(tab, Act::Move);
         }
@@ -429,12 +429,12 @@ mod tests {
     /// Ada's); groups 100 (Ada's tab 1), 200 (Ben's tab 2), 300 (Ben's tab
     /// 3) in strip 10.
     fn desktop() -> SharedDesktop {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         let mut lounge = Strip::new(StripId(10), "Lounge");
         lounge.window_groups = vec![group(100, &[1]), group(200, &[2]), group(300, &[3])];
         workspace.strips = vec![lounge, Strip::new(StripId(20), "Ada's")];
         let tree = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };

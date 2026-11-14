@@ -33,7 +33,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     use tilo_action_broker::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
-        test_support::{Workspace, WorkspaceSlot, WorkspaceTree},
+        test_support::{Workspace, WorkspaceId, WorkspaceTree},
     };
     if isolated_signing_identity(
         "standalone::tests::runtime_invocation_ownership_survives_device_normalization",
@@ -48,7 +48,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let actor = tilo_action_broker::collab_app_broker::person_id_for_root(
         joined.test_certificate().user_public_key,
     );
-    let mut workspace = Workspace::in_workspace(WorkspaceSlot(41), placed, "Execution isolation");
+    let mut workspace = Workspace::new(placed, "Execution isolation");
     workspace.set_owner(actor.clone());
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree {
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
         let read = second.snapshot().unwrap();
         assert_eq!(second.workspace(), first.workspace());
         assert_eq!(read.workspaces.len(), 1, "one desk, not one per start");
-        assert_eq!(read.workspaces[0].slot, made.workspaces[0].slot);
+        assert_eq!(read.workspaces[0].id(), made.workspaces[0].id());
         assert_eq!(
             read.workspaces[0].strips[0].id,
             made.workspaces[0].strips[0].id

@@ -29,7 +29,7 @@ mod owner_commit_tests {
             let device = SigningKey::from_bytes(&[25; 32]);
             let principal = person_id_for_root(root.verifying_key().to_bytes());
             let mut workspace = crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceSlot(5), "Durability boundary");
+                crate::test_support::WorkspaceId::from_u128(5), "Durability boundary");
             workspace.set_owner(&principal);
             let route = CrdtRoute::record("so.tilo.word-processor", workspace.id().to_string(), "tab:0000000000000001");
             let mut tree = WorkspaceTree::default();
@@ -103,7 +103,7 @@ mod owner_commit_tests {
                 let device = SigningKey::from_bytes(&[25; 32]);
                 let principal = person_id_for_root(root.verifying_key().to_bytes());
                 let mut workspace = crate::test_support::Workspace::new(
-                    crate::test_support::WorkspaceSlot(5),
+                    crate::test_support::WorkspaceId::from_u128(5),
                     "read mode",
                 );
                 workspace.set_owner(&principal);
@@ -399,8 +399,7 @@ mod owner_commit_tests {
         }
     }
     fn owner_tree(owner: &crate::test_owner::SessionOwner) -> WorkspaceTreeHandle {
-        let mut workspace = crate::test_support::Workspace::in_workspace(
-            crate::test_support::WorkspaceSlot(72),
+        let mut workspace = crate::test_support::Workspace::new(
             uuid::Uuid::parse_str(owner.peer().workspace_id())
                 .unwrap()
                 .into(),
@@ -1010,8 +1009,7 @@ mod owner_commit_tests {
                     .admitted_workspace()
                     .ok_or("admitted owner governance unavailable")?;
                 let (name, policy) = tilo_peer_state::workspace::extract_governed_fields(doc);
-                let mut workspace = tilo_desktop_model::Workspace::in_workspace(
-                    tilo_desktop_model::WorkspaceSlot(72),
+                let mut workspace = tilo_desktop_model::Workspace::new(
                     uuid::Uuid::parse_str(peer.workspace_id())
                         .map_err(|e| e.to_string())?
                         .into(),

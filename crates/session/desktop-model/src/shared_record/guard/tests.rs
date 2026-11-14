@@ -1,7 +1,7 @@
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::ownership::{Act, Authors, SharedDesktop};
 use crate::shared_record;
-use crate::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot};
+use crate::{DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId};
 
 use super::*;
 
@@ -27,7 +27,7 @@ fn tab(id: u64) -> Tab {
 /// A desktop of one strip (10, nobody's) holding a window per
 /// `(tab, group, who)`.
 fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
     let mut strip = Strip::new(StripId(10), "Lounge");
     for (id, group, _) in windows {
         match strip.window_groups.iter_mut().find(|g| g.id == *group) {
@@ -49,7 +49,7 @@ fn desktop(windows: &[(u64, u64, &str)]) -> SharedDesktop {
         .collect();
     SharedDesktop {
         tree: DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         },

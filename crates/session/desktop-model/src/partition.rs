@@ -27,7 +27,7 @@ use tilo_sort::CompactSort as _;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{GroupId, StripId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, WorkspaceId};
 use crate::layout::{Strip, WindowGroup};
 use crate::serde_ids::deserialize_id_btree_map;
 use crate::workspace::Workspace;
@@ -98,7 +98,7 @@ pub struct OutputPartition {
     /// strip whatever this says (see `DesktopTree::strip_shown_on`); not
     /// persisted.
     #[serde(skip)]
-    pub shown: BTreeMap<(String, WorkspaceSlot), StripId>,
+    pub shown: BTreeMap<(String, WorkspaceId), StripId>,
 }
 
 impl OutputPartition {
@@ -225,14 +225,14 @@ impl OutputPartition {
     }
 
     /// The strip `display` was last showing in `workspace`, if any.
-    pub fn shown_on(&self, display: u32, workspace: WorkspaceSlot) -> Option<StripId> {
+    pub fn shown_on(&self, display: u32, workspace: WorkspaceId) -> Option<StripId> {
         let monitor = self.monitor_of(display)?;
         self.shown.get(&(monitor.to_owned(), workspace)).copied()
     }
 
     /// Remember that `display` shows `strip` in `workspace`. Returns
     /// whether that changed anything.
-    pub fn set_shown(&mut self, display: u32, workspace: WorkspaceSlot, strip: StripId) -> bool {
+    pub fn set_shown(&mut self, display: u32, workspace: WorkspaceId, strip: StripId) -> bool {
         let Some(monitor) = self.monitor_of(display).map(str::to_owned) else {
             return false;
         };
@@ -269,8 +269,8 @@ impl OutputPartition {
             .flat_map(|w| &w.strips)
             .flat_map(|s| &s.window_groups)
         {
-            if let std::collections::btree_map::Entry::Vacant(slot) = self.home.entry(group.id) {
-                slot.insert(target.clone());
+            if let std::collections::btree_map::Entry::Vacant(vacant) = self.home.entry(group.id) {
+                vacant.insert(target.clone());
                 changed = true;
             }
         }
@@ -396,7 +396,7 @@ impl OutputPartition {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ids::WorkspaceSlot;
+    use crate::ids::WorkspaceId;
     use crate::layout::{Tab, TileContent, WindowGroup};
     use crate::width::WindowWidth;
 
@@ -422,7 +422,7 @@ mod tests {
     }
 
     fn workspace(ids: &[GroupId]) -> Vec<Workspace> {
-        let mut ws = Workspace::new(WorkspaceSlot(1), "Desk");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(1), "Desk");
         let mut strip = Strip::new(StripId(1), "S");
         strip.window_groups = ids.iter().map(|id| group(*id)).collect();
         ws.strips = vec![strip];
@@ -623,11 +623,11 @@ mod tests {
             below.window_groups = vec![group(3), group(4)];
             ws.strips.push(below);
             let mut tree = crate::tree::DesktopTree {
-                active: ws.slot,
+                active: ws.id(),
                 workspaces: vec![ws.clone()],
                 ..Default::default()
             };
-            tree.active_strip.insert(ws.slot, StripId(1));
+            tree.active_strip.insert(ws.id(), StripId(1));
             tree.outputs.reconcile(&tree.workspaces, &docked());
             home(&mut tree.outputs, &[(1, 0), (2, 1), (3, 0), (4, 1)]);
             tree.outputs.set_focused(0);
@@ -635,7 +635,7 @@ mod tests {
             assert!(tree.note_shown_strip());
             assert!(!tree.shown_strips_behind());
             // The panel goes to the strip below; the monitor stays.
-            tree.active_strip.insert(ws.slot, StripId(2));
+            tree.active_strip.insert(ws.id(), StripId(2));
             assert!(tree.note_shown_strip());
             assert_eq!(tree.strip_shown_on(0), Some(StripId(2)));
             assert_eq!(tree.strip_shown_on(1), Some(StripId(1)));
@@ -657,7 +657,7 @@ mod tests {
         {
             let ws = workspace(&[1, 2]).remove(0);
             let mut tree = crate::tree::DesktopTree {
-                active: ws.slot,
+                active: ws.id(),
                 workspaces: vec![ws],
                 ..Default::default()
             };

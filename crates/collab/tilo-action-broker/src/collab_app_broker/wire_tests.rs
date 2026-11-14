@@ -22,8 +22,10 @@ struct Workspace {
 impl Workspace {
     /// A workspace whose members are the roots seeded with `members`.
     fn new(members: &[u8]) -> Self {
-        let mut workspace =
-            crate::test_support::Workspace::new(crate::test_support::WorkspaceSlot(9), "Wire");
+        let mut workspace = crate::test_support::Workspace::new(
+            crate::test_support::WorkspaceId::from_u128(9),
+            "Wire",
+        );
         for seed in members {
             workspace.admit(principal(*seed), crate::test_support::Role::Editor);
         }

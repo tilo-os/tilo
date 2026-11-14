@@ -18,7 +18,7 @@ use tilo_action_broker::{
     collab_inbound::{self, RemoteDocument},
     workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, KeyProvider},
 };
-use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_peer_state::direct::{DirectSync, Heard};
 use tilo_peer_state::join::TransportHint;
@@ -327,11 +327,7 @@ impl Joined {
                 .ok_or("the device acts for no person")?
                 .to_owned();
             let document = view.peer().admitted_workspace().ok_or("no admitted room")?;
-            let mut workspace = Workspace::in_workspace(
-                WorkspaceSlot::of_workspace(view.workspace_id()),
-                workspace,
-                String::new(),
-            );
+            let mut workspace = Workspace::new(workspace, String::new());
             tilo_peer_state::workspace::adopt_workspace(&mut workspace, document, &[]);
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))

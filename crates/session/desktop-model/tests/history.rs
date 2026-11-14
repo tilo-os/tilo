@@ -22,7 +22,7 @@ fn receipt(n: u128) -> WorkspaceEffectReceipt {
 
 /// A desktop whose one workspace has `receipts` effect receipts.
 fn desktop(receipts: u128) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
     workspace.set_owner("owner");
     workspace.strips.push(Strip::new(StripId(7), "Main"));
     workspace.effect_receipts = (0..receipts).map(receipt).collect();
@@ -114,8 +114,8 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     assert!(view.shortcuts.is_empty());
     assert!(view.schedule_claims.is_empty());
     assert_eq!(
-        (view.slot, &view.id(), &view.name),
-        (workspace.slot, &workspace.id(), &workspace.name)
+        (view.id(), &view.id(), &view.name),
+        (workspace.id(), &workspace.id(), &workspace.name)
     );
 
     let people = ["owner", "editor", "stranger"];

@@ -517,7 +517,8 @@ mod tests {
     fn workspaces_render_in_the_private_service_only_while_nobody_else_is_in_them() {
         let person = "person-at-this-device";
         let mut tree = tilo_desktop_model::DesktopTree::default();
-        let mut workspace = tilo_desktop_model::Workspace::create("Notes");
+        let mut workspace =
+            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Notes");
         workspace.set_owner(person.to_owned());
         let workspace_id = workspace.id().to_string();
         tree.workspaces.push(workspace);

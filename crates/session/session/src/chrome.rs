@@ -615,14 +615,14 @@ impl ChromeSource for SessionChrome {
     /// it names someone else as its owner.
     fn may_branch_workspace(
         &self,
-        workspace: tilo_desktop_model::WorkspaceSlot,
+        workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<(), String> {
         let (id, owner) = self
             .handle
             .read(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|held| held.slot == workspace)
+                    .find(|held| held.id() == workspace)
                     .map(|held| (held.id(), held.owner().cloned()))
             })
             .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
@@ -641,7 +641,7 @@ impl ChromeSource for SessionChrome {
 
     fn may_delete_workspace(
         &self,
-        workspace: tilo_desktop_model::WorkspaceSlot,
+        workspace: tilo_desktop_model::WorkspaceId,
     ) -> Result<(), String> {
         let Some(engine) = &self.engine else {
             return Err(tilo_desktop_surface::i18n::t(
@@ -653,7 +653,7 @@ impl ChromeSource for SessionChrome {
             .read(|tree| {
                 tree.workspaces
                     .iter()
-                    .find(|held| held.slot == workspace)
+                    .find(|held| held.id() == workspace)
                     .map(tilo_desktop_model::Workspace::id)
             })
             .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;

@@ -974,11 +974,11 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
 /// and a second launch of the same app in front finds no window of it there to raise.
 #[test]
 fn a_window_launched_into_another_workspace_opens_there() {
-    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
     let (seeded, _) = DesktopPolicy::new(7);
     let mut tree = seeded.handle().read(Clone::clone);
     tree.workspaces
-        .push(Workspace::new(WorkspaceSlot(2), "Garden"));
+        .push(Workspace::new(WorkspaceId::from_u128(2), "Garden"));
     let garden = tree.workspaces[1].id().to_string();
     let front = tree.active;
     let (mut policy, surface) = DesktopPolicy::with_tree(tree, 7);
@@ -1023,12 +1023,12 @@ fn a_window_launched_into_another_workspace_opens_there() {
                         .flat_map(|group| &group.tabs)
                         .any(|tab| matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id))
                 })
-                .map(|workspace| workspace.slot)
+                .map(tilo_desktop_model::Workspace::id)
         })
     };
     assert_eq!(
         placed(5),
-        Some(WorkspaceSlot(2)),
+        Some(WorkspaceId::from_u128(2)),
         "launched into Garden: opens there"
     );
     assert_eq!(

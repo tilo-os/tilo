@@ -1,7 +1,7 @@
 use crate::join::TransportHint;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,14 +49,14 @@ impl NativeAuthorityStorage {
     }
     /// Every workspace whose replica is installed here, with the workspace id the
     /// workspace's record names (the workspace's transport shard).
-    pub fn held(&self) -> impl Iterator<Item = (WorkspaceId, WorkspaceSlot)> + '_ {
+    pub fn held(&self) -> impl Iterator<Item = (WorkspaceId, WorkspaceId)> + '_ {
         self.workspaces
             .iter()
-            .map(|(workspace, stored)| (*workspace, WorkspaceSlot::of_workspace(stored.workspace)))
+            .map(|(workspace, stored)| (*workspace, stored.workspace))
     }
     /// Every workspace an enrollment is in flight into, with the local workspace
     /// it installs into, where it names one.
-    pub fn joins(&self) -> impl Iterator<Item = (WorkspaceId, Option<WorkspaceSlot>)> + '_ {
+    pub fn joins(&self) -> impl Iterator<Item = (WorkspaceId, Option<WorkspaceId>)> + '_ {
         self.pending
             .iter()
             .map(|(workspace, pending)| (*workspace, pending.target_workspace()))
@@ -232,22 +232,12 @@ pub enum PendingEnrollmentStatus {
     Active,
     Cancelled,
 }
-/// The local slot an enrollment installs into: the workspace that is the
-/// enrolled workspace, made for the join before the enrollment began. A slot
-/// never changes its workspace, so installing binds nothing.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct EnrollmentTarget {
-    pub workspace: WorkspaceSlot,
-    /// The workspace the enrollment is into. Files from before this record
-    /// bound it as a placeholder slot, under the stored name it keeps; nothing
-    /// reads it back.
-    #[serde(rename = "prior_room")]
-    pub prior_workspace: WorkspaceId,
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StoredPendingEnrollment {
-    /// `None` where the host has no local slots to bind.
-    pub(crate) target: Option<EnrollmentTarget>,
+    /// Whether the enrolled workspace is on this device's desk, made for the join before the
+    /// enrollment began.
+    #[serde(default)]
+    pub(crate) shown: bool,
     pub(crate) id: PendingEnrollmentId,
     pub(crate) intent: Vec<u8>,
     pub(crate) status: PendingEnrollmentStatus,
@@ -268,8 +258,8 @@ impl StoredPendingEnrollment {
     /// The local workspace the enrollment installs into, where the host has
     /// workspaces.
     #[must_use]
-    pub fn target_workspace(&self) -> Option<WorkspaceSlot> {
-        self.target.as_ref().map(|target| target.workspace)
+    pub fn target_workspace(&self) -> Option<WorkspaceId> {
+        self.shown.then(|| self.id.workspace())
     }
 }
 

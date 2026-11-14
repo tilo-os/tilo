@@ -42,7 +42,7 @@ use tilo_color_pipeline::color_pipeline::{OutputColorState, SurfaceColorOp, plan
 pub use tilo_color_pipeline::hdr_display::DisplayCapabilities;
 use tilo_color_pipeline::hdr_tonemap::{HdrTonemapConfig, tonemap_p010_to_rgba8};
 use tilo_desktop_model::{
-    DesktopTree, Tab, TabId, TileContent as ModelTile, Workspace, WorkspaceSlot,
+    DesktopTree, Tab, TabId, TileContent as ModelTile, Workspace, WorkspaceId,
 };
 pub use tilo_media::realtime::PictureWake;
 use tilo_window_share::streaming::{InputEvent, ShareRegistry, StreamingShare};
@@ -1523,7 +1523,7 @@ impl crate::TileSource for PeerTiles {
         self.inner.window_record(tab)
     }
 
-    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+    fn carry(&self, tab: TabId, to: WorkspaceId) -> bool {
         self.inner.carry(tab, to)
     }
 

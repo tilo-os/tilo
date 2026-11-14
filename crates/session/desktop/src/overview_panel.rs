@@ -27,7 +27,7 @@ mod tilo;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use taffy::{NodeId, Style, TaffyTree};
-use tilo_desktop_model::{GroupId, StripId, TabId, WorkspaceSlot};
+use tilo_desktop_model::{GroupId, StripId, TabId, WorkspaceId};
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -60,9 +60,9 @@ pub struct OverviewDesk {
     pub colors: HashMap<String, (u8, u8, u8)>,
     /// What a workspace held through a site says in place of who has access: the site, and how many
     /// are there.
-    pub sites: HashMap<WorkspaceSlot, String>,
+    pub sites: HashMap<WorkspaceId, String>,
     /// The workspaces that can be left from here.
-    pub leavable: HashSet<WorkspaceSlot>,
+    pub leavable: HashSet<WorkspaceId>,
     /// The windows the host draws the pictures of itself: the panel leaves their wells to it.
     pub pictured: HashSet<TabId>,
     /// A new workspace can be made.
@@ -94,18 +94,18 @@ pub enum OverviewPick {
     /// Go to this window of the workspace you are in.
     Window(TabId),
     /// Go to another workspace.
-    Workspace(WorkspaceSlot),
+    Workspace(WorkspaceId),
     NewWorkspace,
     /// Open the directory a workspace is joined from.
     JoinWorkspace,
     /// Leave this site's workspace.
-    LeaveWorkspace(WorkspaceSlot),
+    LeaveWorkspace(WorkspaceId),
     /// Close this window; the overview stays up.
     CloseWindow(TabId),
     /// Move this window to another workspace; the overview stays up to show it leave.
     MoveWindow {
         tab: TabId,
-        to: WorkspaceSlot,
+        to: WorkspaceId,
     },
     /// Move this window's group to another strip of the workspace.
     MoveWindowToStrip {
@@ -503,6 +503,7 @@ impl OverviewPanel {
                 .strip_prefix(prefix)
                 .and_then(|n| n.parse::<u64>().ok())
         };
+        let workspace = |prefix: &str| target.strip_prefix(prefix).and_then(WorkspaceId::parse);
         // A row asking keeps things as they are when its Keep is pressed; the answer that goes
         // ahead is the row's own control, so it needs nothing of its own here.
         if let Some(key) = target.strip_suffix(":keep")
@@ -529,10 +530,10 @@ impl OverviewPanel {
             self.choose(OverviewPick::NewWorkspace);
         } else if target == "overview-join-workspace" && self.desk.can_join {
             self.choose(OverviewPick::JoinWorkspace);
-        } else if let Some(id) = number("overview-workspace:") {
-            self.choose(OverviewPick::Workspace(WorkspaceSlot(id)));
-        } else if let Some(id) = number("overview-leave:") {
-            self.choose(OverviewPick::LeaveWorkspace(WorkspaceSlot(id)));
+        } else if let Some(id) = workspace("overview-workspace:") {
+            self.choose(OverviewPick::Workspace(id));
+        } else if let Some(id) = workspace("overview-leave:") {
+            self.choose(OverviewPick::LeaveWorkspace(id));
         } else if let Some(tab) = number("overview-window:") {
             self.choose(OverviewPick::Window(tab));
         } else if let Some(id) = number("overview-strip:") {
@@ -570,6 +571,7 @@ impl OverviewPanel {
                 .strip_prefix(prefix)
                 .and_then(|n| n.parse::<u64>().ok())
         };
+        let workspace = |prefix: &str| target.strip_prefix(prefix).and_then(WorkspaceId::parse);
         let count = self.desk.cards.len();
         if let Some(tab) = number("overview-window:") {
             if !self.row_windows().iter().any(|w| w.address.tab == tab) {
@@ -577,7 +579,7 @@ impl OverviewPanel {
             }
             self.select_window(tab);
         } else if let Some(index) =
-            number("overview-workspace:").and_then(|id| self.card_index(WorkspaceSlot(id)))
+            workspace("overview-workspace:").and_then(|id| self.card_index(id))
         {
             self.focus_row(index);
         } else if target == "overview-new-workspace" && self.can_add() {
@@ -769,7 +771,7 @@ impl Widget for OverviewPanel {
             .children
             .extend(self.desk.cards.iter().enumerate().map(|(index, card)| {
                 AccessNode::new(Role::Button)
-                    .with_action_target(format!("overview-workspace:{}", card.id.raw()))
+                    .with_action_target(format!("overview-workspace:{}", card.id))
                     .with_name(card.name.clone())
                     .with_bounds(self.row_rect(index))
                     .with_state(
@@ -835,7 +837,7 @@ impl Widget for OverviewPanel {
             if let Some(leave) = self.leave_rect(idx) {
                 overview.children.push(
                     AccessNode::new(Role::Button)
-                        .with_action_target(format!("overview-leave:{}", card.id.raw()))
+                        .with_action_target(format!("overview-leave:{}", card.id))
                         .with_name(t_args(
                             "overview-a11y-leave",
                             &[("name", card.name.clone().into())],
@@ -886,7 +888,7 @@ impl Widget for OverviewPanel {
         }
         for (idx, card) in self.desk.cards.iter().enumerate() {
             if let Some(leave) = self.leave_rect(idx) {
-                rects.push((format!("overview-leave:{}", card.id.raw()), leave));
+                rects.push((format!("overview-leave:{}", card.id), leave));
             }
         }
         rects.extend(self.tilo_test_rects());
@@ -960,7 +962,7 @@ mod tests {
 
     fn card(id: u64, name: &str, current: bool, windows: &[&str]) -> WorkspaceCard {
         WorkspaceCard {
-            id: WorkspaceSlot(id),
+            id: WorkspaceId::from_u128(id.into()),
             name: name.into(),
             is_current: current,
             people: Vec::new(),
@@ -1421,7 +1423,7 @@ mod tests {
             assert!(press(&mut panel, NamedKey::Enter));
             assert_eq!(
                 panel.take_pick(),
-                Some(OverviewPick::Workspace(WorkspaceSlot(3)))
+                Some(OverviewPick::Workspace(WorkspaceId::from_u128(3)))
             );
             assert!(press(&mut panel, NamedKey::Tab));
             assert!(press(&mut panel, NamedKey::Enter));
@@ -1640,7 +1642,7 @@ mod tests {
                 panel.take_pick(),
                 Some(OverviewPick::MoveWindow {
                     tab: 1000,
-                    to: WorkspaceSlot(2)
+                    to: WorkspaceId::from_u128(2)
                 })
             );
         }
@@ -1648,10 +1650,10 @@ mod tests {
         phase semantic_actions_reach_what_the_rows_do;
         {
             let mut panel = opened_in(WIDE, desk());
-            assert!(panel.activate("overview-workspace:2"));
+            assert!(panel.activate(&format!("overview-workspace:{}", WorkspaceId::from_u128(2))));
             assert_eq!(
                 panel.take_pick(),
-                Some(OverviewPick::Workspace(WorkspaceSlot(2)))
+                Some(OverviewPick::Workspace(WorkspaceId::from_u128(2)))
             );
             assert!(panel.focus("overview-window:1001"));
             assert_eq!(panel.window_selection(), Some(1001));

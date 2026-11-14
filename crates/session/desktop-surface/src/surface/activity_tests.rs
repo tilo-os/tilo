@@ -6,7 +6,7 @@ use std::sync::Arc;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{ActionHostError, Caller};
 use tilo_actions::{InvocationUpdate, InvocationUpdate::Item};
-use tilo_desktop_model::WorkspaceSlot;
+use tilo_desktop_model::WorkspaceId;
 use ui::automerge::AutoCommit;
 use ui::{Arrival, RemoteActions};
 
@@ -64,7 +64,7 @@ impl HistorySource for RetainedHistory {
     fn workspace_history(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
     ) -> Option<crate::activity::ActivitySnapshot> {
         let mut desktop = tree.clone();
         desktop.active = workspace;
@@ -77,7 +77,7 @@ impl HistorySource for RetainedHistory {
     fn record_histories(
         &mut self,
         _: &DesktopTree,
-        _: WorkspaceSlot,
+        _: WorkspaceId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
         Vec::new()
     }
@@ -105,7 +105,7 @@ impl HistorySource for DeferredHistory {
     fn workspace_history(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
     ) -> Option<crate::activity::ActivitySnapshot> {
         self.retained.workspace_history(tree, workspace)
     }
@@ -113,7 +113,7 @@ impl HistorySource for DeferredHistory {
     fn record_histories(
         &mut self,
         tree: &DesktopTree,
-        workspace: WorkspaceSlot,
+        workspace: WorkspaceId,
     ) -> Vec<crate::activity::DetachedRecordHistory> {
         self.retained.record_histories(tree, workspace)
     }
@@ -205,7 +205,7 @@ impl Served {
     }
 
     fn workspace(&self) -> String {
-        self.tree.active.raw().to_string()
+        self.tree.active.to_string()
     }
 }
 

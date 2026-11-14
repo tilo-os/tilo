@@ -4,10 +4,10 @@
 //! This module is the only definition of the shape: [`seed`] writes it from a [`DesktopTree`],
 //! [`rebuild`] reads it back. Topology is [`crate::topology`]'s; the host owns the document, decides
 //! when to commit, and stamps history.
-//! Shape: `{ active: uint, authors_v1?: {actor → author},
+//! Shape: `{ active: workspace id, authors_v1?: {actor → author},
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
 //! tab id → person}, window_opened_by_v1?: {tab id → json agent run},
-//! view_v1: json, workspaces: [ { id, name, workspace, owner?,
+//! view_v1: json, workspaces: [ { id: workspace id, name, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
 //! effect_receipts_v1: {invocation → json},
@@ -30,7 +30,7 @@ use tilo_action_policy::{Grant, Grantee, Preset, Role, WorkspacePolicy};
 
 use crate::app::AppKind;
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
-use crate::ids::{GroupId, StripId, TabId, WorkspaceId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
 use crate::projection::{
@@ -62,7 +62,7 @@ const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
 const OPENED_BY_KEY: &str = "window_opened_by_v1";
 
 /// The map key a named grant set is stored under: a digest of its case-folded name, so two
-/// spellings of one name share a slot.
+/// spellings of one name share a key.
 pub fn preset_key(name: &str) -> String {
     blake3::hash(name.trim().to_lowercase().as_bytes())
         .to_hex()
@@ -73,14 +73,14 @@ fn obj(doc: &AutoCommit, parent: &ObjId, prop: impl Into<Prop>) -> Option<ObjId>
     doc.get(parent, prop).ok().flatten().map(|(_, id)| id)
 }
 
-fn workspace_entries(doc: &AutoCommit) -> Vec<(u64, ObjId)> {
+fn workspace_entries(doc: &AutoCommit) -> Vec<(WorkspaceId, ObjId)> {
     let Some(list) = obj(doc, &ROOT, WORKSPACES_KEY) else {
         return Vec::new();
     };
     (0..doc.length(&list))
         .filter_map(|i| {
             let entry = obj(doc, &list, i)?;
-            Some((doc.uint_at(&entry, "id")?, entry))
+            Some((WorkspaceId::read(doc, &entry)?, entry))
         })
         .collect()
 }
@@ -146,26 +146,53 @@ fn sync_blob_map<T: serde::Serialize>(
     }
 }
 
-fn entry_id(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<u64> {
-    obj(doc, list, index).and_then(|entry| doc.uint_at(&entry, "id"))
+/// The id an entry of an id-keyed list is kept under: a window's, group's or strip's number, or
+/// a workspace's id as text.
+trait EntryId: Copy + Eq + std::hash::Hash {
+    fn read(doc: &AutoCommit, entry: &ObjId) -> Option<Self>;
+    fn scalar(self) -> ScalarValue;
+}
+
+impl EntryId for u64 {
+    fn read(doc: &AutoCommit, entry: &ObjId) -> Option<Self> {
+        doc.uint_at(entry, "id")
+    }
+
+    fn scalar(self) -> ScalarValue {
+        ScalarValue::Uint(self)
+    }
+}
+
+impl EntryId for WorkspaceId {
+    fn read(doc: &AutoCommit, entry: &ObjId) -> Option<Self> {
+        WorkspaceId::parse(&doc.str_at(entry, "id")?)
+    }
+
+    fn scalar(self) -> ScalarValue {
+        ScalarValue::Str(self.to_string().into())
+    }
+}
+
+fn entry_id<K: EntryId>(doc: &AutoCommit, list: &ObjId, index: usize) -> Option<K> {
+    obj(doc, list, index).and_then(|entry| K::read(doc, &entry))
 }
 
 /// Make the list of id-keyed map entries `list` match `items`, in order.
 /// An entry whose id is still wanted is updated in place by `write`; a
 /// missing one is inserted; a stale or duplicate one is deleted. Only a
 /// reorder rewrites an entry whole, because an automerge list has no move.
-fn sync_list<T>(
+fn sync_list<T, K: EntryId>(
     doc: &mut AutoCommit,
     list: &ObjId,
     items: &[T],
-    id_of: impl Fn(&T) -> u64,
+    id_of: impl Fn(&T) -> K,
     mut write: impl FnMut(&mut AutoCommit, &ObjId, &T),
 ) {
-    let wanted: HashSet<u64> = items.iter().map(&id_of).collect();
+    let wanted: HashSet<K> = items.iter().map(&id_of).collect();
     let mut seen = HashSet::new();
     let mut doomed = Vec::new();
     for index in 0..doc.length(list) {
-        match entry_id(doc, list, index) {
+        match entry_id::<K>(doc, list, index) {
             Some(id) if wanted.contains(&id) && seen.insert(id) => {}
             _ => doomed.push(index),
         }
@@ -190,7 +217,7 @@ fn sync_list<T>(
         let Ok(entry) = doc.insert_object(list, at, ObjType::Map) else {
             continue;
         };
-        let _ = doc.put(&entry, "id", ScalarValue::Uint(id));
+        let _ = doc.put(&entry, "id", id.scalar());
         write(doc, &entry, item);
     }
     for index in (items.len()..doc.length(list)).rev() {
@@ -242,9 +269,6 @@ fn write_strip(doc: &mut AutoCommit, entry: &ObjId, strip: &Strip) {
 
 fn write_workspace(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
     let _ = doc.put_str_if_changed(entry, "name", &ws.name);
-    // Workspace identity travels with the workspace: a reader hydrating from
-    // this document must land in this workspace, not mint its own.
-    let _ = doc.put_str_if_changed(entry, "room", &ws.id().to_string());
     match ws.owner() {
         Some(owner) => {
             let _ = doc.put_str_if_changed(entry, "owner", owner);
@@ -390,12 +414,8 @@ fn read_local(doc: &AutoCommit, entry: &ObjId) -> Option<Local> {
 /// history could not put the layout back with the windows.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct View {
-    #[serde(
-        default,
-        skip_serializing_if = "HashMap::is_empty",
-        deserialize_with = "deserialize_id_map"
-    )]
-    active_strip: HashMap<WorkspaceSlot, StripId>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    active_strip: HashMap<WorkspaceId, StripId>,
     #[serde(
         default,
         skip_serializing_if = "HashMap::is_empty",
@@ -497,9 +517,8 @@ pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
 /// it is over: a resize writes the view on every frame.
 pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
     let before = doc.pending_ops();
-    if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
-        let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(desktop.active.raw()));
-    }
+    let active = desktop.active.to_string();
+    let _ = doc.put_str_if_changed(&ROOT, ACTIVE_KEY, &active);
     put_json_if_changed(doc, &ROOT, VIEW_KEY, &View::of(desktop));
     let after_view = doc.pending_ops();
     if let Some(list) = child_object(doc, &ROOT, WORKSPACES_KEY, ObjType::List) {
@@ -507,7 +526,7 @@ pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
             doc,
             &list,
             &desktop.workspaces,
-            |ws| ws.slot.raw(),
+            Workspace::id,
             write_workspace,
         );
     }
@@ -638,35 +657,26 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
 /// strips by id, then the document's topology and tabs are folded in, and a group
 /// seen for the first time gets local defaults.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
-    if let Some(raw) = doc.uint_at(&ROOT, ACTIVE_KEY) {
-        desktop.active = WorkspaceSlot::from(raw);
+    if let Some(active) = doc
+        .str_at(&ROOT, ACTIVE_KEY)
+        .and_then(|text| WorkspaceId::parse(&text))
+    {
+        desktop.active = active;
     }
     if obj(doc, &ROOT, WORKSPACES_KEY).is_none() {
         return;
     }
     let entries = workspace_entries(doc);
     let mut rebuilt: Vec<Workspace> = Vec::with_capacity(entries.len());
-    for (id_raw, entry) in &entries {
+    for (id, entry) in &entries {
         let name = doc.str_at(entry, "name").unwrap_or_default();
-        let slot = WorkspaceSlot::from(*id_raw);
-        let identity = doc
-            .str_at(entry, "room")
-            .and_then(|v| WorkspaceId::parse(v.as_str()))
-            .filter(|r| !r.is_nil());
-        // A workspace keeps the identity it has: an existing one keeps the id
-        // it was given, whatever the document names, and a new one is made at
-        // the identity the document names (one minted for it when it names
-        // none).
-        let mut ws = match desktop.workspaces.iter().position(|w| w.slot == slot) {
+        let mut ws = match desktop.workspaces.iter().position(|w| w.id() == *id) {
             Some(existing) => {
                 let mut existing = desktop.workspaces.remove(existing);
                 existing.name = name;
                 existing
             }
-            None => match identity {
-                Some(identity) => Workspace::in_workspace(slot, identity, name),
-                None => Workspace::new(slot, name),
-            },
+            None => Workspace::new(*id, name),
         };
         let (owner, grants) = read_policy(doc, entry);
         if let Some(owner) = owner {
@@ -697,9 +707,8 @@ pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     }
     desktop.workspaces = rebuilt;
 
-    for (id_raw, entry) in entries {
-        let slot = WorkspaceSlot::from(id_raw);
-        let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.slot == slot) else {
+    for (id, entry) in entries {
+        let Some(ws) = desktop.workspaces.iter_mut().find(|w| w.id() == id) else {
             continue;
         };
         rebuild_strips(doc, &entry, ws);

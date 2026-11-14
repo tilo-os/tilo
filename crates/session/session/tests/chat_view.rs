@@ -82,7 +82,7 @@ fn place_at(session: &mut Session, resource: &str, width: i64, height: i64) -> u
         let tree = session.handle().read(Clone::clone);
         let workspace = tree.active_workspace().expect("a workspace is in front");
         (
-            workspace.slot.0.to_string(),
+            workspace.id().to_string(),
             workspace.strips.first().expect("a row").id.0,
             session.handle().mint_id(),
             session.handle().mint_id(),
@@ -115,7 +115,7 @@ fn place_far(session: &mut Session, resource: &str) -> u64 {
         let tree = session.handle().read(Clone::clone);
         let workspace = tree.active_workspace().expect("a workspace is in front");
         (
-            workspace.slot.0.to_string(),
+            workspace.id().to_string(),
             workspace.strips.first().expect("a row").id.0,
             session.handle().mint_id(),
             session.handle().mint_id(),

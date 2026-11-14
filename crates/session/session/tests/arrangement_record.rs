@@ -128,7 +128,7 @@ fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
     let workspace = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == tree.active)
+        .find(|workspace| workspace.id() == tree.active)
         .expect("a workspace is in front");
     let strip = workspace.strips.first_mut().expect("a strip is in front");
     let group = handle.mint_id();
@@ -572,7 +572,7 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
         let workspace = tree
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == tree.active)
+            .find(|workspace| workspace.id() == tree.active)
             .expect("a workspace is in front");
         workspace
             .strips

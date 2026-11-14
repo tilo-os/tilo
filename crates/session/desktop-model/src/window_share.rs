@@ -536,7 +536,7 @@ mod tests {
             // window comes back, its share does not, and nobody shares it again
             // but the person.
             let mut tree = DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             };
@@ -571,7 +571,7 @@ mod tests {
     /// — and the workspace's devices, as its document lists them.
     fn shared_windows() -> (Workspace, BTreeMap<u16, String>) {
         use crate::app::AppKind;
-        use crate::ids::{StripId, WorkspaceId, WorkspaceSlot};
+        use crate::ids::{StripId, WorkspaceId};
         use crate::layout::{Strip, Tab, TileContent, WindowGroup};
         use crate::width::WindowWidth;
 
@@ -586,8 +586,7 @@ mod tests {
             view: String::new(),
             pinned: false,
         };
-        let mut workspace = Workspace::in_workspace(
-            WorkspaceSlot(1),
+        let mut workspace = Workspace::new(
             WorkspaceId::parse(WORKSPACE).expect("a workspace id"),
             "Team",
         );

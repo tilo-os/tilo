@@ -78,7 +78,7 @@ pub fn leave_out(desktop: &mut SharedDesktop) {
 mod tests {
     use super::*;
     use crate::layout::{Strip, WindowGroup};
-    use crate::{StripId, WindowWidth, Workspace, WorkspaceSlot};
+    use crate::{StripId, WindowWidth, Workspace, WorkspaceId};
 
     fn window(id: u64, app: &str) -> Tab {
         Tab {
@@ -96,7 +96,7 @@ mod tests {
     }
 
     fn desktop() -> SharedDesktop {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         let mut strip = Strip::new(StripId(10), "Main");
         for (group, tab) in [
             (100, window(1, "so.tilo.chat")),
@@ -114,7 +114,7 @@ mod tests {
         workspace.strips.push(strip);
         SharedDesktop {
             tree: DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             },

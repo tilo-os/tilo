@@ -12,7 +12,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc as _, Value};
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::serde_ids::deserialize_id_btree_map;
 use crate::tree::DesktopTree;
 use crate::width::WindowWidth;
@@ -70,14 +70,14 @@ pub struct PersonView {
 }
 
 impl PersonView {
-    /// What `slot` of `tree` shows the person looking at it.
+    /// What the workspace `id` of `tree` shows the person looking at it.
     #[must_use]
-    pub fn of(tree: &DesktopTree, slot: WorkspaceSlot) -> Self {
+    pub fn of(tree: &DesktopTree, id: WorkspaceId) -> Self {
         let mut view = Self {
-            front_strip: tree.active_strip.get(&slot).copied(),
+            front_strip: tree.active_strip.get(&id).copied(),
             ..Self::default()
         };
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == slot) else {
+        let Some(workspace) = tree.workspaces.iter().find(|held| held.id() == id) else {
             return view;
         };
         for strip in &workspace.strips {
@@ -95,18 +95,18 @@ impl PersonView {
         view
     }
 
-    /// Show `slot` of `tree` as this view says. A strip, a group or a tab the view names and the
+    /// Show the workspace `id` of `tree` as this view says. A strip, a group or a tab the view names and the
     /// layout no longer holds is left out: what it named is gone. Whether anything changed.
-    pub fn applied(&self, tree: &mut DesktopTree, slot: WorkspaceSlot) -> bool {
+    pub fn applied(&self, tree: &mut DesktopTree, id: WorkspaceId) -> bool {
         let mut changed = false;
-        let Some(workspace) = tree.workspaces.iter_mut().find(|held| held.slot == slot) else {
+        let Some(workspace) = tree.workspaces.iter_mut().find(|held| held.id() == id) else {
             return false;
         };
         if let Some(strip) = self.front_strip
             && workspace.strips.iter().any(|held| held.id == strip)
-            && tree.active_strip.get(&slot) != Some(&strip)
+            && tree.active_strip.get(&id) != Some(&strip)
         {
-            tree.active_strip.insert(slot, strip);
+            tree.active_strip.insert(id, strip);
             changed = true;
         }
         for strip in &mut workspace.strips {
@@ -268,11 +268,7 @@ mod tests {
 
     /// A workspace of two strips, the first holding two windows.
     fn workspace() -> Workspace {
-        let mut workspace = Workspace::in_workspace(
-            WorkspaceSlot(1),
-            WorkspaceId::parse("00000000-0000-4000-8000-000000000042").expect("an id"),
-            "Garden",
-        );
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Garden");
         let mut first = Strip::new(StripId(11), "A");
         first.window_groups = vec![
             group(21, vec![tab(31, "Notes"), tab(32, "Files")]),
@@ -318,20 +314,20 @@ mod tests {
                 widths: BTreeMap::from([(21, WindowWidth::Fraction(700))]),
                 maximized: BTreeSet::from([23]),
             };
-            assert!(her_view.applied(&mut hers, WorkspaceSlot(1)));
+            assert!(her_view.applied(&mut hers, WorkspaceId::from_u128(1)));
             let his_view = PersonView {
                 front_strip: Some(StripId(11)),
                 ..PersonView::default()
             };
-            assert!(his_view.applied(&mut his, WorkspaceSlot(1)));
+            assert!(his_view.applied(&mut his, WorkspaceId::from_u128(1)));
 
             assert_eq!(
                 hers.workspaces[0].strips.len(),
                 his.workspaces[0].strips.len(),
                 "one layout, whoever looks at it"
             );
-            assert_eq!(hers.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(12)));
-            assert_eq!(his.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(11)));
+            assert_eq!(hers.active_strip.get(&WorkspaceId::from_u128(1)), Some(&StripId(12)));
+            assert_eq!(his.active_strip.get(&WorkspaceId::from_u128(1)), Some(&StripId(11)));
             assert_eq!(
                 hers.active_group.get(&StripId(12)),
                 Some(&23),
@@ -359,7 +355,7 @@ mod tests {
             let tree = layout();
             let view = PersonView {
                 front_strip: Some(StripId(12)),
-                ..PersonView::of(&tree, WorkspaceSlot(1))
+                ..PersonView::of(&tree, WorkspaceId::from_u128(1))
             };
             let mut doc = AutoCommit::new();
             assert!(
@@ -376,8 +372,8 @@ mod tests {
             let mut elsewhere = layout();
             let mut moved = view.clone();
             moved.front_tab.insert(21, 32);
-            assert!(moved.applied(&mut elsewhere, WorkspaceSlot(1)));
-            assert_eq!(PersonView::of(&elsewhere, WorkspaceSlot(1)), moved);
+            assert!(moved.applied(&mut elsewhere, WorkspaceId::from_u128(1)));
+            assert_eq!(PersonView::of(&elsewhere, WorkspaceId::from_u128(1)), moved);
         }
 
         phase a_view_of_windows_that_are_gone_leaves_the_layout_alone;
@@ -390,9 +386,9 @@ mod tests {
                 front_tab: BTreeMap::from([(21, 99)]),
                 ..PersonView::default()
             };
-            assert!(!view.applied(&mut tree, WorkspaceSlot(1)));
-            assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), None);
-            assert_eq!(PersonView::of(&tree, WorkspaceSlot(1)).front_tab.len(), 3);
+            assert!(!view.applied(&mut tree, WorkspaceId::from_u128(1)));
+            assert_eq!(tree.active_strip.get(&WorkspaceId::from_u128(1)), None);
+            assert_eq!(PersonView::of(&tree, WorkspaceId::from_u128(1)).front_tab.len(), 3);
         }
     }
 

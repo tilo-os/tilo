@@ -307,7 +307,7 @@ impl Widget for EmptyWorkspace {
 mod tests {
     use super::*;
     use tilo_desktop_model::{
-        Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+        Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
         partition::Display,
     };
 
@@ -346,16 +346,17 @@ mod tests {
 
     /// A workspace of two strips: Main holding one window, Games empty.
     fn desk() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Home");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Home");
         let mut main = Strip::new(StripId(10), "Main");
         main.window_groups = vec![group(1)];
         workspace.strips = vec![main, Strip::new(StripId(11), "Games")];
         let mut tree = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
-        tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
+        tree.active_strip
+            .insert(WorkspaceId::from_u128(1), StripId(10));
         tree
     }
 
@@ -370,7 +371,7 @@ mod tests {
             let displays = vec![display(0, "panel", 0.0), display(1, "monitor", 1280.0)];
             tree.outputs.reconcile(&tree.workspaces, &displays);
             tree.outputs.set_focused(0);
-            assert!(tree.outputs.set_shown(1, WorkspaceSlot(1), StripId(11)));
+            assert!(tree.outputs.set_shown(1, WorkspaceId::from_u128(1), StripId(11)));
 
             let wants = EmptyWorkspace::wants(&tree);
             assert_eq!(wants.len(), 2, "one pad per display");

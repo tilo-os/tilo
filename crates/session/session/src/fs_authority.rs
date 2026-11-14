@@ -402,7 +402,7 @@ mod tests {
     const FOLDER: &str = "/var/workspace/brief";
 
     fn tree_with(grant: CapOverride) -> DesktopTree {
-        let mut workspace = Workspace::create("Home");
+        let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::new(), "Home");
         workspace.sandbox.push(grant);
         DesktopTree {
             workspaces: vec![workspace],

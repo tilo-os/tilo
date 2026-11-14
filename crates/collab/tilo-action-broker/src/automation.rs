@@ -1321,7 +1321,7 @@ mod tests {
 
         phase a_workspace_publishes_its_library_and_one_run_per_shortcut;
         {
-            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk");
+            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Desk");
             workspace.shortcuts.push(SavedShortcut::encode(&shortcut(serde_json::json!({
                 "id": "tidy",
                 "name": "Tidy",

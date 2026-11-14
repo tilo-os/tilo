@@ -72,8 +72,6 @@ pub use tilo_peer_state::document_frame::DocumentRoute;
 /// What became of an enrollment or an entry, and the workspace it was for.
 #[derive(Debug)]
 pub struct Enrolled {
-    /// The slot the desk made for it.
-    pub slot: tilo_desktop_model::WorkspaceSlot,
     pub workspace_id: tilo_desktop_model::WorkspaceId,
     /// Whether this device entered one of the person's own workspaces as their further device,
     /// rather than redeeming an invitation into someone's.

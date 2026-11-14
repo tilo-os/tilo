@@ -471,7 +471,7 @@ mod tests {
         PublishedInput,
     };
     use super::*;
-    use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 
     const APP: &str = "so.tilo.files";
 
@@ -712,7 +712,7 @@ mod tests {
     }
 
     fn workspace() -> Workspace {
-        let mut workspace = Workspace::new(WorkspaceSlot(51), "Launch workspace");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(51), "Launch workspace");
         workspace.set_owner("owner");
         workspace
     }

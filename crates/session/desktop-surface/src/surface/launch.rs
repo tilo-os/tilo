@@ -16,8 +16,12 @@ pub(super) fn open(
     float: bool,
 ) -> Option<RowOp> {
     let (tab_id, group_id) = (shared.minter.mint(), shared.minter.mint());
-    let slot = shared.tree.active_workspace()?.slot;
-    let workspace = shared.tree.workspaces.iter().find(|w| w.slot == slot)?;
+    let workspace_id = shared.tree.active_workspace()?.id();
+    let workspace = shared
+        .tree
+        .workspaces
+        .iter()
+        .find(|w| w.id() == workspace_id)?;
     let tab = tiles.launch(workspace, tab_id, app, None)?;
     let shown = navigation::active_strip(&shared.tree, workspace);
     // A workspace a site lets this computer into comes with the strips its
@@ -28,9 +32,13 @@ pub(super) fn open(
     } else {
         let strip = Strip::new(StripId(shared.minter.mint()), "");
         let id = strip.id;
-        let workspace = shared.tree.workspaces.iter_mut().find(|w| w.slot == slot)?;
+        let workspace = shared
+            .tree
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id() == workspace_id)?;
         workspace.strips.push(strip);
-        shared.tree.active_strip.insert(slot, id);
+        shared.tree.active_strip.insert(workspace_id, id);
         id
     };
     let after = shared.tree.active_group_for(strip);
@@ -60,7 +68,12 @@ pub(super) fn open(
     // canvas, the spaces canvas nor the traditional desktop draws: the desk a
     // person just opened an app on would look empty. The group takes a place
     // as any other group does, by the same rule ([`Arrangement::place_missing`]).
-    if let Some(workspace) = shared.tree.workspaces.iter_mut().find(|w| w.slot == slot) {
+    if let Some(workspace) = shared
+        .tree
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id() == workspace_id)
+    {
         let Workspace {
             strips,
             arrangement,

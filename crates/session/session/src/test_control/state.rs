@@ -72,9 +72,9 @@ fn only_workspace(mut dump: Json, scope: &Scope) -> Json {
     dump
 }
 
-/// Whether a row naming its workspace's room is the one `scope` holds.
+/// Whether a row naming its workspace is the one `scope` holds.
 fn in_scope(row: &Json, scope: &Scope) -> bool {
-    row.get("room").and_then(Json::as_str) == Some(scope.workspace.as_str())
+    row.get("workspace").and_then(Json::as_str) == Some(scope.workspace.as_str())
 }
 
 /// `tree` with every workspace but the one `scope` holds left out.
@@ -113,10 +113,7 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
         .iter()
         .filter(|workspace| held.contains(&workspace.id().to_string()))
         .map(|workspace| {
-            json!({
-                "workspace": workspace.slot.0,
-                "room": workspace.id().to_string(),
-            })
+            json!({"workspace": workspace.id()})
         })
         .collect();
     let mut open = serde_json::Map::new();
@@ -209,7 +206,7 @@ pub(super) fn workspace_hosts(tree: &DesktopTree, desk: &Desk<'_>, ctx: &Context
             .filter_map(|workspace| {
                 let hosting = desk.engine?.hosting(workspace.id())?;
                 Some(json!({
-                    "room": workspace.id().to_string(),
+                    "workspace": workspace.id().to_string(),
                     "name": workspace.name.clone(),
                     "host": hosting.host,
                     "hosted_here": hosting.here,
@@ -234,7 +231,7 @@ fn presence(desk: &Desk<'_>) -> Json {
             .live_workspaces()
             .into_iter()
             .map(|workspace| json!({
-                "room": workspace,
+                "workspace": workspace,
                 "members": sync.members(&workspace).iter().map(row).collect::<Vec<Json>>(),
             }))
             .collect::<Vec<Json>>(),
@@ -286,17 +283,13 @@ pub(super) fn window_rows(
     rect_of: impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
     frames_of: impl Fn(u64) -> u64,
 ) -> Vec<Json> {
-    fn named(name: &str, id: u64) -> Json {
-        if name.is_empty() {
-            id.into()
-        } else {
-            name.into()
-        }
+    fn named(name: &str, id: Json) -> Json {
+        if name.is_empty() { id } else { name.into() }
     }
     let mut rows = Vec::new();
     for workspace in &tree.workspaces {
-        let workspace_active = workspace.slot == tree.active;
-        let active_strip = tree.active_strip.get(&workspace.slot);
+        let workspace_active = workspace.id() == tree.active;
+        let active_strip = tree.active_strip.get(&workspace.id());
         for strip in &workspace.strips {
             let strip_active = workspace_active && active_strip == Some(&strip.id);
             let active_group = tree.active_group.get(&strip.id);
@@ -311,8 +304,8 @@ pub(super) fn window_rows(
                             json!([x, y, width, height])
                         });
                     rows.push(json!({
-                        "workspace": named(&workspace.name, workspace.slot.0),
-                        "strip": named(&strip.name, strip.id.0),
+                        "workspace": named(&workspace.name, json!(workspace.id())),
+                        "strip": named(&strip.name, strip.id.0.into()),
                         "group": group.id,
                         "tab": tab.id,
                         "window": window,

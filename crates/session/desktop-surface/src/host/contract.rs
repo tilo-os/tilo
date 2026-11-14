@@ -3,7 +3,7 @@
 //! carry out.
 
 use tilo_desktop_model::commands::DesktopCommand;
-use tilo_desktop_model::{DesktopTree, StripId, TabId, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, StripId, TabId, WorkspaceId};
 use ui::shortcut_table::{FixedAction, ShortcutAction};
 
 use crate::host::chrome::ChromeIntent;
@@ -81,7 +81,7 @@ pub trait DesktopRules {
     ///
     /// # Errors
     /// The refusal, in words for the person.
-    fn may_delete_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+    fn may_delete_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
         Err(crate::i18n::t("desktop-cannot-delete-workspace"))
     }
 
@@ -90,7 +90,7 @@ pub trait DesktopRules {
     ///
     /// # Errors
     /// The refusal, in words for the person.
-    fn may_branch_workspace(&self, _workspace: WorkspaceSlot) -> Result<(), String> {
+    fn may_branch_workspace(&self, _workspace: WorkspaceId) -> Result<(), String> {
         self.may_create_workspace()
     }
 
@@ -115,20 +115,22 @@ pub enum DesktopAsk {
     HostAction(String),
     /// The person left the workspace `name` here; the host says so.
     LeftWorkspace(String),
-    /// The person asked to delete the workspace `slot` , called `name` , and it is theirs to
+    /// The person asked to delete the workspace `workspace` , called `name` , and it is theirs to
     /// delete: the host asks them to confirm it, and only their answer deletes anything.
-    DeleteWorkspace { slot: WorkspaceSlot, name: String },
+    DeleteWorkspace {
+        workspace: WorkspaceId,
+        name: String,
+    },
     /// The desk deleted the workspace `workspace` , which was called `name` : what is left of it in
     /// the host's record goes with it.
     DeletedWorkspace {
         workspace: WorkspaceId,
         name: String,
     },
-    /// The person branched the workspace `source` into `workspace` , called `name` , made in the
-    /// slot `slot` : the host makes it, with what `source` holds, and puts it on the desk.
+    /// The person branched the workspace `source` into `workspace` , called `name` : the host
+    /// makes it, with what `source` holds, and puts it on the desk.
     BranchWorkspace {
-        source: WorkspaceSlot,
-        slot: WorkspaceSlot,
+        source: WorkspaceId,
         workspace: WorkspaceId,
         name: String,
     },

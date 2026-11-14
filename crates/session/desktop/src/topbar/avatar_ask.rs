@@ -502,7 +502,7 @@ mod tests {
     use tilo_desktop_model::commands::DesktopCommand;
     use tilo_desktop_model::{
         AppKind, DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth,
-        Workspace, WorkspaceSlot,
+        Workspace, WorkspaceId,
     };
     use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
     use ui::headless::Framed;
@@ -590,7 +590,7 @@ mod tests {
     }
 
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Lounge");
         workspace.strips = vec![Strip {
             id: StripId(2),
             name: "Main".into(),
@@ -614,7 +614,7 @@ mod tests {
             }],
         }];
         DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }

@@ -131,10 +131,10 @@ tilo_test_env::scenario! {
 
     phase certificate_less_local_origin_is_compatible_only_without_identity_authority;
     {
-        use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+        use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
         let root_key = [17; 32];
         let actor = person_id_for_root(root_key);
-        let mut workspace = Workspace::new(WorkspaceSlot(17), "Owner workspace");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(17), "Owner workspace");
         workspace.set_owner(actor.clone());
         let workspace_id = workspace.id().to_string();
         let route = crate::route::CrdtRoute::cluster(&workspace_id);

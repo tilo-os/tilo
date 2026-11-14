@@ -357,7 +357,7 @@ pub(crate) fn open_engine(
         tree.workspaces
             .iter()
             .filter(|workspace| !workspace.id().is_nil())
-            .map(|workspace| (workspace.slot, workspace.id()))
+            .map(tilo_desktop_model::Workspace::id)
             .collect()
     });
     match engine::Engine::for_this_device(

@@ -34,17 +34,16 @@ use tilo_desktop::overview_tilo::TiloDesk;
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop::window_flight::WindowFlight;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::DesktopSurface;
 use ui::headless::FrameHarness;
 use ui::kurbo::Rect;
 use ui::theme::Theme;
 
-/// A workspace in `slot` whose strip `strip` holds one window per app, each window numbered by its
+/// The workspace `id` whose strip `strip` holds one window per app, each window numbered by its
 /// tab.
-fn workspace(slot: u64, strip: u64, name: &str, apps: &[(u64, &str, &str)]) -> Workspace {
+fn workspace(id: u64, strip: u64, name: &str, apps: &[(u64, &str, &str)]) -> Workspace {
     let groups = apps
         .iter()
         .map(|&(id, app, label)| WindowGroup {
@@ -67,7 +66,7 @@ fn workspace(slot: u64, strip: u64, name: &str, apps: &[(u64, &str, &str)]) -> W
             focus_history: Vec::new(),
         })
         .collect();
-    let mut workspace = Workspace::new(WorkspaceSlot(slot), name);
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(id.into()), name);
     workspace.strips = vec![Strip {
         id: StripId(strip),
         name: "Main".into(),
@@ -85,12 +84,14 @@ fn desk_tree() -> DesktopTree {
     );
     let build = workspace(2, 20, "Build box", &[(30, "so.tilo.terminal", "Terminal")]);
     let mut tree = DesktopTree {
-        active: work.slot,
+        active: work.id(),
         workspaces: vec![work, build],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(10));
-    tree.active_strip.insert(WorkspaceSlot(2), StripId(20));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(10));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(2), StripId(20));
     tree
 }
 

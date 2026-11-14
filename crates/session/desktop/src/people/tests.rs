@@ -430,9 +430,9 @@ tilo_test_env::scenario! {
     // Software that has published no view yet is still followed: its row offers Follow rather than
     // hiding it until the agent is seen working.
     {
-        use tilo_desktop_model::{Workspace, WorkspaceSlot};
+        use tilo_desktop_model::{Workspace, WorkspaceId};
 
-        let mut workspace = Workspace::new(WorkspaceSlot(73), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(73), "Lounge");
         let agent = Member::keyed("agent:claude", "Claude Code");
         workspace.member_here(agent.clone());
         workspace.place_presence(Present {
@@ -444,7 +444,7 @@ tilo_test_env::scenario! {
             "a headless agent names no window"
         );
         let desktop = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -540,11 +540,11 @@ tilo_test_env::scenario! {
 
     phase a_workspaces_bot_is_tagged_as_a_bot_never_as_a_person;
     {
-        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceSlot};
+        use tilo_desktop_model::{Workspace, WorkspaceBot, WorkspaceId};
 
         let device = "ab".repeat(32);
         let installation = "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6".to_owned();
-        let mut workspace = Workspace::new(WorkspaceSlot(72), "Lounge");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(72), "Lounge");
         workspace.bots.push(WorkspaceBot {
             name: "Standup".into(),
             installation: Some(installation.clone()),
@@ -564,7 +564,7 @@ tilo_test_env::scenario! {
         let ada = Member::keyed("ada", "Ada");
         workspace.member_here(ada);
         let desktop = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -578,9 +578,9 @@ tilo_test_env::scenario! {
 
     phase agent_classification_uses_stable_identity_not_display_label;
     {
-        use tilo_desktop_model::{Workspace, WorkspaceSlot};
+        use tilo_desktop_model::{Workspace, WorkspaceId};
 
-        let mut workspace = Workspace::new(WorkspaceSlot(71), "Shared");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(71), "Shared");
         workspace.set_owner("owner");
         let node = workspace.node();
         workspace.grant(tilo_action_policy::Grant::new(
@@ -598,7 +598,7 @@ tilo_test_env::scenario! {
             ..Present::of(agent.id)
         });
         let desktop = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -617,9 +617,9 @@ tilo_test_env::scenario! {
     // that names the person it works for all read that assignment, so a face is never drawn in a
     // colour of its own working out.
     {
-        use tilo_desktop_model::{Workspace, WorkspaceSlot};
+        use tilo_desktop_model::{Workspace, WorkspaceId};
 
-        let mut workspace = Workspace::new(WorkspaceSlot(72), "Shared");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(72), "Shared");
         workspace.set_owner("owner");
         let node = workspace.node();
         workspace.grant(tilo_action_policy::Grant::new(
@@ -637,7 +637,7 @@ tilo_test_env::scenario! {
             ..Present::of(agent.id)
         });
         let desktop = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -670,7 +670,7 @@ tilo_test_env::scenario! {
     {
         use tilo_desktop_model::{
             Status, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-            WorkspaceSlot,
+            WorkspaceId,
         };
 
         let notes = Tab {
@@ -694,7 +694,7 @@ tilo_test_env::scenario! {
             maximized: false,
             focus_history: Vec::new(),
         });
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
         workspace.strips = vec![main];
         let ada = Member::keyed("ada", "Ada");
         let claude = Member::keyed("agent:claude", "Claude Code");
@@ -716,7 +716,7 @@ tilo_test_env::scenario! {
             ..Present::of(claude.id)
         };
         let desktop = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };

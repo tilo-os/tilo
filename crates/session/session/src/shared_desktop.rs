@@ -31,7 +31,7 @@ use automerge::transaction::Transactable as _;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, OpenedBy};
 use tilo_desktop_model::person_view::{self, PersonView};
 use tilo_desktop_model::shared_record::{self, device};
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot, peer_salt_of};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, peer_salt_of};
 use ui::permissions::UserId;
 use ui::state::UndoLog;
 
@@ -750,21 +750,9 @@ impl SharedDesktops {
             return false;
         };
         let route = Route::view(&person);
-        let slots: Vec<WorkspaceSlot> = tree
-            .workspaces
-            .iter()
-            .map(|workspace| workspace.slot)
-            .collect();
+        let held: Vec<WorkspaceId> = tree.workspaces.iter().map(Workspace::id).collect();
         let mut changed = false;
-        for slot in slots {
-            let Some(workspace_id) = tree
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.slot == slot)
-                .map(Workspace::id)
-            else {
-                continue;
-            };
+        for workspace_id in held {
             if workspace_id.is_nil() {
                 continue;
             }
@@ -780,7 +768,7 @@ impl SharedDesktops {
                 self.held(&key, |held| {
                     held.read = true;
                     if held.written.is_none() {
-                        held.written = Some(Written::View(PersonView::of(tree, slot)));
+                        held.written = Some(Written::View(PersonView::of(tree, workspace_id)));
                     }
                 });
                 continue;
@@ -799,15 +787,15 @@ impl SharedDesktops {
             let news = self.held(&key, |held| {
                 held.written.as_ref() != Some(&Written::View(read.clone()))
             });
-            let here = PersonView::of(tree, slot);
+            let here = PersonView::of(tree, workspace_id);
             let mut alone = tree.clone();
-            read.applied(&mut alone, slot);
+            read.applied(&mut alone, workspace_id);
             let view = self.held(&key, |held| {
                 let view = match &held.seen {
                     Some(seen) => read.over(&here, seen),
                     None => read.clone(),
                 };
-                held.seen = Some(PersonView::of(&alone, slot));
+                held.seen = Some(PersonView::of(&alone, workspace_id));
                 held.read = true;
                 held.revision = Some(revision);
                 held.written = Some(Written::View(read));
@@ -820,7 +808,7 @@ impl SharedDesktops {
                 view
             });
             if news {
-                changed |= view.applied(tree, slot);
+                changed |= view.applied(tree, workspace_id);
             }
         }
         changed
@@ -859,7 +847,7 @@ impl SharedDesktops {
         tree: &DesktopTree,
         acted: Option<Acted>,
     ) {
-        let Some(workspace) = tree.workspaces.iter().find(|held| held.slot == tree.active) else {
+        let Some(workspace) = tree.workspaces.iter().find(|held| held.id() == tree.active) else {
             return;
         };
         let workspace_id = workspace.id();
@@ -1237,14 +1225,7 @@ impl SharedDesktops {
             Written::Layout(own, self.notes.of_workspace(workspace_id))
         } else {
             let view = PersonView::read(&doc);
-            if let Some(slot) = tree
-                .workspaces
-                .iter()
-                .find(|held| held.id() == workspace_id)
-                .map(|held| held.slot)
-            {
-                view.applied(&mut tree, slot);
-            }
+            view.applied(&mut tree, workspace_id);
             handle.replace_tree(tree);
             Written::View(view)
         };
@@ -1281,7 +1262,7 @@ impl SharedDesktops {
             && !workspace.id().is_nil()
         {
             let key = (workspace.id(), Route::view(&person));
-            let was = PersonView::of(before, workspace.slot);
+            let was = PersonView::of(before, workspace.id());
             let acted = Acted {
                 message: message.clone(),
                 shows: Vec::new(),
@@ -1384,7 +1365,7 @@ impl SharedDesktops {
             }
             let key = (workspace_id, route.clone());
             // What the person changed here, over what the record holds.
-            let here = PersonView::of(tree, workspace.slot);
+            let here = PersonView::of(tree, workspace.id());
             let view = self.held(&key, |held| match (&held.written, &held.seen) {
                 (Some(Written::View(read)), Some(seen)) => read.over(&here, seen),
                 _ => here.clone(),
@@ -1945,13 +1926,9 @@ impl LayoutHistory {
         }
     }
 
-    fn workspace_of(tree: &DesktopTree, slot: WorkspaceSlot) -> Option<WorkspaceId> {
-        let workspace_id = tree
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.slot == slot)
-            .map(Workspace::id)?;
-        (!workspace_id.is_nil()).then_some(workspace_id)
+    fn workspace_of(tree: &DesktopTree, workspace_id: WorkspaceId) -> Option<WorkspaceId> {
+        (!workspace_id.is_nil() && tree.workspaces.iter().any(|held| held.id() == workspace_id))
+            .then_some(workspace_id)
     }
 }
 
@@ -1959,13 +1936,13 @@ impl crate::activity::DeskHistory for LayoutHistory {
     fn history(
         &self,
         tree: &DesktopTree,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
     ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
-        let workspace_id = Self::workspace_of(tree, slot)?;
+        Self::workspace_of(tree, workspace_id)?;
         // A workspace with no layout yet still has a history: what its devices answered.
         let snapshot = tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
             tree.clone(),
-            slot,
+            workspace_id,
             self.layouts.layout(workspace_id).unwrap_or_default(),
         );
         Some(match self.layouts.governance(workspace_id) {
@@ -1974,22 +1951,22 @@ impl crate::activity::DeskHistory for LayoutHistory {
         })
     }
 
-    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceSlot, automerge::AutoCommit)> {
+    fn documents(&self, tree: &DesktopTree) -> Vec<(WorkspaceId, automerge::AutoCommit)> {
         tree.workspaces
             .iter()
-            .filter_map(|workspace| Some((workspace.slot, self.layouts.layout(workspace.id())?)))
+            .filter_map(|workspace| Some((workspace.id(), self.layouts.layout(workspace.id())?)))
             .collect()
     }
 
     fn describe(
         &self,
         tree: &DesktopTree,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         write: &mut dyn FnMut(&mut automerge::AutoCommit) -> bool,
     ) -> bool {
-        let Some(workspace_id) = Self::workspace_of(tree, slot) else {
+        if Self::workspace_of(tree, workspace_id).is_none() {
             return false;
-        };
+        }
         self.layouts
             .edit(workspace_id, &self.person, tree.external_revision, |doc| {
                 write(doc)
@@ -2197,12 +2174,11 @@ mod tests {
         strips: Vec<tilo_desktop_model::Strip>,
         message: String,
     ) {
-        let slot = WorkspaceSlot::of_workspace(workspace_id());
-        let mut workspace = Workspace::in_workspace(slot, workspace_id(), "Desk");
+        let mut workspace = Workspace::new(workspace_id(), "Desk");
         workspace.strips = strips;
         let desktop = tilo_desktop_model::ownership::SharedDesktop {
             tree: DesktopTree {
-                active: slot,
+                active: workspace_id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             },
@@ -2298,11 +2274,7 @@ mod tests {
 
         let mut ours = tilo_desktop_model::IdMinter::new(here);
         let (notes, opened) = strip_of(&mut ours, "Notes");
-        let mut desk = Workspace::in_workspace(
-            WorkspaceSlot::of_workspace(workspace_id()),
-            workspace_id(),
-            "Desk",
-        );
+        let mut desk = Workspace::new(workspace_id(), "Desk");
         desk.strips = vec![notes];
         let desktops = SharedDesktops::default();
         let fold = |desk: &mut Workspace, doc: &automerge::AutoCommit| {
@@ -2462,14 +2434,13 @@ mod tests {
         let salt = tilo_desktop_model::ids::device_salt_of_key(&cert.device_public_key);
         let person = hex::encode(cert.user_public_key);
         let workspace = WorkspaceId::new();
-        let slot = WorkspaceSlot(1);
-        pollster::block_on(engine.found(slot, workspace, "Desk", None));
+        pollster::block_on(engine.found(workspace, "Desk", None));
         assert!(engine.holds(workspace), "the desk's workspace is held here");
 
         // The desk: one workspace with one window of this device's.
         let mut ids = tilo_desktop_model::IdMinter::new(salt);
         let (strip, group, tab) = (ids.mint(), ids.mint(), ids.mint());
-        let mut workspace_view = Workspace::in_workspace(slot, workspace, "Desk");
+        let mut workspace_view = Workspace::new(workspace, "Desk");
         let mut strip_view = Strip::new(StripId(strip), "Main");
         strip_view.window_groups.push(WindowGroup {
             id: group,
@@ -2492,7 +2463,7 @@ mod tests {
         workspace_view.strips = vec![strip_view];
         let tree = DesktopTree {
             workspaces: vec![workspace_view],
-            active: slot,
+            active: workspace,
             salt,
             ..DesktopTree::default()
         };

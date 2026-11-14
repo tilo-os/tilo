@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::{
     AppKind, DesktopTree, Strip, StripId, Tab, TileContent, UserId, WindowGroup, WindowWidth,
-    Workspace, WorkspaceEffectReceipt, WorkspaceId, WorkspaceSlot,
+    Workspace, WorkspaceEffectReceipt, WorkspaceId,
 };
 
 /// The local user every [`TestHost`] answers for.
@@ -39,8 +39,8 @@ pub(crate) fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-fn empty_workspace(slot: WorkspaceSlot, name: &str, strips: Vec<Strip>) -> Workspace {
-    let mut workspace = Workspace::in_workspace(slot, WorkspaceId::new(), name);
+fn empty_workspace(workspace_id: WorkspaceId, name: &str, strips: Vec<Strip>) -> Workspace {
+    let mut workspace = Workspace::new(workspace_id, name);
     workspace.strips = strips;
     workspace
 }
@@ -51,7 +51,7 @@ pub(crate) struct TestTree {
     /// The layout of the workspace in front, as its record holds it.
     pub doc: AutoCommit,
     /// Each workspace's own document: what it governs, and never a device's copy of it.
-    pub governance: HashMap<WorkspaceSlot, AutoCommit>,
+    pub governance: HashMap<WorkspaceId, AutoCommit>,
 }
 
 impl std::ops::Deref for TestTree {
@@ -70,14 +70,14 @@ impl std::ops::DerefMut for TestTree {
 impl TestTree {
     /// One empty Home workspace.
     pub fn bootstrap_default() -> Self {
-        let slot = WorkspaceSlot(next_id());
+        let workspace_id = WorkspaceId::from_u128(next_id().into());
         let strip_id = StripId(next_id());
-        let home = empty_workspace(slot, "Home", vec![Strip::new(strip_id, "Main")]);
+        let home = empty_workspace(workspace_id, "Home", vec![Strip::new(strip_id, "Main")]);
         let mut tree = Self {
             desktop: DesktopTree {
                 workspaces: vec![home],
-                active: slot,
-                active_strip: HashMap::from([(slot, strip_id)]),
+                active: workspace_id,
+                active_strip: HashMap::from([(workspace_id, strip_id)]),
                 ..DesktopTree::default()
             },
             ..Self::default()
@@ -88,7 +88,7 @@ impl TestTree {
 
     /// Home with four apps open, plus empty Research and Design workspaces.
     pub fn bootstrap_demo() -> Self {
-        let slot = WorkspaceSlot(next_id());
+        let workspace_id = WorkspaceId::from_u128(next_id().into());
         let strip_id = StripId(next_id());
         let group_id = next_id();
         let tab = |title: &str, kind: AppKind, label: &str| Tab {
@@ -118,13 +118,13 @@ impl TestTree {
             maximized: false,
             focus_history: Vec::new(),
         });
-        let mut home = empty_workspace(slot, "Home", vec![strip]);
+        let mut home = empty_workspace(workspace_id, "Home", vec![strip]);
         home.members_here([tilo_desktop_model::Member::keyed("alice", "Alice")]);
         let mut tree = Self {
             desktop: DesktopTree {
                 workspaces: vec![home],
-                active: slot,
-                active_strip: HashMap::from([(slot, strip_id)]),
+                active: workspace_id,
+                active_strip: HashMap::from([(workspace_id, strip_id)]),
                 active_group: HashMap::from([(strip_id, group_id)]),
                 ..DesktopTree::default()
             },
@@ -135,7 +135,7 @@ impl TestTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == research)
+            .find(|workspace| workspace.id() == research)
         {
             workspace.members_here([
                 tilo_desktop_model::Member::keyed("alice", "Alice"),
@@ -166,16 +166,16 @@ impl TestTree {
         wrote
     }
 
-    /// Write what `slot` 's workspace governs into its own document, as one change: its name, its
+    /// Write what `workspace_id` 's workspace governs into its own document, as one change: its name, its
     /// owner, and the grants it makes. Nothing that did not change is written.
-    pub fn govern(&mut self, slot: WorkspaceSlot) {
-        if self.write_governance(slot) {
-            self.commit_governance_change(slot);
+    pub fn govern(&mut self, workspace_id: WorkspaceId) {
+        if self.write_governance(workspace_id) {
+            self.commit_governance_change(workspace_id);
         }
     }
 
     /// [`Self::govern`] without the commit: what a test stamps at a time of its own.
-    pub fn write_governance(&mut self, slot: WorkspaceSlot) -> bool {
+    pub fn write_governance(&mut self, workspace_id: WorkspaceId) -> bool {
         use automerge::ReadDoc as _;
         use automerge::transaction::Transactable as _;
         use tilo_desktop_model::projection::{
@@ -186,12 +186,12 @@ impl TestTree {
             .desktop
             .workspaces
             .iter()
-            .find(|workspace| workspace.slot == slot)
+            .find(|workspace| workspace.id() == workspace_id)
             .cloned()
         else {
             return false;
         };
-        let doc = self.governance.entry(slot).or_default();
+        let doc = self.governance.entry(workspace_id).or_default();
         let text = |doc: &AutoCommit, key: &str| {
             doc.get(automerge::ROOT, key)
                 .ok()
@@ -221,14 +221,14 @@ impl TestTree {
         wrote
     }
 
-    pub fn commit_governance_change(&mut self, slot: WorkspaceSlot) {
-        let doc = self.governance.entry(slot).or_default();
+    pub fn commit_governance_change(&mut self, workspace_id: WorkspaceId) {
+        let doc = self.governance.entry(workspace_id).or_default();
         let _ = tilo_resource::history::commit_stamped(doc);
     }
 
-    /// `slot` 's own document, for a test that reads or stamps it itself.
-    pub fn governance_of(&mut self, slot: WorkspaceSlot) -> &mut AutoCommit {
-        self.governance.entry(slot).or_default()
+    /// `workspace_id` 's own document, for a test that reads or stamps it itself.
+    pub fn governance_of(&mut self, workspace_id: WorkspaceId) -> &mut AutoCommit {
+        self.governance.entry(workspace_id).or_default()
     }
 
     /// Show the desk the layout record holds, as the pane's next read of it does.
@@ -249,21 +249,21 @@ impl TestTree {
     }
 
     /// Show `id`, which the device shows alone: no record holds which workspace is in front.
-    pub fn set_active(&mut self, id: WorkspaceSlot) {
-        if self.desktop.workspaces.iter().any(|w| w.slot == id) {
+    pub fn set_active(&mut self, id: WorkspaceId) {
+        if self.desktop.workspaces.iter().any(|w| w.id() == id) {
             self.desktop.active = id;
         }
     }
 
     /// A workspace on the desk. Which workspaces a desk shows is the workspace list's, which no
     /// record of the layout holds.
-    pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceSlot {
-        let slot = WorkspaceSlot(next_id());
+    pub fn append_empty_workspace(&mut self, name: &str) -> WorkspaceId {
+        let workspace_id = WorkspaceId::from_u128(next_id().into());
         let strip_id = StripId(next_id());
-        let workspace = empty_workspace(slot, name, vec![Strip::new(strip_id, "Main")]);
-        self.desktop.active_strip.insert(slot, strip_id);
+        let workspace = empty_workspace(workspace_id, name, vec![Strip::new(strip_id, "Main")]);
+        self.desktop.active_strip.insert(workspace_id, strip_id);
         self.desktop.workspaces.push(workspace);
-        slot
+        workspace_id
     }
 
     /// A window opened into the first group of the workspace in front, as a launch into it is: the
@@ -282,7 +282,7 @@ impl TestTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == self.desktop.active)
+            .find(|workspace| workspace.id() == self.desktop.active)
         else {
             return false;
         };
@@ -315,12 +315,12 @@ impl TestTree {
     /// workspace.
     pub fn grant_in_workspace(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
-        let granted = self.grant_uncommitted(slot, grantor, cap)?;
-        self.commit_governance_change(slot);
+        let granted = self.grant_uncommitted(workspace_id, grantor, cap)?;
+        self.commit_governance_change(workspace_id);
         Some(granted)
     }
 
@@ -328,7 +328,7 @@ impl TestTree {
     /// what a test stamps at a time of its own.
     pub fn grant_uncommitted(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
@@ -337,7 +337,7 @@ impl TestTree {
                 .desktop
                 .workspaces
                 .iter_mut()
-                .find(|w| w.slot == slot)?;
+                .find(|w| w.id() == workspace_id)?;
             if !workspace.may_govern_at(
                 grantor,
                 tilo_action_policy::roles::governance::GRANT,
@@ -349,18 +349,23 @@ impl TestTree {
                 cap.granted_by(tilo_action_policy::MemberId::person(grantor.clone())),
             )
         };
-        self.write_governance(slot);
+        self.write_governance(workspace_id);
         Some(granted)
     }
 
     pub fn revoke_in_workspace(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         revoker: &UserId,
         cap_id: &str,
     ) -> bool {
         let allowed = {
-            let Some(governed) = self.desktop.workspaces.iter_mut().find(|w| w.slot == slot) else {
+            let Some(governed) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id() == workspace_id)
+            else {
                 return false;
             };
             governed.may_govern_at(
@@ -372,27 +377,27 @@ impl TestTree {
         if !allowed {
             return false;
         }
-        self.govern(slot);
+        self.govern(workspace_id);
         true
     }
 
-    pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceSlot> {
+    pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
         let mut adopted = Vec::new();
         for workspace in &mut self.desktop.workspaces {
             if workspace.owner().is_none() {
                 workspace.set_owner(user.clone());
-                adopted.push(workspace.slot);
+                adopted.push(workspace.id());
             }
         }
-        for slot in &adopted {
-            self.govern(*slot);
+        for workspace_id in &adopted {
+            self.govern(*workspace_id);
         }
         adopted
     }
 
     pub fn append_workspace_effect_receipt(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         invocation: tilo_actions::InvocationId,
         actor: &str,
         mut context: tilo_actions::ActionContext,
@@ -402,7 +407,7 @@ impl TestTree {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.slot == slot)
+            .find(|workspace| workspace.id() == workspace_id)
         else {
             return false;
         };
@@ -439,32 +444,32 @@ impl TestTree {
             .collect()
     }
 
-    /// Write `slot`'s governance as `peer`, another device of the workspace, does: their grant,
+    /// Write `workspace_id`'s governance as `peer`, another device of the workspace, does: their grant,
     /// their rename. The document is this device's to write again afterwards.
     pub fn written_as<T>(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         peer: &automerge::ActorId,
         write: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let mine = self.governance_of(slot).get_actor().clone();
-        self.governance_of(slot).set_actor(peer.clone());
+        let mine = self.governance_of(workspace_id).get_actor().clone();
+        self.governance_of(workspace_id).set_actor(peer.clone());
         let written = write(self);
-        self.governance_of(slot).set_actor(mine);
+        self.governance_of(workspace_id).set_actor(mine);
         written
     }
 
-    /// Apply `changes`, another device's, to `slot`'s own document.
+    /// Apply `changes`, another device's, to `workspace_id`'s own document.
     pub fn apply_governance_changes(
         &mut self,
-        slot: WorkspaceSlot,
+        workspace_id: WorkspaceId,
         changes: &[Vec<u8>],
     ) -> Result<(), automerge::AutomergeError> {
         let parsed: Result<Vec<automerge::Change>, _> = changes
             .iter()
             .map(|bytes| automerge::Change::try_from(bytes.as_slice()))
             .collect();
-        self.governance_of(slot).apply_incoming(parsed?)?;
+        self.governance_of(workspace_id).apply_incoming(parsed?)?;
         Ok(())
     }
 
@@ -504,8 +509,8 @@ impl ActivityTree for TestTree {
 /// state in memory.
 #[derive(Default)]
 pub(crate) struct TestHost {
-    frontiers: RefCell<HashMap<u64, WorkspaceSeenFrontier>>,
-    departures: RefCell<HashMap<u64, WorkspaceDeparture>>,
+    frontiers: RefCell<HashMap<WorkspaceId, WorkspaceSeenFrontier>>,
+    departures: RefCell<HashMap<WorkspaceId, WorkspaceDeparture>>,
 }
 
 impl ActivityHost for TestHost {
@@ -518,16 +523,16 @@ impl ActivityHost for TestHost {
     fn local_author(&self, _authors: &mut ui::AuthorDirectory, _actor: &str) -> Option<String> {
         Some(self.local_user())
     }
-    fn load_frontiers(&self) -> HashMap<u64, WorkspaceSeenFrontier> {
+    fn load_frontiers(&self) -> HashMap<WorkspaceId, WorkspaceSeenFrontier> {
         self.frontiers.borrow().clone()
     }
-    fn save_frontiers(&self, frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {
+    fn save_frontiers(&self, frontiers: &HashMap<WorkspaceId, WorkspaceSeenFrontier>) {
         self.frontiers.borrow_mut().clone_from(frontiers);
     }
-    fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
+    fn load_departures(&self) -> HashMap<WorkspaceId, WorkspaceDeparture> {
         self.departures.borrow().clone()
     }
-    fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
+    fn save_departures(&self, departures: &HashMap<WorkspaceId, WorkspaceDeparture>) {
         self.departures.borrow_mut().clone_from(departures);
     }
     fn mutations_available(&self) -> bool {

@@ -1,7 +1,7 @@
 use super::*;
 use automerge::AutoCommit;
 use tilo_desktop_model::{
-    DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+    DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use ui::widget::DrawChild;
 
@@ -131,11 +131,11 @@ tilo_test_env::scenario! {
     // painted and pressable, and nothing under it moves either way.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
 
@@ -224,8 +224,8 @@ tilo_test_env::scenario! {
             let theme = Theme::dark().with_text_scale(scale);
             for unread in [1, 42, 5000] {
                 let tree = DesktopTree {
-                    active: WorkspaceSlot(1),
-                    workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+                    active: WorkspaceId::from_u128(1),
+                    workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
                     ..DesktopTree::default()
                 };
                 let chrome = fixture::FixtureChrome::new(tree.clone());
@@ -256,11 +256,11 @@ tilo_test_env::scenario! {
     // that is all it opens.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         lay_out_and_draw(&mut bar, 1280.0);
@@ -303,11 +303,11 @@ tilo_test_env::scenario! {
     // centre, and the readings beside it open quick settings.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = fixture::FixtureChrome::new(tree.clone());
         chrome.borrow_mut().status.volume = Some(crate::chrome::VolumeState {
             level: 0.5,
@@ -351,13 +351,13 @@ tilo_test_env::scenario! {
 
 fn sample_chrome() -> TopBarChrome {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-        active: WorkspaceSlot::from(0),
+        workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+        active: WorkspaceId::from_u128(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].slot;
+    tree.active = tree.workspaces[0].id();
     TopBarChrome::from_tree(&tree)
 }
 
@@ -617,13 +617,13 @@ tilo_test_env::scenario! {
     phase compact_large_text_preserves_the_full_activity_sentence_and_detail_route;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         // The 960px chrome reserves a 360px centre selector; after its dots and breathing room, this is
@@ -665,13 +665,13 @@ tilo_test_env::scenario! {
     // reading opens the board instead.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         chrome.borrow_mut().activities = vec![
             (
@@ -710,13 +710,13 @@ tilo_test_env::scenario! {
     // activity waiting behind it; the time steps aside while it runs.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let tea = ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
@@ -800,9 +800,9 @@ fn dispatch_topbar_event_with_modifiers(
 }
 
 fn two_workspace_tree() -> DesktopTree {
-    let first = Workspace::new(WorkspaceSlot(1), "A");
-    let second = Workspace::new(WorkspaceSlot(2), "B");
-    let active = first.slot;
+    let first = Workspace::new(WorkspaceId::from_u128(1), "A");
+    let second = Workspace::new(WorkspaceId::from_u128(2), "B");
+    let active = first.id();
     DesktopTree {
         workspaces: vec![first, second],
         active,
@@ -890,9 +890,9 @@ tilo_test_env::scenario! {
     // A running application's icon stands on the bar as its own control: it is in the focus order, a
     // reader names it with the name the application chose, and Enter does what a click does.
     {
-        let workspace = Workspace::new(WorkspaceSlot(1), "A");
+        let workspace = Workspace::new(WorkspaceId::from_u128(1), "A");
         let tree = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -1433,13 +1433,13 @@ tilo_test_env::scenario! {
     phase narrow_large_text_keeps_workspace_and_right_clusters_separate;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("alice", "Alice"));
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default().with_text_scale(1.5);
@@ -1510,13 +1510,13 @@ tilo_test_env::scenario! {
     // workspace name beside it yields instead of drawing underneath.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         lay_out_and_draw(&mut bar, 520.0);
@@ -1549,13 +1549,13 @@ tilo_test_env::scenario! {
     phase new_activity_temporarily_shows_over_the_time;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
 
@@ -1617,13 +1617,13 @@ tilo_test_env::scenario! {
     // painted mid cross-fade stayed on screen because nothing asked to paint once the fade had settled.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let theme = Theme::default();
@@ -1712,10 +1712,10 @@ tilo_test_env::scenario! {
     // goes.
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let theme = Theme::default();
@@ -1803,13 +1803,13 @@ tilo_test_env::scenario! {
     phase clicking_a_person_opens_people_not_history;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let chrome = super::fixture::FixtureChrome::new(tree.clone());
         let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
         let chip = Rect::new(10.0, 10.0, 30.0, 30.0);
@@ -1829,13 +1829,13 @@ tilo_test_env::scenario! {
     phase live_share_is_persistent_visible_named_and_accessible;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
         tree.workspaces[0].present[0].session = Some(7);
         tree.workspaces[0]
@@ -1869,11 +1869,11 @@ tilo_test_env::scenario! {
     phase disclosure_attributes_each_surface_to_its_actual_viewer;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         tree.workspaces[0].members_here([
             tilo_desktop_model::Member::keyed("ada", "Ada"),
             tilo_desktop_model::Member::keyed("lin", "Lin"),
@@ -1920,11 +1920,11 @@ tilo_test_env::scenario! {
     phase agent_viewer_is_never_described_as_a_person;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let workspace = &mut tree.workspaces[0];
         workspace.set_owner("owner");
         let node = workspace.node();
@@ -2023,13 +2023,13 @@ tilo_test_env::scenario! {
     phase avatar_stack_has_breathing_room_to_tray_pill;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed("alice", "Alice"));
 
         let mut bar = TopBarChrome::from_tree(&tree);
@@ -2080,13 +2080,13 @@ tilo_test_env::scenario! {
     phase the_invite_button_invites_by_pointer_and_by_assistive_technology;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let chrome = super::fixture::FixtureChrome::new(tree);
@@ -2173,10 +2173,10 @@ tilo_test_env::scenario! {
     phase watching_pages_and_marked_agents_read_in_the_avatar_stack;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         let paint = |bar: &mut TopBarChrome| {
             let theme = Theme::default();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -2267,13 +2267,13 @@ tilo_test_env::scenario! {
     // the windows move down by the bar's height while it shows over them, so no window's own bar — its
     // title, its Back — shares the clock's rows.
     {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo Community");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Tilo Community");
         workspace.members_here(vec![
             tilo_desktop_model::Member::keyed("agent:scribe", "Claude Code"),
             tilo_desktop_model::Member::keyed("ada", "Lively Heron"),
         ]);
         let tree = DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         };
@@ -2307,14 +2307,14 @@ tilo_test_env::scenario! {
     {
         let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
         let faces = |colour: Option<ui::tokens::PresenceHue>| {
-            let mut workspace = Workspace::new(WorkspaceSlot(1), "Tilo");
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Tilo");
             let mut row = tilo_desktop_model::Member::keyed("agent:helper@host", "Claude Code #1");
             if let Some(colour) = colour {
                 row.colour = colour;
             }
             workspace.member_here(row);
             let tree = DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             };
@@ -2341,13 +2341,13 @@ tilo_test_env::scenario! {
     phase compact_topbar_aligns_floating_controls_and_keeps_the_corner_target;
     {
         let mut tree = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
 
         let mut bar = TopBarChrome::from_tree(&tree);
         let theme = Theme::default();
@@ -2407,13 +2407,13 @@ tilo_test_env::scenario! {
     // only half.
     {
         let mut empty = DesktopTree {
-            workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-            active: WorkspaceSlot::from(0),
+            workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+            active: WorkspaceId::from_u128(0),
             active_strip: HashMap::default(),
             active_group: HashMap::default(),
             ..Default::default()
         };
-        empty.active = empty.workspaces[0].slot;
+        empty.active = empty.workspaces[0].id();
         let bar = TopBarChrome::from_tree(&empty);
         assert!(
             bar.face_initials().is_empty(),
@@ -2478,13 +2478,13 @@ fn shared_windows(surfaces: &[(u64, &str)]) -> Strip {
 #[test]
 fn unread_activity_paints_nothing_on_the_people_control() {
     let mut tree = DesktopTree {
-        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
-        active: WorkspaceSlot::from(0),
+        workspaces: vec![Workspace::new(WorkspaceId::from_u128(1), "A")],
+        active: WorkspaceId::from_u128(0),
         active_strip: HashMap::default(),
         active_group: HashMap::default(),
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].slot;
+    tree.active = tree.workspaces[0].id();
     let theme = Theme::default();
     // One renderer draws every bar, as the bar's window draws its frames: one made for each bar
     // compiled its pipelines again for each.
@@ -2659,13 +2659,13 @@ tilo_test_env::scenario! {
     {
         let mut tree = DesktopTree {
             workspaces: vec![Workspace::new(
-                WorkspaceSlot(1),
+                WorkspaceId::from_u128(1),
                 "Customer support and escalations",
             )],
-            active: WorkspaceSlot::from(0),
+            active: WorkspaceId::from_u128(0),
             ..Default::default()
         };
-        tree.active = tree.workspaces[0].slot;
+        tree.active = tree.workspaces[0].id();
         for person in 0..6 {
             tree.workspaces[0].member_here(tilo_desktop_model::Member::keyed(
                 &format!("person-{person}"),

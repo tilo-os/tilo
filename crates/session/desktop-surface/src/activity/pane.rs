@@ -1,4 +1,5 @@
 use super::morning::{MorningCommand, MorningPreferences, MorningSource};
+use tilo_desktop_model::WorkspaceId;
 use tilo_sort::CompactSort as _;
 mod morning_sources;
 mod runs;
@@ -396,7 +397,7 @@ pub struct WorkspaceActivityPane {
     period: Period,
     /// Every row the document yielded, with the workspace each belongs to (`None` for no single
     /// workspace). [`Self::scope`] selects the subset handed to the timeline.
-    derived: Vec<(HistoryEntry, Option<u64>)>,
+    derived: Vec<(HistoryEntry, Option<WorkspaceId>)>,
     /// Tree rows after workspace scoping, retained as the shell-document contribution to the
     /// workspace-wide multi-document index.
     scoped_tree_rows: Vec<HistoryEntry>,
@@ -421,28 +422,28 @@ pub struct WorkspaceActivityPane {
     digest: ActivityDigest,
     /// Switching workspaces moves no changes, so the heads check alone wouldn't notice — but it
     /// changes which rows are this workspace's.
-    last_active: Option<u64>,
+    last_active: Option<WorkspaceId>,
     now_override: Option<SystemTime>,
     /// Per-workspace private causal frontier. Opening history must not create collaborative
     /// history, and timestamps cannot identify delayed or concurrent CRDT changes correctly.
-    seen_frontiers: HashMap<u64, WorkspaceSeenFrontier>,
+    seen_frontiers: HashMap<WorkspaceId, WorkspaceSeenFrontier>,
     /// Exact addresses exposed by a painted catch-up page, partitioned before workspace switches.
     /// Never infer visibility from the index's heads.
-    viewed_changes: HashMap<u64, BTreeSet<WorkspaceHistoryId>>,
+    viewed_changes: HashMap<WorkspaceId, BTreeSet<WorkspaceHistoryId>>,
     /// Private causal baseline captured when this device leaves a workspace. Wall time gates the
     /// presentation; the frontier decides which changes actually happened during the absence.
-    departures: HashMap<u64, WorkspaceDeparture>,
+    departures: HashMap<WorkspaceId, WorkspaceDeparture>,
     away_digest: ActivityDigest,
     /// The workspace whose recap is on screen: what the view opened on after long enough away.
-    pub(super) away_workspace: Option<u64>,
+    pub(super) away_workspace: Option<WorkspaceId>,
     catchup_frontier: WorkspaceSeenFrontier,
     passive_digest: ActivityDigest,
     passive_unread: usize,
     passive_rows: Vec<HistoryEntry>,
     persistent_frontiers: bool,
     view: ActivityView,
-    morning_sources: HashMap<u64, MorningPreferences>,
-    morning_workspace: u64,
+    morning_sources: HashMap<WorkspaceId, MorningPreferences>,
+    morning_workspace: WorkspaceId,
     morning_command_message: Option<String>,
     morning_source_offset: usize,
     expanded_brief: Option<usize>,
@@ -609,7 +610,7 @@ impl WorkspaceActivityPane {
             persistent_frontiers: false,
             view: ActivityView::default(),
             morning_sources: HashMap::new(),
-            morning_workspace: 0,
+            morning_workspace: WorkspaceId::nil(),
             morning_command_message: None,
             morning_source_offset: 0,
             expanded_brief: None,
@@ -689,7 +690,7 @@ impl WorkspaceActivityPane {
     /// only when the surface closes, so opening it cannot erase the very summary the user came to
     /// read. A return after long enough away starts from the frontier this device left, so the
     /// recap is exactly what others did in the meantime.
-    pub fn begin_view(&mut self, workspace: u64) {
+    pub fn begin_view(&mut self, workspace: WorkspaceId) {
         self.viewed_changes.remove(&workspace);
         if self.scope != WorkspaceScope::ThisWorkspace {
             self.scope = WorkspaceScope::ThisWorkspace;
@@ -715,7 +716,7 @@ impl WorkspaceActivityPane {
         self.reset_narrative();
     }
 
-    pub fn finish_view(&mut self, workspace: u64) {
+    pub fn finish_view(&mut self, workspace: WorkspaceId) {
         self.replay_playing = false;
         self.away_workspace = None;
         let viewed = self.viewed_changes.remove(&workspace).unwrap_or_default();
@@ -790,7 +791,7 @@ impl WorkspaceActivityPane {
     /// What "new" is counted from in `workspace` . One this device has never read starts from the
     /// history it holds now: a fresh install's own setup or a joined workspace's past stays
     /// browsable, but is not news.
-    fn passive_frontier(&mut self, workspace: u64) -> WorkspaceSeenFrontier {
+    fn passive_frontier(&mut self, workspace: WorkspaceId) -> WorkspaceSeenFrontier {
         if self.persistent_frontiers
             && !self.seen_frontiers.contains_key(&workspace)
             && !self.history_index.entries().is_empty()
@@ -1555,17 +1556,17 @@ impl WorkspaceActivityPane {
             .active_workspace()
             .map(|workspace| workspace.id().to_string())
             .unwrap_or_default();
-        if self.workspace != workspace || self.morning_workspace != tree.active.raw() {
+        if self.workspace != workspace || self.morning_workspace != tree.active {
             self.morning_command_message = None;
             self.morning_source_offset = 0;
         }
         self.workspace = workspace;
-        self.morning_workspace = tree.active.raw();
+        self.morning_workspace = tree.active;
         self.poll_undo();
 
         let heads = tree.document_mut().get_heads();
         let governing = Self::governing_heads(tree);
-        let active = tree.active.raw();
+        let active = tree.active;
         // A switch writes the document but no row: read just the changes since and, when all of
         // them were passed over, only show the rows of the workspace now active.
         let only_passed_over = heads != self.last_heads
@@ -1692,7 +1693,7 @@ impl WorkspaceActivityPane {
                     redaction: None,
                     context: Some(receipt.context.clone()),
                 });
-                tags.push(Some(workspace.slot.raw()));
+                tags.push(Some(workspace.id()));
             }
         }
         // Housekeeping and what came from outside stay in the workspace document's history, out of
@@ -1761,7 +1762,7 @@ impl WorkspaceActivityPane {
         &mut self,
         tree: &impl ActivityTree,
         entries: &mut Vec<HistoryEntry>,
-        tags: &mut Vec<Option<u64>>,
+        tags: &mut Vec<Option<WorkspaceId>>,
     ) {
         let Some(document) = tree.governance_document().cloned() else {
             self.governance_rows.clear();
@@ -1778,7 +1779,7 @@ impl WorkspaceActivityPane {
             &mut self.workspace_changes,
         );
         self.governance_rows = rows.iter().map(|row| row.id).collect();
-        let workspace = Some(tree.active.raw());
+        let workspace = Some(tree.active);
         tags.extend(row_tags.into_iter().map(|tag| tag.or(workspace)));
         entries.append(&mut rows);
     }
@@ -1790,12 +1791,12 @@ impl WorkspaceActivityPane {
     }
 
     fn apply_scope(&mut self, tree: &impl ActivityTree) {
-        let active = tree.active.raw();
+        let active = tree.active;
         self.last_active = Some(active);
-        let names: std::collections::HashMap<u64, String> = tree
+        let names: std::collections::HashMap<WorkspaceId, String> = tree
             .workspaces
             .iter()
-            .map(|w| (w.slot.raw(), w.name.clone()))
+            .map(|w| (w.id(), w.name.clone()))
             .collect();
 
         let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());
@@ -1865,7 +1866,7 @@ impl WorkspaceActivityPane {
             self.timeline
                 .set_named_ranges(self.history_index.origin_safe_named_ranges(&self.named));
         }
-        let passive = self.passive_frontier(tree.active.raw());
+        let passive = self.passive_frontier(tree.active);
         let local = self.local_user();
         let rows = others_work(
             self.history_index
@@ -1878,7 +1879,7 @@ impl WorkspaceActivityPane {
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
         let away = self
             .departures
-            .get(&tree.active.raw())
+            .get(&tree.active)
             .cloned()
             .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()));
         let away_rows = away.map_or_else(Vec::new, |departure| {
@@ -2557,7 +2558,7 @@ fn humanize_field(field: &str) -> String {
 #[derive(Default)]
 pub(super) struct WorkspaceChange {
     /// The workspace the change belongs to; `None` for several or none.
-    workspace: Option<u64>,
+    workspace: Option<WorkspaceId>,
     counts: PatchCounts,
     bookkeeping: bool,
 }
@@ -2598,8 +2599,8 @@ fn describe_workspace_changes(
     log: &ui::history_source::HistoryLog,
     entries: &mut [HistoryEntry],
     known: &mut HashMap<ChangeHash, WorkspaceChange>,
-) -> Vec<Option<u64>> {
-    let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
+) -> Vec<Option<WorkspaceId>> {
+    let mut tags: Vec<Option<WorkspaceId>> = vec![None; entries.len()];
     for (entry, tag) in entries.iter_mut().zip(&mut tags) {
         let Some((hash, deps)) = log.change(&entry.id) else {
             continue;
@@ -2698,9 +2699,9 @@ fn workspace_touched(
     doc: &automerge::AutoCommit,
     patches: &[automerge::Patch],
     hash: ChangeHash,
-) -> Option<u64> {
+) -> Option<WorkspaceId> {
     let heads = [hash];
-    let mut found: Option<u64> = None;
+    let mut found: Option<WorkspaceId> = None;
     for p in patches {
         let entry_obj = match p.path.len() {
             0 | 1 => continue, // the document root: not a workspace's change
@@ -2727,7 +2728,10 @@ fn workspace_touched(
         }
         let id = match doc.get_at(&entry_obj, "id", &heads) {
             Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-                ScalarValue::Uint(n) => *n,
+                ScalarValue::Str(text) => match WorkspaceId::parse(text) {
+                    Some(id) => id,
+                    None => continue,
+                },
                 _ => continue,
             },
             _ => continue,

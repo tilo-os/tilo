@@ -172,8 +172,7 @@ pub fn spawn_with_agent_grants(
         .expect("secure typed broker fixture root");
     let root = SigningKey::from_bytes(&ROOT_KEY);
     let principal = hex::encode(root.verifying_key().to_bytes());
-    let mut workspace = tilo_action_broker::test_support::Workspace::in_workspace(
-        tilo_action_broker::test_support::WorkspaceSlot(1),
+    let mut workspace = tilo_action_broker::test_support::Workspace::new(
         tilo_action_broker::test_support::WorkspaceId::parse(&TEST_WORKSPACE.to_string()).unwrap(),
         "Agent integration workspace",
     );

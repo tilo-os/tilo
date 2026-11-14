@@ -25,8 +25,7 @@ use crate::common::{BTN_LEFT, HEIGHT, WIDTH, changed, shot, until};
 use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
 use tilo_desktop::window_switcher::SwitcherView;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_session::{Options, Session};
 use tilo_session_core::shell::DeskReading;
@@ -76,7 +75,7 @@ fn group(id: u64, tab: Tab) -> WindowGroup {
 /// the notes app, one of the mail app — and a window of another workspace, which the walk never
 /// crosses.
 fn desk_tree() -> DesktopTree {
-    let mut work = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut work = Workspace::new(WorkspaceId::from_u128(1), "Work");
     work.strips = vec![
         Strip {
             id: StripId(2),
@@ -92,18 +91,19 @@ fn desk_tree() -> DesktopTree {
             window_groups: vec![group(12, window(22, "Budget", "so.tilo.notes"))],
         },
     ];
-    let mut elsewhere = Workspace::new(WorkspaceSlot(2), "Elsewhere");
+    let mut elsewhere = Workspace::new(WorkspaceId::from_u128(2), "Elsewhere");
     elsewhere.strips = vec![Strip {
         id: StripId(4),
         name: "Main".into(),
         window_groups: vec![group(13, window(23, "Away", "so.tilo.mail"))],
     }];
     let mut tree = DesktopTree {
-        active: work.slot,
+        active: work.id(),
         workspaces: vec![work, elsewhere],
         ..Default::default()
     };
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(2));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(2));
     tree.active_group.insert(StripId(2), 10);
     tree
 }
@@ -482,7 +482,8 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
     // This workspace alone: the walk never crosses another's windows, so another workspace here
     // would only be a window the page could not show.
     tree.workspaces = vec![workspace];
-    tree.active_strip.insert(WorkspaceSlot(1), StripId(5));
+    tree.active_strip
+        .insert(WorkspaceId::from_u128(1), StripId(5));
     tree.active_group.insert(StripId(5), 100);
     handle.replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");

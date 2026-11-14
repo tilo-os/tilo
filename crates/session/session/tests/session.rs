@@ -1486,10 +1486,11 @@ fn the_night_light_warms_to_the_persons_warmth() {
     );
 }
 
-fn active_workspace(session: &Session) -> Option<u64> {
-    session
-        .handle()
-        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0))
+fn active_workspace(session: &Session) -> Option<tilo_desktop_model::WorkspaceId> {
+    session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(tilo_desktop_model::Workspace::id)
+    })
 }
 
 /// The resource publishing `action` among everything the session publishes.
@@ -2304,11 +2305,11 @@ fn workspaces(session: &Session) -> Vec<(String, Vec<String>)> {
 }
 
 /// The ids of the windows the workspace `workspace` holds.
-fn tabs_in(session: &Session, workspace: u64) -> Vec<u64> {
+fn tabs_in(session: &Session, workspace: tilo_desktop_model::WorkspaceId) -> Vec<u64> {
     session.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .filter(|held| held.slot.0 == workspace)
+            .filter(|held| held.id() == workspace)
             .flat_map(|held| &held.strips)
             .flat_map(|strip| &strip.window_groups)
             .flat_map(|group| &group.tabs)
@@ -2429,7 +2430,7 @@ fn the_next_session_comes_up_where_this_one_was() {
         let index = session.handle().read(|tree| {
             tree.workspaces
                 .iter()
-                .position(|workspace| workspace.slot.0 == open)
+                .position(|workspace| workspace.id() == open)
         });
         assert_eq!(index, Some(1), "the second workspace is in front");
         kept
@@ -2446,7 +2447,7 @@ fn the_next_session_comes_up_where_this_one_was() {
     let index = second.handle().read(|tree| {
         tree.workspaces
             .iter()
-            .position(|workspace| workspace.slot.0 == open)
+            .position(|workspace| workspace.id() == open)
     });
     assert_eq!(index, Some(1), "the workspace that was in front is");
 }

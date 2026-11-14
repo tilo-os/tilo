@@ -10,7 +10,7 @@ use crate::engine::Engine;
 use crate::sync::{Enrolling, Entering, REDEEM_WITHIN, SETTLE_WITHIN};
 use crate::workspace_keys::KeyLink;
 
-/// Come into the workspace the desk made a slot for, through its door or with an invitation: this
+/// Come into the workspace the desk made for the join, through its door or with an invitation: this
 /// device becomes a member of the workspace, takes in what it held before it arrived, and takes part
 /// in it from then on.
 /// The workspace's state arrives as the host's answer: a person who joins late reads the whole
@@ -89,7 +89,7 @@ pub(super) async fn redeem(
             client,
             identity.clone(),
             topic,
-            Some(request.slot),
+            Some(request.workspace_id),
             invitation,
             owner.clone(),
         ),

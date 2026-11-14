@@ -11,7 +11,7 @@ use tilo_desktop_model::width::{
 };
 use tilo_desktop_model::{
     Capability, DesktopTree, Display, GRANT_ALWAYS, Strip, StripId, TabId, TileContent,
-    WindowWidth, Workspace, WorkspaceSlot,
+    WindowWidth, Workspace, WorkspaceId,
 };
 use ui::widget::TabHolder;
 use ui::window_share::OpenWindow;
@@ -523,12 +523,16 @@ fn a_window_moves_to_another_workspace_by_its_name() {
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
     tree.workspaces
-        .push(Workspace::new(WorkspaceSlot(91), "Studio"));
+        .push(Workspace::new(WorkspaceId::from_u128(91), "Studio"));
     handle.replace_tree(tree);
     settle(&mut frame);
 
     let rows = handle.window_menu(route.tab);
-    let across = row(&rows, &format!("{MOVE_TO_WORKSPACE}:91")).expect("the workspace is offered");
+    let across = row(
+        &rows,
+        &format!("{MOVE_TO_WORKSPACE}:{}", WorkspaceId::from_u128(91)),
+    )
+    .expect("the workspace is offered");
     assert!(across.enabled, "{across:?}");
     assert_eq!(
         across.label, "Studio",
@@ -537,13 +541,13 @@ fn a_window_moves_to_another_workspace_by_its_name() {
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, &across.id, None),
-        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { workspace: Some(ref workspace), .. }, .. })) if workspace == "91"
+        Some(Verb::Chrome(ChromeEffect::MoveTab { to: Destination { workspace: Some(ref workspace), .. }, .. })) if *workspace == WorkspaceId::from_u128(91).to_string()
     ));
     handle
         .choose_window_menu(route.tab, &across.id, None)
         .unwrap();
     settle(&mut frame);
-    let home: Vec<WorkspaceSlot> = handle.read(|tree| {
+    let home: Vec<WorkspaceId> = handle.read(|tree| {
         tree.workspaces
             .iter()
             .filter(|workspace| {
@@ -554,16 +558,20 @@ fn a_window_moves_to_another_workspace_by_its_name() {
                         .any(|group| group.tabs.iter().any(|tab| tab.id == route.tab))
                 })
             })
-            .map(|workspace| workspace.slot)
+            .map(tilo_desktop_model::Workspace::id)
             .collect()
     });
-    assert_eq!(home, vec![WorkspaceSlot(91)], "the window is there now");
+    assert_eq!(
+        home,
+        vec![WorkspaceId::from_u128(91)],
+        "the window is there now"
+    );
 }
 
 /// Renders every tab as a notice of its own, and records the windows the session is asked to carry,
 /// as the session's own source does.
 struct Carrying {
-    carried: std::rc::Rc<std::cell::RefCell<Vec<(TabId, WorkspaceSlot)>>>,
+    carried: std::rc::Rc<std::cell::RefCell<Vec<(TabId, WorkspaceId)>>>,
 }
 
 impl TileSource for Carrying {
@@ -574,7 +582,7 @@ impl TileSource for Carrying {
         })
     }
 
-    fn carry(&self, tab: TabId, to: WorkspaceSlot) -> bool {
+    fn carry(&self, tab: TabId, to: WorkspaceId) -> bool {
         self.carried.borrow_mut().push((tab, to));
         true
     }
@@ -595,9 +603,9 @@ fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab
     let mut frame = present(surface);
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
-    let home = tree.workspaces[0].slot;
+    let home = tree.workspaces[0].id();
     tree.workspaces
-        .push(Workspace::new(WorkspaceSlot(91), "Studio"));
+        .push(Workspace::new(WorkspaceId::from_u128(91), "Studio"));
     // What the compositor mapped: a window of an app this device started.
     tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
         app_id: "so.tilo.notes".into(),
@@ -607,16 +615,20 @@ fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab
     settle(&mut frame);
 
     handle
-        .choose_window_menu(route.tab, &format!("{MOVE_TO_WORKSPACE}:91"), None)
+        .choose_window_menu(
+            route.tab,
+            &format!("{MOVE_TO_WORKSPACE}:{}", WorkspaceId::from_u128(91)),
+            None,
+        )
         .unwrap();
     settle(&mut frame);
 
     assert_eq!(
         *carried.borrow(),
-        vec![(route.tab, WorkspaceSlot(91))],
+        vec![(route.tab, WorkspaceId::from_u128(91))],
         "the session is asked to carry the window where the person put it"
     );
-    let below: Vec<WorkspaceSlot> = handle.read(|tree| {
+    let below: Vec<WorkspaceId> = handle.read(|tree| {
         tree.workspaces
             .iter()
             .filter(|workspace| {
@@ -627,7 +639,7 @@ fn a_running_apps_window_is_handed_to_the_session_instead_of_crossing_by_its_tab
                         .any(|group| group.tabs.iter().any(|tab| tab.id == route.tab))
                 })
             })
-            .map(|workspace| workspace.slot)
+            .map(tilo_desktop_model::Workspace::id)
             .collect()
     });
     assert_eq!(
@@ -653,7 +665,7 @@ fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
     tree.workspaces
-        .push(Workspace::new(WorkspaceSlot(91), "Studio"));
+        .push(Workspace::new(WorkspaceId::from_u128(91), "Studio"));
     tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
         app_id: "org.gnome.Nautilus".into(),
         surface_id: 12,
@@ -662,13 +674,17 @@ fn a_programs_window_is_handed_over_too_and_the_session_moves_it_at_once() {
     settle(&mut frame);
 
     handle
-        .choose_window_menu(route.tab, &format!("{MOVE_TO_WORKSPACE}:91"), None)
+        .choose_window_menu(
+            route.tab,
+            &format!("{MOVE_TO_WORKSPACE}:{}", WorkspaceId::from_u128(91)),
+            None,
+        )
         .unwrap();
     settle(&mut frame);
 
     assert_eq!(
         *carried.borrow(),
-        vec![(route.tab, WorkspaceSlot(91))],
+        vec![(route.tab, WorkspaceId::from_u128(91))],
         "the window crosses only through the session"
     );
 }

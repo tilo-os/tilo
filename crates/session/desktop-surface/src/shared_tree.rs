@@ -1,7 +1,7 @@
 //! Snapshot compatibility for hosts whose workspace carries a desktop tree. Stream bindings and
 //! presentation belong to the receiving device, and a person's own windows
 //! ([`tilo_desktop_model::personal`]) to the desk they were opened on.
-use tilo_desktop_model::{DesktopTree, OutputPartition, TabId, WindowWidth, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, OutputPartition, TabId, WindowWidth, WorkspaceId};
 
 pub(crate) fn projection(mut tree: DesktopTree) -> DesktopTree {
     let local: Vec<_> = tree
@@ -19,7 +19,7 @@ pub(crate) fn projection(mut tree: DesktopTree) -> DesktopTree {
     tree.active = tree
         .workspaces
         .first()
-        .map_or_else(WorkspaceSlot::default, |w| w.slot);
+        .map_or_else(WorkspaceId::default, tilo_desktop_model::Workspace::id);
     tree.active_strip.clear();
     tree.active_group.clear();
     tree.outputs = OutputPartition::default();
@@ -48,7 +48,7 @@ pub(crate) fn receive(
         let Some(target) = incoming
             .workspaces
             .iter_mut()
-            .find(|w| w.slot == workspace.slot)
+            .find(|w| w.id() == workspace.id())
         else {
             continue; // A removed workspace must not retain access to its streams.
         };
@@ -94,14 +94,14 @@ pub(crate) fn receive(
             }
         }
     }
-    if incoming.workspaces.iter().any(|w| w.slot == local.active) {
+    if incoming.workspaces.iter().any(|w| w.id() == local.active) {
         incoming.active = local.active;
     }
     for workspace in &incoming.workspaces {
-        if let Some(strip) = local.active_strip.get(&workspace.slot)
+        if let Some(strip) = local.active_strip.get(&workspace.id())
             && workspace.strips.iter().any(|s| s.id == *strip)
         {
-            incoming.active_strip.insert(workspace.slot, *strip);
+            incoming.active_strip.insert(workspace.id(), *strip);
         }
         for strip in &workspace.strips {
             if let Some(group) = local.active_group.get(&strip.id)

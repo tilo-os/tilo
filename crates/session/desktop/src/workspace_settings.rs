@@ -998,13 +998,13 @@ mod members_tests {
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
     use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet, roles};
-    use tilo_desktop_model::WorkspaceSlot;
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
 
     fn ws_with_two_members() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot::from(7), "members-test");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(7), "members-test");
         ws.set_owner(OWNER);
         assert!(
             set_member_role(
@@ -1036,7 +1036,7 @@ mod members_tests {
         {
             use crate::people::{PeopleNames, roster_rows_named};
             let owner_key = "fa4834147f".repeat(6) + "0123";
-            let mut ws = Workspace::new(WorkspaceSlot::from(9), "Studio");
+            let mut ws = Workspace::new(WorkspaceId::from_u128(9), "Studio");
             ws.set_owner(owner_key.as_str());
             assert!(
                 set_member_role(&mut ws, &owner_key, &"ada".to_string(), CapRole::Editor)
@@ -1046,7 +1046,7 @@ mod members_tests {
             let mut listed = ws.clone();
             listed.member_here(tilo_desktop_model::Member::keyed("ada", "Ada"));
             let desktop = tilo_desktop_model::DesktopTree {
-                active: listed.slot,
+                active: listed.id(),
                 workspaces: vec![listed],
                 ..tilo_desktop_model::DesktopTree::default()
             };
@@ -1245,13 +1245,13 @@ mod agents_tests {
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
     use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet};
-    use tilo_desktop_model::WorkspaceSlot;
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe-agent";
 
     fn ws_with_agent() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot::from(17), "agents-test");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(17), "agents-test");
         ws.set_owner(OWNER);
         ws.grant(Grant::new(
             format!("agent-member:{AGENT}"),
@@ -1303,7 +1303,7 @@ mod agents_tests {
         }
 
         {
-            let mut ws = Workspace::new(WorkspaceSlot::from(18), "profile-test");
+            let mut ws = Workspace::new(WorkspaceId::from_u128(18), "profile-test");
             ws.set_owner(OWNER);
             ws.grant(Grant::new(
                 format!("agent-member:{AGENT}"),
@@ -1414,7 +1414,7 @@ mod permissions_tests {
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
     use collab_types::caps::ResourceRef;
-    use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceSlot};
+    use tilo_desktop_model::{Capability, GRANT_ALWAYS, GRANT_SESSION, WorkspaceId};
 
     const OWNER: &str = "owner-user";
     /// Whoever is looking at the tab; never a grantor in these fixtures.
@@ -1425,7 +1425,7 @@ mod permissions_tests {
     }
 
     fn ws_with_grants() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot::from(3), "perm-test");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(3), "perm-test");
         ws.set_owner(OWNER);
         ws.grant_app(
             OWNER,
@@ -1533,7 +1533,7 @@ mod permissions_tests {
             // the viewer's own grant reads "you".
             let ada = "ad".repeat(32);
             let bea = "be".repeat(32);
-            let mut ws = Workspace::new(WorkspaceSlot::from(5), "names");
+            let mut ws = Workspace::new(WorkspaceId::from_u128(5), "names");
             ws.set_owner(&ada);
             ws.members_here([
                 tilo_desktop_model::Member::keyed(&ada, "Ada Lovelace"),
@@ -1571,7 +1571,7 @@ mod permissions_tests {
         }
 
         {
-            let mut ws = Workspace::new(WorkspaceSlot::from(4), "labels");
+            let mut ws = Workspace::new(WorkspaceId::from_u128(4), "labels");
             ws.set_owner(OWNER);
             ws.grant_as(
                 &OWNER.to_string(),
@@ -1972,7 +1972,7 @@ mod bot_detail_tests {
 mod default_app_authority_tests {
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
-    use tilo_desktop_model::WorkspaceSlot;
+    use tilo_desktop_model::WorkspaceId;
 
     fn candidate(id: &str) -> desktop_policy::AppCandidate {
         desktop_policy::AppCandidate {
@@ -1989,7 +1989,7 @@ mod default_app_authority_tests {
             let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
             let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
             let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
-            let mut ws = Workspace::new(WorkspaceSlot::from(7), "Docs");
+            let mut ws = Workspace::new(WorkspaceId::from_u128(7), "Docs");
             ws.set_owner("owner");
 
             assert!(

@@ -220,15 +220,16 @@ fn pair(guide: &Guide, action: &str) -> Pair {
 }
 
 /// The workspace the person is in, as the desk names it.
-fn workspace(session: &Session) -> Option<u64> {
-    session
-        .handle()
-        .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0))
+fn workspace(session: &Session) -> Option<tilo_desktop_model::WorkspaceId> {
+    session.handle().read(|tree| {
+        tree.active_workspace()
+            .map(tilo_desktop_model::Workspace::id)
+    })
 }
 
 /// A second workspace, opened the way the bar opens one: the person is then in it, with the one
 /// before it to go back to.
-fn open_a_workspace(session: &mut Session) -> Option<u64> {
+fn open_a_workspace(session: &mut Session) -> Option<tilo_desktop_model::WorkspaceId> {
     let before = workspace(session);
     session
         .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())

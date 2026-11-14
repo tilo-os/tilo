@@ -59,8 +59,7 @@ pub use publication::{
     custody_run_name, outgoing_bytes, validate_file_layout,
 };
 pub use record::{
-    EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
-    StoredPendingEnrollment,
+    NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus, StoredPendingEnrollment,
 };
 pub use write::{Committed, WriteRefusal};
 
@@ -72,7 +71,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{Arc, Weak},
 };
-use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -144,29 +143,26 @@ pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
     fn healthy(&self) -> bool;
     /// Whether such an uncertain publication may have made `workspace` durable.
     fn uncertain(&self, workspace: WorkspaceId) -> bool;
-    /// The workspace a local slot is, where the host has slots.
-    fn slot_workspace(&self, slot: WorkspaceSlot) -> Option<WorkspaceId>;
+    /// Whether the host's desk holds `workspace`.
+    fn shows(&self, workspace: WorkspaceId) -> bool;
     /// Make `next` durable, then call `install` before anyone can observe
     /// the new record. Nothing is installed when this fails.
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
-        change: Change<'_>,
+        change: Change,
         install: &mut dyn FnMut(),
     ) -> Result<(), String>;
 }
 
 /// What a publication changes besides the record itself.
-pub enum Change<'a> {
+pub enum Change {
     /// Only pending-enrollment bookkeeping.
     Pending,
     /// `workspace` now holds what the record being published holds; a
     /// completed enrollment installs into the workspace made for it, which is
     /// `workspace` already.
-    Workspace {
-        workspace: WorkspaceId,
-        into: Option<&'a EnrollmentTarget>,
-    },
+    Workspace { workspace: WorkspaceId, shown: bool },
     /// This device no longer holds `workspace`: its replica and any enrollment
     /// into it are gone from the record, and the host takes the workspace's
     /// shared desktop off in the same publication. Nobody else's data goes: the
@@ -470,7 +466,7 @@ impl SharedOwner {
     fn publish(
         &self,
         next: &NativeAuthorityStorage,
-        change: Change<'_>,
+        change: Change,
         policy: bool,
         install: &mut dyn FnMut(),
     ) -> Result<(), String> {
@@ -521,14 +517,6 @@ impl NativeWorkspaceOwner {
         if authority.pending.len() > limits::MAX_PENDING {
             return Err("native pending enrollment quota exceeded".into());
         }
-        let mut pending_slots = BTreeSet::new();
-        for pending in authority.pending.values() {
-            if let Some(target) = &pending.target
-                && !pending_slots.insert(target.workspace)
-            {
-                return Err("ambiguous native pending enrollment slot".into());
-            }
-        }
         let mut current = Current::default();
         current
             .required
@@ -563,8 +551,7 @@ impl NativeWorkspaceOwner {
     }
     /// Stop holding `workspace` here: drop this device's replica of it and any
     /// enrollment into it, with the host's workspace of it in the same
-    /// publication ([`Change::Released`]). A workspace and its slot go
-    /// together; the workspace itself, its governor and its other members are
+    /// publication ([`Change::Released`]). The workspace itself, its governor and its other members are
     /// untouched. Answers whether the record held the workspace.
     pub fn release_workspace(&self, workspace: WorkspaceId) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
@@ -1071,7 +1058,7 @@ impl NativeWorkspaceOwner {
             &next,
             Change::Workspace {
                 workspace,
-                into: enrollment.and_then(|pending| pending.target.as_ref()),
+                shown: enrollment.is_some_and(|pending| pending.shown),
             },
             policy,
             &mut || {

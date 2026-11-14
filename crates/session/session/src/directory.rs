@@ -78,8 +78,8 @@ pub fn follow(seat: Option<&DirectorySeat>, store: &Store, notices: &dyn Notices
                     workspace = %joined.granted.workspace,
                     name = %joined.name,
                     %error,
-                    outcome = "slot removed",
-                    "join: the desk would not make the workspace's slot, so nothing was joined"
+                    outcome = "not made",
+                    "join: the desk would not make the workspace, so nothing was joined"
                 );
                 store.failing(tilo_sheets::words(
                     "directory-join-failed",

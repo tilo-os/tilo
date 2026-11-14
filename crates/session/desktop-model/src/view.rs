@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use crate::ids::{WorkspaceId, WorkspaceSlot};
+use crate::ids::WorkspaceId;
 use crate::tree::DesktopTree;
 use crate::workspace::Workspace;
 
@@ -26,15 +26,6 @@ impl DesktopTree {
             .collect()
     }
 
-    /// The durable workspace identity of `slot` — what turns a local
-    /// handle into the value the wire speaks.
-    pub fn id_of(&self, slot: WorkspaceSlot) -> Option<WorkspaceId> {
-        self.workspaces
-            .iter()
-            .find(|w| w.slot == slot)
-            .map(Workspace::id)
-    }
-
     /// Tell the tree which records `workspace`'s index holds. Returns whether
     /// this was news, so the caller can skip re-asking when nothing moved.
     pub fn set_workspace_records(
@@ -51,8 +42,8 @@ impl DesktopTree {
         }
     }
 
-    pub fn set_active(&mut self, id: WorkspaceSlot) {
-        if self.workspaces.iter().any(|w| w.slot == id) {
+    pub fn set_active(&mut self, id: WorkspaceId) {
+        if self.workspaces.iter().any(|w| w.id() == id) {
             self.active = id;
         }
     }
@@ -62,12 +53,12 @@ impl DesktopTree {
         let idx = self
             .workspaces
             .iter()
-            .position(|w| w.slot == self.active)
+            .position(|w| w.id() == self.active)
             .unwrap_or(0);
         let Some(prev) = idx.checked_sub(1).and_then(|i| self.workspaces.get(i)) else {
             return false;
         };
-        self.active = prev.slot;
+        self.active = prev.id();
         true
     }
 
@@ -76,12 +67,12 @@ impl DesktopTree {
         let idx = self
             .workspaces
             .iter()
-            .position(|w| w.slot == self.active)
+            .position(|w| w.id() == self.active)
             .unwrap_or(0);
         let Some(next) = self.workspaces.get(idx.saturating_add(1)) else {
             return false;
         };
-        self.active = next.slot;
+        self.active = next.id();
         true
     }
 }
@@ -98,20 +89,19 @@ mod tests {
         {
             let mut tree = DesktopTree {
                 workspaces: vec![
-                    Workspace::new(WorkspaceSlot(1), "A"),
-                    Workspace::new(WorkspaceSlot(2), "B"),
+                    Workspace::new(WorkspaceId::from_u128(1), "A"),
+                    Workspace::new(WorkspaceId::from_u128(2), "B"),
                 ],
-                active: WorkspaceSlot(1),
+                active: WorkspaceId::from_u128(1),
                 ..DesktopTree::default()
             };
             assert!(!tree.switch_up());
             assert!(tree.switch_down());
-            assert_eq!(tree.active, WorkspaceSlot(2));
+            assert_eq!(tree.active, WorkspaceId::from_u128(2));
             assert!(!tree.switch_down());
-            tree.set_active(WorkspaceSlot(9));
-            assert_eq!(tree.active, WorkspaceSlot(2));
+            tree.set_active(WorkspaceId::from_u128(9));
+            assert_eq!(tree.active, WorkspaceId::from_u128(2));
             assert_eq!(tree.workspace_ids().len(), 2);
-            assert_eq!(tree.id_of(WorkspaceSlot(1)), Some(tree.workspaces[0].id()));
         }
 
         phase workspace_records_report_only_news;

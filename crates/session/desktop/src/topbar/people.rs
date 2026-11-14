@@ -602,17 +602,17 @@ impl TopBarChrome {
 mod tests {
     use super::super::fixture::FixtureChrome;
     use super::*;
-    use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceId};
 
     fn desk(people: &[(&str, &str)]) -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
         workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
         // The device a member is here through is what a face is pressed by.
         for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
             here.device.clone_from(&member.id.id().to_owned());
         }
         DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }

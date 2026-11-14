@@ -49,7 +49,7 @@ class ScratchNotes:
     def surfaces(self, state: dict[str, Any]) -> list[Any]:
         """The Notes surfaces in this run's workspace, from a state dump."""
         return [tab["tile"]["Foreign"]["surface_id"]
-                for workspace in workspaces(state) if workspace.get("room") == self.workspace_id
+                for workspace in workspaces(state) if workspace.get("id") == self.workspace_id
                 for strip in workspace.get("strips", [])
                 for group in strip.get("window_groups", []) for tab in group.get("tabs", [])
                 if (tab.get("tile") or {}).get("Foreign", {}).get("app_id") == NOTES_APP]
@@ -64,7 +64,7 @@ def workspaces(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 def workspace_ids(state: dict[str, Any]) -> frozenset[str]:
     """Every workspace's id. A workspace without an id cannot be told apart, so it fails."""
-    found = [workspace.get("room") for workspace in workspaces(state)]
+    found = [workspace.get("id") for workspace in workspaces(state)]
     if not all(isinstance(workspace_id, str) and workspace_id for workspace_id in found):
         raise ScratchWorkspaceError("A workspace in the state dump has no id")
     return frozenset(found)
@@ -85,7 +85,7 @@ def open_scratch_notes(state: Callable[[], dict[str, Any]],
     while True:
         current = state()
         fresh = [workspace for workspace in workspaces(current)
-                 if workspace.get("room") not in protected]
+                 if workspace.get("id") not in protected]
         if len(fresh) > 1:
             raise ScratchWorkspaceError("More than one new workspace appeared; none is provably ours")
         if (len(fresh) == 1 and fresh[0].get("name") == name
@@ -94,7 +94,7 @@ def open_scratch_notes(state: Callable[[], dict[str, Any]],
         if time.monotonic() >= deadline:
             raise ScratchWorkspaceError("The new scratch workspace never became the active one")
         time.sleep(.1)
-    workspace, workspace_id = fresh[0].get("id"), fresh[0]["room"]
+    workspace = workspace_id = fresh[0].get("id")
     if not isinstance(workspace_id, str) or not workspace_id or workspace_id in protected:
         raise ScratchWorkspaceError("The scratch workspace has no id of its own")
     invoke("applications", NOTES_APP, {})

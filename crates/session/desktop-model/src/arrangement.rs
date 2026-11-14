@@ -902,7 +902,7 @@ mod tests {
 
         phase a_stored_workspace_keeps_its_canvas;
         {
-            let mut workspace = crate::Workspace::create("Desk");
+            let mut workspace = crate::Workspace::new(crate::WorkspaceId::new(), "Desk");
             workspace.arrangement = canvas(&[(920_001, CanvasPlace::new(40, -8, 400, 300))]);
             let json = serde_json::to_string(&workspace).expect("serialises");
             let back: crate::Workspace = serde_json::from_str(&json).expect("reads back");

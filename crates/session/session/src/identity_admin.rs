@@ -1097,7 +1097,7 @@ mod tests {
 
     /// A desk hosting `workspace` , with nothing else on it.
     fn desk_with(workspace: tilo_desktop_model::Workspace) -> crate::plane::DeskAuthority {
-        let active = workspace.slot;
+        let active = workspace.id();
         crate::plane::DeskAuthority::new(
             tilo_desktop_model::DesktopTree {
                 workspaces: vec![workspace],
@@ -1112,8 +1112,10 @@ mod tests {
 
     #[test]
     fn only_a_person_who_governs_the_hosted_workspace_administers_its_devices() {
-        let mut workspace =
-            tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk");
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId::from_u128(1),
+            "Desk",
+        );
         workspace.set_owner("alice");
         let hosted = workspace.id().to_string();
         let desk = desk_with(workspace);

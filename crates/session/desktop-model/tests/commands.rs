@@ -15,7 +15,7 @@ use tilo_desktop_model::commands::{
 };
 use tilo_desktop_model::{
     AppKind, DesktopTree, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    WorkspaceId,
 };
 
 fn notes() -> TileContent {
@@ -38,7 +38,7 @@ fn create(_: &str, _: u64) -> Result<(String, TileContent), String> {
 }
 
 fn workspace_with_group() -> Workspace {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Shared");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Shared");
     workspace.strips.push(tilo_desktop_model::Strip {
         id: StripId(10),
         name: "Main".into(),
@@ -66,7 +66,7 @@ fn workspace_with_group() -> Workspace {
 
 #[test]
 fn a_failed_record_leaves_no_topology_and_the_last_close_keeps_its_strip() {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Empty");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Empty");
     let mut mint = minter(100);
     let open = DesktopCommand::OpenTab {
         app: "so.tilo.notes".into(),
@@ -398,9 +398,9 @@ tilo_test_env::scenario! {
         let mut tree = DesktopTree {
             workspaces: vec![
                 workspace_with_group(),
-                Workspace::new(WorkspaceSlot(2), "Other"),
+                Workspace::new(WorkspaceId::from_u128(2), "Other"),
             ],
-            active: WorkspaceSlot(1),
+            active: WorkspaceId::from_u128(1),
             ..DesktopTree::default()
         };
         let mut mint = minter(800);
@@ -408,13 +408,13 @@ tilo_test_env::scenario! {
         tilo_desktop_model::commands::move_tab_to_workspace(
             &mut tree,
             moved,
-            WorkspaceSlot(2),
+            WorkspaceId::from_u128(2),
             &mut mint,
         )
         .unwrap();
         assert_eq!(
             tree.active,
-            WorkspaceSlot(1),
+            WorkspaceId::from_u128(1),
             "the person stays where they are"
         );
         assert_eq!(
@@ -434,7 +434,7 @@ tilo_test_env::scenario! {
             landed.window_groups[0].tabs[0].id, moved,
             "the same window arrives"
         );
-        assert_eq!(tree.active_strip.get(&WorkspaceSlot(2)), Some(&landed.id));
+        assert_eq!(tree.active_strip.get(&WorkspaceId::from_u128(2)), Some(&landed.id));
         assert_eq!(
             tree.active_group_for(landed.id),
             Some(landed.window_groups[0].id)
@@ -443,7 +443,7 @@ tilo_test_env::scenario! {
             tilo_desktop_model::commands::move_tab_to_workspace(
                 &mut tree,
                 moved,
-                WorkspaceSlot(2),
+                WorkspaceId::from_u128(2),
                 &mut mint
             )
             .is_err(),
@@ -453,7 +453,7 @@ tilo_test_env::scenario! {
             tilo_desktop_model::commands::move_tab_to_workspace(
                 &mut tree,
                 9999,
-                WorkspaceSlot(2),
+                WorkspaceId::from_u128(2),
                 &mut mint
             )
             .is_err()
@@ -472,9 +472,9 @@ tilo_test_env::scenario! {
         let mut tree = DesktopTree {
             workspaces: vec![
                 workspace_with_group(),
-                Workspace::new(WorkspaceSlot(2), "Other"),
+                Workspace::new(WorkspaceId::from_u128(2), "Other"),
             ],
-            active: WorkspaceSlot(1),
+            active: WorkspaceId::from_u128(1),
             ..DesktopTree::default()
         };
         let mut mint = minter(800);
@@ -489,7 +489,7 @@ tilo_test_env::scenario! {
         .expect("a created strip is returned");
         assert_eq!(made, StripId(801));
         assert_eq!(tree.workspaces[0].strips[1].name, "Later");
-        assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), Some(&made));
+        assert_eq!(tree.active_strip.get(&WorkspaceId::from_u128(1)), Some(&made));
         assert!(
             tree.workspaces[1].strips.is_empty(),
             "only the active workspace changes"
@@ -539,7 +539,7 @@ tilo_test_env::scenario! {
             Ok(None)
         );
         assert_eq!(tree.workspaces[0].strips.len(), 1);
-        assert_eq!(tree.active_strip.get(&WorkspaceSlot(1)), Some(&StripId(10)));
+        assert_eq!(tree.active_strip.get(&WorkspaceId::from_u128(1)), Some(&StripId(10)));
     }
 
     phase names_are_validated_and_the_last_strip_cannot_be_removed;

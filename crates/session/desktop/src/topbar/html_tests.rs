@@ -2,18 +2,18 @@
 
 use super::fixture::FixtureChrome;
 use super::*;
-use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Member, Workspace, WorkspaceId};
 use ui::composition::{Composed, Own};
 
 fn bar_of(people: &[(&str, &str)]) -> TopBarChrome {
     ui::i18n::I18nManager::init("en-US");
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Hacked");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Hacked");
     workspace.members_here(people.iter().map(|(id, name)| Member::keyed(id, *name)));
     for (here, member) in workspace.present.iter_mut().zip(&workspace.members) {
         here.device.clone_from(&member.id.id().to_owned());
     }
     let tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };

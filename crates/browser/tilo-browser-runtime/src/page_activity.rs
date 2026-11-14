@@ -98,11 +98,11 @@ impl tilo_session::activity::DeskHistory for PageDesk {
     fn history(
         &self,
         tree: &tilo_desktop_model::DesktopTree,
-        slot: tilo_desktop_model::WorkspaceSlot,
+        workspace_id: tilo_desktop_model::WorkspaceId,
     ) -> Option<tilo_desktop_surface::activity::ActivitySnapshot> {
         Some(tilo_desktop_surface::activity::ActivitySnapshot::of_layout(
             tree.clone(),
-            slot,
+            workspace_id,
             self.0.document(),
         ))
     }
@@ -110,19 +110,23 @@ impl tilo_session::activity::DeskHistory for PageDesk {
     fn documents(
         &self,
         tree: &tilo_desktop_model::DesktopTree,
-    ) -> Vec<(tilo_desktop_model::WorkspaceSlot, ui::automerge::AutoCommit)> {
+    ) -> Vec<(tilo_desktop_model::WorkspaceId, ui::automerge::AutoCommit)> {
         tree.active_workspace()
-            .map(|workspace| vec![(workspace.slot, self.0.document())])
+            .map(|workspace| vec![(workspace.id(), self.0.document())])
             .unwrap_or_default()
     }
 
     fn describe(
         &self,
         tree: &tilo_desktop_model::DesktopTree,
-        slot: tilo_desktop_model::WorkspaceSlot,
+        workspace_id: tilo_desktop_model::WorkspaceId,
         write: &mut dyn FnMut(&mut ui::automerge::AutoCommit) -> bool,
     ) -> bool {
-        if tree.active_workspace().map(|workspace| workspace.slot) != Some(slot) {
+        if tree
+            .active_workspace()
+            .map(tilo_desktop_model::Workspace::id)
+            != Some(workspace_id)
+        {
             return false;
         }
         let changed = write(&mut self.0.document_mut());

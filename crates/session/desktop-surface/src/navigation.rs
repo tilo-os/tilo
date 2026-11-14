@@ -1,6 +1,6 @@
 //! `DesktopNavigationV1`: the versioned per-surface navigation contract a
 //! host page consumes. Routes name a workspace, strip, window group and tab
-//! of the desktop model. Identities are decimal strings on the wire so a
+//! of the desktop model. A workspace is named by its id; the others by decimal strings, so a
 //! full `u64` never passes through a JavaScript number.
 //!
 //! Wire types ported from the qOS browser runtime (PR 541,
@@ -8,7 +8,7 @@
 use crate::i18n::t;
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::{
-    DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceSlot,
+    DesktopTree, GroupId, StripId, TabId, WindowGroup, Workspace, WorkspaceId,
 };
 use tilo_resource::Effect;
 
@@ -24,7 +24,7 @@ pub struct Route {
 /// A route resolved against the model's id types.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RouteIds {
-    pub workspace: WorkspaceSlot,
+    pub workspace: WorkspaceId,
     pub strip: StripId,
     pub group: GroupId,
     pub tab: TabId,
@@ -38,12 +38,16 @@ fn id(value: &str) -> Result<u64, String> {
         .ok_or_else(|| "Invalid navigation identity".into())
 }
 
+fn workspace_id(value: &str) -> Result<WorkspaceId, String> {
+    WorkspaceId::parse(value).ok_or_else(|| "Invalid navigation identity".into())
+}
+
 impl Route {
     /// # Errors
-    /// Refuses an identity that is not a canonical decimal `u64`.
+    /// Refuses an identity that is not a workspace id or a canonical decimal `u64`.
     pub fn ids(&self) -> Result<RouteIds, String> {
         Ok(RouteIds {
-            workspace: WorkspaceSlot(id(&self.workspace)?),
+            workspace: workspace_id(&self.workspace)?,
             strip: StripId(id(&self.strip)?),
             group: id(&self.group)?,
             tab: id(&self.tab)?,
@@ -52,7 +56,7 @@ impl Route {
 
     pub fn from_ids(ids: RouteIds) -> Self {
         Self {
-            workspace: ids.workspace.0.to_string(),
+            workspace: ids.workspace.to_string(),
             strip: ids.strip.0.to_string(),
             group: ids.group.to_string(),
             tab: ids.tab.to_string(),
@@ -402,7 +406,7 @@ pub enum ChromeEffect {
         #[param("The strip to rename, its name or its decimal id")]
         strip: Option<String>,
         /// The workspace to name.
-        #[param("The workspace to rename, its name or its decimal id")]
+        #[param("The workspace to rename, its name or its id")]
         workspace: Option<String>,
         /// The name it takes.
         #[param("The new name")]
@@ -468,7 +472,7 @@ pub enum ChromeEffect {
     #[effect(own_device, idempotent)]
     SwitchWorkspace {
         /// The workspace to go to.
-        #[param(decimal, "The workspace to go to")]
+        #[param("The workspace to go to")]
         workspace: Option<String>,
         /// ...or how many workspaces on.
         #[param("How many workspaces on; negative goes back")]
@@ -480,7 +484,7 @@ pub enum ChromeEffect {
     #[effect(own_device, idempotent)]
     ShowStrip {
         /// The workspace the strip is in.
-        #[param(decimal, "The workspace")]
+        #[param("The workspace")]
         workspace: String,
         /// The strip to show.
         #[param(decimal, "The strip to show")]
@@ -530,7 +534,7 @@ pub enum ChromeEffect {
     #[effect(own_device)]
     Activity {
         /// The workspace shown.
-        #[param(decimal, "The workspace")]
+        #[param("The workspace")]
         workspace: String,
         /// Which view: catch up, explore or replay.
         #[param("The view to show")]
@@ -544,7 +548,7 @@ pub enum ChromeEffect {
     #[effect(own_device, idempotent)]
     CloseActivity {
         /// The workspace shown.
-        #[param(decimal, "The workspace")]
+        #[param("The workspace")]
         workspace: String,
     },
 
@@ -579,7 +583,7 @@ pub enum ChromeEffect {
     #[effect(own_device, returns)]
     BranchWorkspace {
         /// The workspace to branch.
-        #[param("The workspace to branch: its name, its decimal id or the id it is shared under")]
+        #[param("The workspace to branch: its name or its id")]
         source: String,
         /// What to call the branch.
         #[param("What to call the new workspace")]
@@ -595,7 +599,7 @@ pub enum ChromeEffect {
     #[effect(own_device)]
     LeaveWorkspace {
         /// The workspace to leave.
-        #[param("The workspace to leave, its name or its decimal id")]
+        #[param("The workspace to leave, its name or its id")]
         workspace: Option<String>,
     },
 
@@ -606,7 +610,7 @@ pub enum ChromeEffect {
     #[effect(own_device)]
     DeleteWorkspace {
         /// The workspace to delete.
-        #[param("The workspace to delete, its name or its decimal id")]
+        #[param("The workspace to delete, its name or its id")]
         workspace: Option<String>,
         /// The person answered the question that deleting asks: yes.
         #[param("The person said yes to the question deleting asks")]
@@ -801,15 +805,15 @@ pub enum Admitted {
     Select(RouteIds),
     Close(RouteIds),
     /// Reopen the newest close of the active workspace.
-    Reopen(WorkspaceSlot),
+    Reopen(WorkspaceId),
     Width(RouteIds, u32),
     Maximize(RouteIds, bool),
     /// Cover the display with the window, or give it back.
     Fullscreen(RouteIds, bool),
     /// A person's name for the window; empty clears it.
     Rename(RouteIds, String),
-    Strip(WorkspaceSlot, StripId),
-    Workspace(WorkspaceSlot),
+    Strip(WorkspaceId, StripId),
+    Workspace(WorkspaceId),
     /// An application id; the host checked that it can open it, and whether
     /// it stands over the desk beside the place it opens into when the app
     /// that opened it asked, else in the shown strip.
@@ -830,8 +834,8 @@ pub enum Admitted {
     History(RouteIds, HistoryDirection),
     /// Open the workspace's history at a view, showing only what the named person did when one is
     /// named.
-    Activity(WorkspaceSlot, ActivityView, Option<String>),
-    CloseActivity(WorkspaceSlot),
+    Activity(WorkspaceId, ActivityView, Option<String>),
+    CloseActivity(WorkspaceId),
     /// Open or close the notification centre.
     NotificationCenter(bool),
     /// Open `app` as a tab right after the tab at the route, in its group,
@@ -843,7 +847,7 @@ pub enum Admitted {
     /// Put the tab into the window `GroupId` of its own strip.
     JoinGroup(RouteIds, GroupId),
     /// Take the tab into another workspace, as a window of its own.
-    MoveToWorkspace(RouteIds, WorkspaceSlot),
+    MoveToWorkspace(RouteIds, WorkspaceId),
     /// Show the window on another display.
     MoveToDisplay(RouteIds, u32),
     /// Give the window a preset share of its strip.
@@ -867,7 +871,7 @@ pub enum Admitted {
 pub fn scroll_region(route: RouteIds, key: &str) -> String {
     format!(
         "{}/{}/{}/{}/{key}",
-        route.workspace.0, route.strip.0, route.group, route.tab
+        route.workspace, route.strip.0, route.group, route.tab
     )
 }
 
@@ -923,7 +927,7 @@ pub fn group_route(tree: &DesktopTree, group: &str) -> Result<RouteIds, String> 
             for held in &strip.window_groups {
                 if held.id == group && held.tabs.iter().any(|tab| tab.id == held.active_tab) {
                     return Ok(RouteIds {
-                        workspace: workspace.slot,
+                        workspace: workspace.id(),
                         strip: strip.id,
                         group: held.id,
                         tab: held.active_tab,
@@ -959,7 +963,7 @@ pub fn tab_route(tree: &DesktopTree, tab: &str) -> Result<RouteIds, String> {
             for group in &strip.window_groups {
                 if group.tabs.iter().any(|held| held.id == tab) {
                     return Ok(RouteIds {
-                        workspace: workspace.slot,
+                        workspace: workspace.id(),
                         strip: strip.id,
                         group: group.id,
                         tab,
@@ -994,7 +998,7 @@ pub fn admit(verb: &Verb, tree: &DesktopTree) -> Result<Admitted, String> {
 /// History at `view` over `workspace`, at `author`'s doings when named,
 /// if this surface can show that view.
 fn admit_activity(
-    workspace: WorkspaceSlot,
+    workspace: WorkspaceId,
     view: ActivityView,
     author: Option<String>,
     capabilities: &Capabilities,
@@ -1010,7 +1014,7 @@ fn admit_activity(
 /// reopened is read when the command applies; here the shown workspace is all there is to check.
 fn admit_reopen(tree: &DesktopTree) -> Result<Admitted, String> {
     tree.active_workspace()
-        .map(|workspace| Admitted::Reopen(workspace.slot))
+        .map(|workspace| Admitted::Reopen(workspace.id()))
         .ok_or_else(|| "Workspace unavailable".into())
 }
 
@@ -1062,11 +1066,11 @@ fn admit_chrome(
     tree: &DesktopTree,
     capabilities: &Capabilities,
 ) -> Result<Admitted, String> {
-    let workspace = |value: &str| -> Result<WorkspaceSlot, String> {
-        let workspace = WorkspaceSlot(id(value)?);
+    let workspace = |value: &str| -> Result<WorkspaceId, String> {
+        let workspace = workspace_id(value)?;
         tree.workspaces
             .iter()
-            .any(|w| w.slot == workspace)
+            .any(|w| w.id() == workspace)
             .then_some(workspace)
             .ok_or_else(|| "Workspace unavailable".into())
     };
@@ -1136,7 +1140,7 @@ fn admit_chrome(
                 })
                 .ok_or_else(|| "Window unavailable".to_owned())?;
             Ok(Admitted::EqualizeWidths(RouteIds {
-                workspace: workspace.slot,
+                workspace: workspace.id(),
                 strip,
                 group: group.id,
                 tab: group.active_tab,
@@ -1202,7 +1206,7 @@ fn admit_chrome(
             let strip = StripId(id(strip)?);
             tree.workspaces
                 .iter()
-                .find(|held| held.slot == workspace)
+                .find(|held| held.id() == workspace)
                 .is_some_and(|held| held.strips.iter().any(|known| known.id == strip))
                 .then_some(Admitted::Strip(workspace, strip))
                 .ok_or_else(|| "Strip unavailable".into())
@@ -1260,7 +1264,7 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
         let there = tree
             .workspaces
             .iter()
-            .find(|workspace| workspace.slot == ids.workspace)
+            .find(|workspace| workspace.id() == ids.workspace)
             .and_then(|workspace| workspace.strips.iter().find(|held| held.id == ids.strip))
             .is_some_and(|strip| {
                 target != ids.group && strip.window_groups.iter().any(|group| group.id == target)
@@ -1275,7 +1279,7 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
         let strip_held = tree
             .workspaces
             .iter()
-            .find(|workspace| workspace.slot == ids.workspace)
+            .find(|workspace| workspace.id() == ids.workspace)
             .and_then(|workspace| workspace.strips.iter().find(|held| held.id == target))
             .is_some_and(|strip| {
                 before.is_none_or(|before| {
@@ -1291,8 +1295,8 @@ fn admit_move(ids: RouteIds, to: &Destination, tree: &DesktopTree) -> Result<Adm
             .ok_or_else(|| "Strip unavailable".into());
     }
     if let Some(workspace) = &to.workspace {
-        let workspace = WorkspaceSlot(id(workspace)?);
-        let there = tree.workspaces.iter().any(|held| held.slot == workspace);
+        let workspace = workspace_id(workspace)?;
+        let there = tree.workspaces.iter().any(|held| held.id() == workspace);
         return (there && workspace != ids.workspace)
             .then_some(Admitted::MoveToWorkspace(ids, workspace))
             .ok_or_else(|| "Workspace unavailable".into());
@@ -1329,7 +1333,7 @@ fn admit_open(tree: &DesktopTree, app: &str) -> Result<Admitted, String> {
                 tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
             })?;
             Some(RouteIds {
-                workspace: workspace.slot,
+                workspace: workspace.id(),
                 strip,
                 group: group.id,
                 tab: tab.id,
@@ -1375,7 +1379,7 @@ pub fn window_of_app(tree: &DesktopTree, app: &str) -> Option<RouteIds> {
                 tilo_desktop_model::apps::canonical_app_id(&tab.tile).as_deref() == Some(app)
             })?;
             Some(RouteIds {
-                workspace: workspace.slot,
+                workspace: workspace.id(),
                 strip,
                 group: group.id,
                 tab: tab.id,
@@ -1390,9 +1394,9 @@ fn admit_notifications(open: bool, capabilities: &Capabilities) -> Result<Admitt
         .ok_or_else(|| "Notifications are unavailable on this desktop".into())
 }
 
-fn active_workspace(tree: &DesktopTree, value: &str) -> Result<WorkspaceSlot, String> {
-    let workspace = WorkspaceSlot(id(value)?);
-    if !tree.workspaces.iter().any(|w| w.slot == workspace) {
+fn active_workspace(tree: &DesktopTree, value: &str) -> Result<WorkspaceId, String> {
+    let workspace = workspace_id(value)?;
+    if !tree.workspaces.iter().any(|w| w.id() == workspace) {
         return Err("Workspace unavailable".into());
     }
     (tree.active == workspace)
@@ -1418,7 +1422,7 @@ fn admit_pan(tree: &DesktopTree, strip: &str, offset: f64) -> Result<Admitted, S
 pub fn locate(tree: &DesktopTree, ids: RouteIds) -> Option<&WindowGroup> {
     tree.workspaces
         .iter()
-        .find(|w| w.slot == ids.workspace)?
+        .find(|w| w.id() == ids.workspace)?
         .strips
         .iter()
         .find(|s| s.id == ids.strip)?
@@ -1431,7 +1435,7 @@ pub fn locate(tree: &DesktopTree, ids: RouteIds) -> Option<&WindowGroup> {
 /// The strip a workspace shows: its recorded active strip, else its first.
 pub fn active_strip(tree: &DesktopTree, workspace: &Workspace) -> Option<StripId> {
     tree.active_strip
-        .get(&workspace.slot)
+        .get(&workspace.id())
         .copied()
         .filter(|id| workspace.strips.iter().any(|s| s.id == *id))
         .or_else(|| workspace.strips.first().map(|s| s.id))
@@ -1454,7 +1458,7 @@ pub fn active_route(tree: &DesktopTree) -> Option<RouteIds> {
         .iter()
         .any(|t| t.id == group.active_tab)
         .then_some(RouteIds {
-            workspace: workspace.slot,
+            workspace: workspace.id(),
             strip,
             group: group.id,
             tab: group.active_tab,
@@ -1617,7 +1621,7 @@ pub fn snapshot_with(
                 for tab in &group.tabs {
                     entries.push(Entry {
                         route: Route::from_ids(RouteIds {
-                            workspace: workspace.slot,
+                            workspace: workspace.id(),
                             strip: strip.id,
                             group: group.id,
                             tab: tab.id,
@@ -1639,7 +1643,7 @@ pub fn snapshot_with(
         .and_then(|w| active_strip(tree, w))
         .map(|s| s.0.to_string());
     let desktop_pan = presentation.pan.clone().filter(|pan| {
-        pan.workspace == tree.active.0.to_string() && Some(&pan.strip) == shown_strip.as_ref()
+        pan.workspace == tree.active.to_string() && Some(&pan.strip) == shown_strip.as_ref()
     });
     let scroll = presentation.scroll.clone().filter(|scroll| {
         active.is_some_and(|ids| parse_scroll_region(&scroll.region).ok() == Some(ids))
@@ -1653,7 +1657,7 @@ pub fn snapshot_with(
             .workspaces
             .iter()
             .map(|w| WorkspaceEntry {
-                id: w.slot.0.to_string(),
+                id: w.id().to_string(),
                 label: w.name.clone(),
                 workspace: w.id().to_string(),
                 owner: w.owner().cloned(),
@@ -1668,7 +1672,7 @@ pub fn snapshot_with(
             })
             .collect(),
         applications,
-        active_workspace: tree.active.0.to_string(),
+        active_workspace: tree.active.to_string(),
         active_strip: shown_strip,
         active: active.map(Route::from_ids),
         width_permille: active_group.map(|g| g.width.permille()),
@@ -1699,7 +1703,7 @@ mod tests {
     use tilo_desktop_model::{Strip, Tab, TileContent, WindowWidth};
 
     fn tree() -> DesktopTree {
-        let mut workspace = Workspace::new(WorkspaceSlot(u64::MAX), "Desk");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(u128::MAX), "Desk");
         let mut strip = Strip::new(StripId(9_007_199_254_740_993), "Main");
         strip.window_groups = vec![WindowGroup {
             id: 3,
@@ -1722,7 +1726,7 @@ mod tests {
         }];
         workspace.strips = vec![strip];
         DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }
@@ -1807,12 +1811,15 @@ mod tests {
     #[test]
     fn route_round_trips_full_u64_and_rejects_numeric_ids() {
         let route = Route {
-            workspace: u64::MAX.to_string(),
+            workspace: WorkspaceId::from_u128(u128::MAX).to_string(),
             strip: "9007199254740993".into(),
             group: "3".into(),
             tab: "4".into(),
         };
-        assert_eq!(route.ids().unwrap().workspace.0, u64::MAX);
+        assert_eq!(
+            route.ids().unwrap().workspace,
+            WorkspaceId::from_u128(u128::MAX)
+        );
         assert_eq!(route.ids().unwrap().strip.0, 9_007_199_254_740_993);
         assert_eq!(
             serde_json::from_str::<Route>(&serde_json::to_string(&route).unwrap()).unwrap(),
@@ -1837,7 +1844,10 @@ mod tests {
         let tree = tree();
         let snapshot = snapshot(&tree, "g1", vec![]);
         let active = snapshot.active.clone().unwrap();
-        assert_eq!(active.workspace, u64::MAX.to_string());
+        assert_eq!(
+            active.workspace,
+            WorkspaceId::from_u128(u128::MAX).to_string()
+        );
         assert_eq!(active.tab, "4");
         assert_eq!(snapshot.entries.len(), 1);
         assert_eq!(
@@ -1961,7 +1971,7 @@ mod tests {
     #[test]
     fn activity_views_need_history_and_the_active_workspace() {
         let mut tree = tree();
-        let w = u64::MAX.to_string();
+        let w = WorkspaceId::from_u128(u128::MAX).to_string();
         for view in ["catch-up", "explore", "replay"] {
             let reason = admitted(
                 &tree,
@@ -1974,7 +1984,7 @@ mod tests {
             );
         }
         tree.workspaces
-            .push(Workspace::new(WorkspaceSlot(2), "Other"));
+            .push(Workspace::new(WorkspaceId::from_u128(2), "Other"));
         let capabilities = Presentation {
             retained_history: true,
             ..Presentation::default()
@@ -1982,7 +1992,7 @@ mod tests {
         .capabilities();
         let elsewhere = chrome(
             "activity",
-            serde_json::json!({"workspace":"2","view":"explore"}),
+            serde_json::json!({"workspace":WorkspaceId::from_u128(2).to_string(),"view":"explore"}),
         );
         assert_eq!(
             admit_with(&elsewhere, &tree, &capabilities).unwrap_err(),
@@ -1993,7 +2003,7 @@ mod tests {
                 &tree,
                 &chrome("close-activity", serde_json::json!({"workspace":w}))
             ),
-            Ok(Admitted::CloseActivity(WorkspaceSlot(u64::MAX)))
+            Ok(Admitted::CloseActivity(WorkspaceId::from_u128(u128::MAX)))
         );
         let caps =
             serde_json::to_value(snapshot(&tree, "g", vec![])).unwrap()["capabilities"].clone();
@@ -2013,7 +2023,7 @@ mod tests {
     #[test]
     fn a_history_source_admits_every_view_and_the_snapshot_says_so() {
         let tree = tree();
-        let w = u64::MAX.to_string();
+        let w = WorkspaceId::from_u128(u128::MAX).to_string();
         let presentation = Presentation {
             retained_history: true,
             notifications: Some(NotificationsState::default()),
@@ -2028,7 +2038,11 @@ mod tests {
             let verb = chrome("activity", serde_json::json!({"workspace":w,"view":wire}));
             assert_eq!(
                 admit_with(&verb, &tree, &capabilities),
-                Ok(Admitted::Activity(WorkspaceSlot(u64::MAX), view, None))
+                Ok(Admitted::Activity(
+                    WorkspaceId::from_u128(u128::MAX),
+                    view,
+                    None
+                ))
             );
         }
         let center = chrome("notifications", serde_json::json!({"open":true}));
@@ -2053,7 +2067,7 @@ mod tests {
         let active = active_route(&tree).unwrap();
         let presentation = Presentation {
             pan: Some(DesktopPan {
-                workspace: u64::MAX.to_string(),
+                workspace: WorkspaceId::from_u128(u128::MAX).to_string(),
                 strip: "1".into(),
                 offset: 0.0,
                 viewport: 1.0,
@@ -2101,7 +2115,7 @@ mod tests {
         let tree = tree();
         let open = |app: &str| chrome("show-app", serde_json::json!({"app":app}));
         let shown = RouteIds {
-            workspace: WorkspaceSlot(u64::MAX),
+            workspace: WorkspaceId::from_u128(u128::MAX),
             strip: StripId(9_007_199_254_740_993),
             group: 3,
             tab: 4,

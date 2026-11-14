@@ -8,25 +8,25 @@
 //! told who deleted it ([`Shared::follow_owner_deletions`]).
 
 use serde_json::{Map, Value};
-use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::WorkspaceId;
 use tilo_sheets::Seat as _;
 use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 
 use crate::Shared;
 
 impl Shared {
-    /// Ask the person whether to delete the workspace `slot`, called `name`:
+    /// Ask the person whether to delete the workspace `workspace`, called `name`:
     /// the question stands in its own dialog over what they are looking at,
     /// and nothing of the workspace goes until they say yes.
-    pub(crate) fn ask_to_delete_workspace(&self, slot: WorkspaceSlot, name: &str) {
+    pub(crate) fn ask_to_delete_workspace(&self, workspace: WorkspaceId, name: &str) {
         let Some(seat) = self.delete_workspace.as_ref() else {
             tracing::warn!(
-                slot = slot.0,
+                %workspace,
                 "no delete question is mounted: nothing is deleted"
             );
             return;
         };
-        *self.delete_workspace_ask.borrow_mut() = Some(slot);
+        *self.delete_workspace_ask.borrow_mut() = Some(workspace);
         seat.show(name.to_owned());
         seat.presentation().open(false);
     }
@@ -46,24 +46,24 @@ impl Shared {
             return;
         };
         for effect in seat.take_answers() {
-            let Some(slot) = self.delete_workspace_ask.borrow_mut().take() else {
+            let Some(workspace) = self.delete_workspace_ask.borrow_mut().take() else {
                 continue;
             };
             seat.presentation().close();
             seat.presentation().gone();
             if effect == DeleteWorkspaceEffect::Delete {
-                self.delete_workspace(slot);
+                self.delete_workspace(workspace);
             }
         }
     }
 
-    /// Delete the workspace `slot` through the desk's own published action,
+    /// Delete the workspace `workspace` through the desk's own published action,
     /// as the person's answer to the question: what may be deleted, and the
     /// removal, are the desk's, and so is telling the session it happened
     /// ([`Self::deleted_workspace`]).
-    fn delete_workspace(&self, slot: WorkspaceSlot) {
+    fn delete_workspace(&self, workspace: WorkspaceId) {
         let args = Map::from_iter([
-            ("workspace".to_owned(), Value::from(slot.0.to_string())),
+            ("workspace".to_owned(), Value::from(workspace.to_string())),
             // The person said yes to the question deleting asks.
             ("confirmed".to_owned(), Value::from(true)),
         ]);
@@ -152,14 +152,14 @@ impl Shared {
             return false;
         }
         let gone = tree.workspaces.remove(at);
-        if gone.slot == tree.active
+        if gone.id() == tree.active
             && let Some(next) = tree
                 .workspaces
                 .get(at.min(tree.workspaces.len().saturating_sub(1)))
         {
-            tree.active = next.slot;
+            tree.active = next.id();
         }
-        tree.active_strip.remove(&gone.slot);
+        tree.active_strip.remove(&gone.id());
         for strip in &gone.strips {
             tree.active_group.remove(&strip.id);
         }

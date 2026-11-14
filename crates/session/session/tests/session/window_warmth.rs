@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_app_launch::Connects as _;
-use tilo_desktop_model::ids::WorkspaceSlot;
+use tilo_desktop_model::ids::WorkspaceId;
 use ui::WindowAppearance;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
@@ -16,13 +16,13 @@ use ui::floating_surface::{
 use super::*;
 
 /// The person asks the workspace `workspace` to wear `degrees` whatever its picture gives it.
-fn warmed(workspace: WorkspaceSlot, degrees: f64) {
+fn warmed(workspace: WorkspaceId, degrees: f64) {
     settings_store::update_section(
         "appearance",
         serde_json::Map::from_iter([(
             "workspace_temperatures".to_owned(),
             serde_json::Value::Object(serde_json::Map::from_iter([(
-                workspace.0.to_string(),
+                workspace.to_string(),
                 serde_json::json!(degrees),
             )])),
         )]),

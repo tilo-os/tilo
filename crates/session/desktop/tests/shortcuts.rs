@@ -17,8 +17,7 @@ use tilo_desktop::desk_verbs::chrome_resource;
 use tilo_desktop::desktop_host::{DesktopAsk, DesktopChrome, NoticeTiles, PermissiveRules};
 use tilo_desktop::topbar::TopBarChrome;
 use tilo_desktop_model::{
-    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceSlot,
+    DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface};
 use ui::headless::FrameHarness;
@@ -55,15 +54,15 @@ fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
 }
 
 fn desk_tree(strips: Vec<Strip>) -> DesktopTree {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Work");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Work");
     workspace.strips = strips;
     let mut tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..Default::default()
     };
     let first = tree.workspaces[0].strips[0].id;
-    tree.active_strip.insert(WorkspaceSlot(1), first);
+    tree.active_strip.insert(WorkspaceId::from_u128(1), first);
     if let Some(group) = tree.workspaces[0].strips[0].window_groups.first() {
         tree.active_group.insert(first, group.id);
     }

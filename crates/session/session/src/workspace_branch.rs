@@ -39,7 +39,6 @@ use std::time::{Duration, Instant};
 use automerge::AutoCommit;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, Workspace, WorkspaceId,
-    WorkspaceSlot,
 };
 use tilo_desktop_surface::notifications::NotificationIconKind;
 use tilo_files::native::tree::{Copied, Strategy, clone_tree};
@@ -75,11 +74,10 @@ pub(crate) fn stays(app: &str, record: &str) -> bool {
 }
 
 /// Whether `request` is a branch of a workspace other than `workspace` , or of one the desk does
-/// not know: `workspaces` are the desk's, each by its decimal id, its name and the id it is shared
-/// under. An agent reads only the workspace it works in, so it branches that one or none.
+/// not know: `workspaces` are the desk's, each by its id and its name. An agent reads only the workspace it works in, so it branches that one or none.
 pub(crate) fn branches_elsewhere(
     request: &tilo_actions::remote::InvokeRequest,
-    workspaces: &[[String; 3]],
+    workspaces: &[[String; 2]],
     workspace: &str,
 ) -> bool {
     let address = &request.target.address;
@@ -98,21 +96,18 @@ pub(crate) fn branches_elsewhere(
     let Some(source) = source else {
         return true;
     };
-    // As the desk resolves it: by name first, then by either id.
+    // As the desk resolves it: by name first, then by id.
     workspaces
         .iter()
-        .find(|[_, name, _]| name.eq_ignore_ascii_case(source))
-        .or_else(|| workspaces.iter().find(|[slot, _, _]| slot == source))
-        .or_else(|| workspaces.iter().find(|[_, _, id]| id == source))
-        .is_none_or(|[_, _, id]| id != workspace)
+        .find(|[_, name]| name.eq_ignore_ascii_case(source))
+        .or_else(|| workspaces.iter().find(|[id, _]| id == source))
+        .is_none_or(|[id, _]| id != workspace)
 }
 
 /// A branch being made: what the desk asked, and the copy under way.
 pub(crate) struct Branching {
     source: WorkspaceId,
-    source_slot: WorkspaceSlot,
     source_name: String,
-    slot: WorkspaceSlot,
     workspace: WorkspaceId,
     name: String,
     copied: Polled<Branched>,
@@ -672,13 +667,12 @@ fn ask_runtime(socket: &Path, from: WorkspaceId, to: WorkspaceId) -> Result<u64,
 /// named as the branch's.
 pub(crate) fn desk_of(
     source: &Workspace,
-    slot: WorkspaceSlot,
     workspace: WorkspaceId,
     name: &str,
     files: Option<&Path>,
     mint: &mut dyn FnMut() -> u64,
 ) -> Workspace {
-    let mut branch = Workspace::in_workspace(slot, workspace, name);
+    let mut branch = Workspace::new(workspace, name);
     let trees = files.map(|files| {
         (
             tilo_paths::workspace_tree(files, &source.id().to_string()),
@@ -749,19 +743,17 @@ pub(crate) fn desk_of(
 }
 
 impl crate::Shared {
-    /// The desk branched the workspace `source` into `workspace` , called `name` , in `slot` : found
-    /// it here and copy what the source holds into it, without holding the loop.
+    /// The desk branched the workspace `source` into `workspace` , called `name` : found it here and copy what the source holds into it, without holding the loop.
     pub(crate) fn branch_workspace(
         &self,
-        source: WorkspaceSlot,
-        slot: WorkspaceSlot,
+        source: WorkspaceId,
         workspace: WorkspaceId,
         name: String,
     ) {
         let Some((from, source_name)) = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .find(|held| held.slot == source)
+                .find(|held| held.id() == source)
                 .map(|held| (held.id(), held.name.clone()))
         }) else {
             self.handle
@@ -778,9 +770,7 @@ impl crate::Shared {
             Arc::clone(&self.wake_handle),
             async move {
                 if let Some(engine) = &engine {
-                    engine
-                        .found(slot, workspace, &founded, endpoint.as_ref())
-                        .await;
+                    engine.found(workspace, &founded, endpoint.as_ref()).await;
                 }
                 copy(engine.as_deref(), Places::here(), from, workspace, until).await
             },
@@ -806,9 +796,7 @@ impl crate::Shared {
         );
         self.branches.0.borrow_mut().push(Branching {
             source: from,
-            source_slot: source,
             source_name,
-            slot,
             workspace,
             name,
             copied,
@@ -827,9 +815,7 @@ impl crate::Shared {
                 Some(branched) => {
                     landed.push((
                         branching.source,
-                        branching.source_slot,
                         branching.source_name.clone(),
-                        branching.slot,
                         branching.workspace,
                         branching.name.clone(),
                         branched,
@@ -838,19 +824,15 @@ impl crate::Shared {
                 }
                 None => true,
             });
-        for (source, source_slot, source_name, slot, workspace, name, branched) in landed {
-            self.land_branch(
-                (source, source_slot, &source_name),
-                (slot, workspace, &name),
-                &branched,
-            );
+        for (source, source_name, workspace, name, branched) in landed {
+            self.land_branch((source, &source_name), (workspace, &name), &branched);
         }
     }
 
     fn land_branch(
         &self,
-        (source, source_slot, source_name): (WorkspaceId, WorkspaceSlot, &str),
-        (slot, workspace, name): (WorkspaceSlot, WorkspaceId, &str),
+        (source, source_name): (WorkspaceId, &str),
+        (workspace, name): (WorkspaceId, &str),
         branched: &Branched,
     ) {
         let mut tree: DesktopTree = self.handle.read(Clone::clone);
@@ -860,7 +842,7 @@ impl crate::Shared {
             .iter()
             .find(|held| held.id() == source)
             .map(|held| {
-                desk_of(held, slot, workspace, name, files.as_deref(), &mut || {
+                desk_of(held, workspace, name, files.as_deref(), &mut || {
                     self.handle.mint_id()
                 })
             });
@@ -871,15 +853,15 @@ impl crate::Shared {
             let first = branch.strips.first().map(|strip| strip.id);
             tree.workspaces.push(branch);
             if let Some(first) = first {
-                tree.active_strip.insert(slot, first);
+                tree.active_strip.insert(workspace, first);
             }
             // The person goes to the branch they asked for, unless they went elsewhere meanwhile.
-            if tree.active == source_slot {
-                tree.active = slot;
+            if tree.active == source {
+                tree.active = workspace;
             }
             self.handle.replace_tree(tree.clone());
             #[cfg(target_os = "linux")]
-            self.restore.borrow_mut().add(&tree, slot);
+            self.restore.borrow_mut().add(&tree, workspace);
         }
         tracing::info!(
             %source,
@@ -1105,7 +1087,7 @@ mod tests {
     #[test]
     fn the_branchs_desk_has_the_sources_strips_and_this_devices_windows() {
         let (from, to) = ids();
-        let mut source = Workspace::in_workspace(WorkspaceSlot(1), from, "Research");
+        let mut source = Workspace::new(from, "Research");
         let tab = |id, tile| Tab {
             id,
             title: format!("window {id}"),
@@ -1143,17 +1125,10 @@ mod tests {
         source.strips.push(strip);
         source.strips.push(Strip::new(StripId(6), "Writing"));
         let mut next = 100;
-        let branch = desk_of(
-            &source,
-            WorkspaceSlot(7),
-            to,
-            "Research branch",
-            None,
-            &mut || {
-                next += 1;
-                next
-            },
-        );
+        let branch = desk_of(&source, to, "Research branch", None, &mut || {
+            next += 1;
+            next
+        });
         assert_eq!(branch.id(), to);
         assert_eq!(branch.name, "Research branch");
         let names: Vec<&str> = branch
@@ -1251,8 +1226,8 @@ mod tests {
         let identity = identity();
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
-        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
+        pollster::block_on(engine.found(from, "Research", None));
+        pollster::block_on(engine.found(to, "Research branch", None));
         let keys = key_group::KeyGroup::create(
             collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
             key_group::MemberKey::generate("owner").unwrap(),
@@ -1336,8 +1311,8 @@ mod tests {
         let identity = identity();
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
-        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
+        pollster::block_on(engine.found(from, "Research", None));
+        pollster::block_on(engine.found(to, "Research branch", None));
         let keys = key_group::KeyGroup::create(
             collab_types::WorkspaceId::parse(&to.to_string()).unwrap(),
             key_group::MemberKey::generate("owner").unwrap(),
@@ -1406,8 +1381,8 @@ mod tests {
         let person = hex::encode(identity.device_cert.user_public_key);
         let engine = reopened(&state, &identity);
         let (from, to) = ids();
-        pollster::block_on(engine.found(WorkspaceSlot(1), from, "Research", None));
-        pollster::block_on(engine.found(WorkspaceSlot(2), to, "Research branch", None));
+        pollster::block_on(engine.found(from, "Research", None));
+        pollster::block_on(engine.found(to, "Research branch", None));
         assert!(engine.holds(from) && engine.holds(to));
         let channel = collab_types::WorkspaceId::parse(&to.to_string()).unwrap();
         let keys =
@@ -1503,8 +1478,8 @@ mod tests {
     #[test]
     fn an_agent_branches_its_own_workspace_and_no_other() {
         let workspaces = [
-            ["1".to_owned(), "Studio".to_owned(), "studio-id".to_owned()],
-            ["2".to_owned(), "Garden".to_owned(), "garden-id".to_owned()],
+            ["studio-id".to_owned(), "Studio".to_owned()],
+            ["garden-id".to_owned(), "Garden".to_owned()],
         ];
         let branch = |source: Option<&str>| tilo_actions::remote::InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
@@ -1528,13 +1503,13 @@ mod tests {
             wait_ms: None,
             appearance: None,
         };
-        for own in ["Studio", "studio", "1", "studio-id"] {
+        for own in ["Studio", "studio", "studio-id"] {
             assert!(
                 !branches_elsewhere(&branch(Some(own)), &workspaces, "studio-id"),
                 "its own workspace, as {own}"
             );
         }
-        for other in ["Garden", "2", "garden-id", "nowhere"] {
+        for other in ["Garden", "garden-id", "nowhere"] {
             assert!(
                 branches_elsewhere(&branch(Some(other)), &workspaces, "studio-id"),
                 "{other} is not its own"

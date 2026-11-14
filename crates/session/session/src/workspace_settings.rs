@@ -660,7 +660,7 @@ impl Feeding<'_> {
             None => tree
                 .workspaces
                 .iter()
-                .position(|held| held.slot == tree.active),
+                .position(|held| held.id() == tree.active),
         };
         let Some(workspace) = at.and_then(|at| tree.workspaces.get(at)) else {
             return Err(t("workspace-settings-agents-unavailable"));
@@ -795,7 +795,7 @@ fn move_workspace(handle: &DesktopHandle, step: i32) {
     let Some(at) = tree
         .workspaces
         .iter()
-        .position(|workspace| workspace.slot == tree.active)
+        .position(|workspace| workspace.id() == tree.active)
     else {
         return;
     };
@@ -908,7 +908,7 @@ fn general(
     let at = workspace.and_then(|workspace| {
         tree.workspaces
             .iter()
-            .position(|one| one.slot == workspace.slot)
+            .position(|one| one.id() == workspace.id())
     });
     let last = tree.workspaces.len().saturating_sub(1);
     let going = going(tree, engine);

@@ -17,7 +17,7 @@ use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
 use tilo_sort::CompactSort as _;
 
-use crate::ids::{WorkspaceId, WorkspaceSlot};
+use crate::ids::WorkspaceId;
 use crate::layout::TileContent;
 use crate::receipt::WorkspaceEffectReceipt;
 use crate::tree::DesktopTree;
@@ -515,7 +515,7 @@ pub fn declared_workspace(candidate: &AutoCommit) -> Option<WorkspaceId> {
 }
 
 /// Apply one already-admitted workspace document to `tree`: create the workspace's
-/// workspace if the tree has none (under [`WorkspaceSlot::of_workspace`]),
+/// workspace if the tree has none (under [`WorkspaceId::of_workspace`]),
 /// take the workspace's name and owner, and fold its layout in as a viewer that
 /// shows every window as the workspace does. Existing local workspace identity
 /// and local selection remain untouched. Returns whether anything changed.
@@ -541,13 +541,9 @@ pub fn apply_admitted_workspace(
     };
     let name = text(WORKSPACE_NAME_KEY)?.unwrap_or_default();
     if !tree.workspaces.iter().any(|w| w.id() == identity) {
-        let slot = WorkspaceSlot::of_workspace(identity);
-        if tree.workspaces.iter().any(|w| w.slot == slot) {
-            return Err("another workspace holds that workspace id".into());
-        }
-        let workspace = Workspace::in_workspace(slot, identity, &name);
+        let workspace = Workspace::new(identity, &name);
         if tree.workspaces.is_empty() {
-            tree.active = workspace.slot;
+            tree.active = workspace.id();
         }
         tree.workspaces.push(workspace);
     }

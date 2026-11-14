@@ -341,7 +341,7 @@ pub fn choose_agent_model(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::WorkspaceSlot;
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     const AGENT: &str = "scribe";
@@ -349,7 +349,7 @@ mod tests {
 
     /// A workspace where the agent may change it all and asks before reaching outside.
     fn ws() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot::from(31), "access");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(31), "access");
         ws.set_owner(OWNER);
         ws
     }

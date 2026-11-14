@@ -890,10 +890,10 @@ impl Personal {
 /// Put `tree` 's workspaces in the order `wanted` names: those it names, in its order, then the
 /// rest as they were. Whether they moved.
 fn reorder(tree: &mut DesktopTree, wanted: &[WorkspaceId]) -> bool {
-    let before: Vec<u64> = tree
+    let before: Vec<WorkspaceId> = tree
         .workspaces
         .iter()
-        .map(|workspace| workspace.slot.0)
+        .map(tilo_desktop_model::Workspace::id)
         .collect();
     let mut rest = std::mem::take(&mut tree.workspaces);
     let mut arranged: Vec<Workspace> = Vec::with_capacity(rest.len());
@@ -906,7 +906,10 @@ fn reorder(tree: &mut DesktopTree, wanted: &[WorkspaceId]) -> bool {
         }
     }
     arranged.append(&mut rest);
-    let after: Vec<u64> = arranged.iter().map(|workspace| workspace.slot.0).collect();
+    let after: Vec<WorkspaceId> = arranged
+        .iter()
+        .map(tilo_desktop_model::Workspace::id)
+        .collect();
     tree.workspaces = arranged;
     before != after
 }
@@ -993,11 +996,7 @@ impl crate::Shared {
                 // workspace it already has an identity for.
                 // It is signed by this device's signer, off the loop: the pass after it landed
                 // sees it held.
-                let (engine, slot, id) = (
-                    std::sync::Arc::clone(engine),
-                    workspace.slot,
-                    workspace.id(),
-                );
+                let (engine, id) = (std::sync::Arc::clone(engine), workspace.id());
                 // The name it is founded under is the one a person reads: a workspace nobody
                 // named keeps no name of its own, and a workspace is founded under a name, so
                 // the word the desk reads for it stands in until one is given.
@@ -1006,7 +1005,7 @@ impl crate::Shared {
                     endpoint.clone(),
                 );
                 let founded = crate::landing::off_loop(async move {
-                    engine.found(slot, id, &name, endpoint.as_ref()).await;
+                    engine.found(id, &name, endpoint.as_ref()).await;
                 });
                 self.landings.then(founded, drop);
             }
@@ -1082,7 +1081,7 @@ impl crate::Shared {
     /// Give this computer the workspace a join chose, and come into it the way the join named:
     /// through its door, or with the invitation it holds. What the workspace held before this
     /// device arrived comes with it.
-    /// A joined workspace the desk does not already hold is admitted before it gets a slot
+    /// A joined workspace the desk does not already hold is admitted before it is put on the desk
     /// ([`Self::redeem_invitation`]): a host that refuses leaves the person where they were, with
     /// no empty workspace to arrive in and vanish from.
     pub(crate) fn add_joined_workspace(&self, joined: &directory::Joined) -> Result<(), String> {
@@ -1112,23 +1111,18 @@ impl crate::Shared {
     /// plane,
     /// shows the workspace with what this computer itself keeps in it.
     ///
-    /// A workspace the desk does not already hold gets its slot when the
+    /// A workspace the desk does not already hold is put on it when the
     /// host admits this device ([`Self::follow_enrollments`]), not before: a
     /// host that refuses leaves the person where they were, and no empty
     /// workspace is ever shown to arrive in and vanish from.
     fn redeem_invitation(&self, joined: &directory::Joined) {
         let Some(workspace) = WorkspaceId::parse(&joined.granted.workspace) else {
-            // A slot for a workspace id that cannot be parsed can never be arrived in: take it
-            // back.
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
-                outcome = "slot removed",
-                "join: the workspace id does not parse, so no invitation can be presented and its slot is taken away"
+                outcome = "not joined",
+                "join: the workspace id does not parse, so no invitation can be presented"
             );
-            if let Some(held) = self.slot_of(&joined.granted.workspace) {
-                self.release_workspace(held);
-            }
             return;
         };
         let (Some(sync), Some(engine)) = (&self.sync, &self.engine) else {
@@ -1141,18 +1135,15 @@ impl crate::Shared {
             self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
         };
-        let slot = tilo_desktop_model::WorkspaceSlot::of_workspace(workspace);
-        let on_desk = self.slot_of(&joined.granted.workspace).is_some();
-        engine.bind(slot, workspace);
+        let on_desk = self.holds(workspace);
+        engine.bind(workspace);
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             workspace = %joined.granted.workspace,
-            slot = slot.0,
             on_desk,
-            "join: the workspace slot is made for the workspace"
+            "join: the workspace is made on the desk"
         );
         let asked = sync.enroll(crate::sync::Enrolling {
-            slot,
             workspace_id: workspace,
             way: joined.granted.way.clone(),
             // A door's workspace learns the person by the name the desk knows them by.
@@ -1166,7 +1157,6 @@ impl crate::Shared {
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
                     workspace = %joined.granted.workspace,
-                    slot = slot.0,
                     "join: the way in is presented to the workspace's host"
                 );
                 self.directory_store
@@ -1177,12 +1167,11 @@ impl crate::Shared {
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
                     workspace = %joined.granted.workspace,
-                    slot = slot.0,
                     %error,
-                    outcome = "slot removed",
-                    "join: the way in could not be presented, so the slot is taken away"
+                    outcome = "removed",
+                    "join: the way in could not be presented, so the workspace is taken off the desk"
                 );
-                engine.unbind(slot);
+                engine.unbind(workspace);
                 if on_desk {
                     self.release_workspace(workspace);
                 }
@@ -1245,13 +1234,12 @@ impl crate::Shared {
                     tracing::info!(
                         target: JOIN_FLOW_TARGET,
                         workspace = %key,
-                        slot = enrolled.slot.0,
                         name = %listed,
                         member = enrolled.member,
                         outcome = "enrolled",
                         "join: the host admitted this device and the workspace is held here"
                     );
-                    // The slot is made now, once the host admitted this
+                    // The workspace is put on the desk now, once the host admitted this
                     // device: the person lands in the workspace they joined,
                     // and the desk a refused join left is the desk it found.
                     // One of their own that their list brought from another
@@ -1290,19 +1278,18 @@ impl crate::Shared {
                     tracing::info!(
                         target: JOIN_FLOW_TARGET,
                         workspace = %key,
-                        slot = enrolled.slot.0,
                         name = %listed,
                         %error,
-                        outcome = "slot removed",
+                        outcome = "removed",
                         "join: the host refused the enrollment, so no workspace was joined and the person stays where they were"
                     );
                     if let Some(engine) = &self.engine {
-                        engine.unbind(enrolled.slot);
+                        engine.unbind(enrolled.workspace_id);
                     }
-                    // Only a desk that already held the workspace has a slot to take away: a join
-                    // the host refused never had one made.
-                    if let Some(held) = self.slot_of(&key) {
-                        self.release_workspace(held);
+                    // Only a desk that already held the workspace has it to take away: a join the
+                    // host refused never put one there.
+                    if self.holds(enrolled.workspace_id) {
+                        self.release_workspace(enrolled.workspace_id);
                     }
                     // The sheet says why to a person who opens it again, and the banner says it
                     // where they are now.
@@ -1588,12 +1575,11 @@ impl crate::Shared {
             .asked
             .insert(opened.workspace, entering.host.clone());
         if !opened.held {
-            engine.bind(entering.slot, entering.workspace_id);
+            engine.bind(entering.workspace_id);
         }
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             %workspace,
-            slot = entering.slot.0,
             host = %hex::encode(entering.host.host.device_public_key),
             "the person's workspace is asked to take this device in"
         );
@@ -1602,9 +1588,7 @@ impl crate::Shared {
             Err(error) => {
                 // A workspace this desk held stays on it as it was.
                 if !opened.held {
-                    engine.unbind(tilo_desktop_model::WorkspaceSlot::of_workspace(
-                        opened.workspace,
-                    ));
+                    engine.unbind(opened.workspace);
                 }
                 tracing::warn!(%error, %workspace, "the person's workspace was not entered");
             }
@@ -1642,7 +1626,6 @@ impl crate::Shared {
             return None;
         }
         Some(crate::sync::Entering {
-            slot: tilo_desktop_model::WorkspaceSlot::of_workspace(opened.workspace),
             workspace_id: opened.workspace,
             name: opened.name.clone(),
             host: hint,
@@ -1653,24 +1636,31 @@ impl crate::Shared {
     /// Take a workspace off this desk through the desk's own action, which refuses to leave the
     /// person with none.
     fn release_workspace(&self, workspace: WorkspaceId) {
-        let Some((id, name, strips)) = self.slot_here(workspace) else {
+        let Some((name, strips)) = self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|held| held.id() == workspace)
+                .map(|held| (held.name.clone(), held.strips.len()))
+        }) else {
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 %workspace,
-                outcome = "slot gone",
-                "join: the workspace has no slot on this desk to take away"
+                outcome = "gone",
+                "join: the workspace is not on this desk to take away"
             );
             return;
         };
-        let args =
-            serde_json::Map::from_iter([("workspace".to_owned(), serde_json::Value::from(id))]);
+        let args = serde_json::Map::from_iter([(
+            "workspace".to_owned(),
+            serde_json::Value::from(workspace.to_string()),
+        )]);
         match self.ask_of_desk("leave-workspace", &args) {
             Ok(()) => tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 %workspace,
                 name = %name,
                 strips,
-                "join: the workspace's slot is taken off this desk"
+                "join: the workspace is taken off this desk"
             ),
             Err(error) => {
                 // The desk keeps its one workspace: the person is never left with none, and the
@@ -1681,40 +1671,17 @@ impl crate::Shared {
                     %workspace,
                     name = %name,
                     %error,
-                    outcome = "slot kept",
-                    "join: the desk would not take the workspace's slot away"
+                    outcome = "kept",
+                    "join: the desk would not take the workspace away"
                 );
             }
         }
     }
 
-    /// The workspace `workspace_id` on this desk, by the id it is shared under: what a join was
-    /// granted, whose slot is made only once its host admits this device.
-    fn slot_of(&self, workspace_id: &str) -> Option<WorkspaceId> {
-        let wanted = WorkspaceId::parse(workspace_id)?;
-        self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .map(Workspace::id)
-                .find(|id| *id == wanted)
-        })
-    }
-
-    /// The slot the workspace `workspace` stands in on this desk: its decimal slot id, the name it
-    /// shows and how many strips it holds.
-    fn slot_here(&self, workspace: WorkspaceId) -> Option<(String, String, usize)> {
-        self.handle.read(|tree| {
-            tree.workspaces
-                .iter()
-                .find(|candidate| candidate.id() == workspace)
-                .map(|held| {
-                    (
-                        held.slot.0.to_string(),
-                        held.name.clone(),
-                        held.strips.len(),
-                    )
-                })
-        })
+    /// Whether `workspace` is on this desk.
+    fn holds(&self, workspace: WorkspaceId) -> bool {
+        self.handle
+            .read(|tree| tree.workspaces.iter().any(|held| held.id() == workspace))
     }
 
     /// Open the workspace `workspace_id` on this desk under `name` , through the desk's own action
@@ -1729,8 +1696,8 @@ impl crate::Shared {
                 workspace = %workspace_id,
                 name = %name,
                 %error,
-                outcome = "slot not made",
-                "join: the host admitted this device but the desk would not make the workspace's slot"
+                outcome = "not made",
+                "join: the host admitted this device but the desk would not make the workspace"
             );
             self.directory_store.set_note(Some(error));
             return;
@@ -1753,7 +1720,7 @@ impl crate::Shared {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_desktop_model::{IdMinter, Workspace, WorkspaceSlot};
+    use tilo_desktop_model::{IdMinter, Workspace, WorkspaceId};
     use tilo_desktop_surface::seed_tree;
 
     /// The list as a later session opens it: a session flushes its writes before it ends, and
@@ -1810,11 +1777,7 @@ mod tests {
     /// does.
     fn open_here(handle: &DesktopHandle, workspace: WorkspaceId, name: &str) {
         let mut tree = handle.read(Clone::clone);
-        tree.workspaces.push(Workspace::in_workspace(
-            WorkspaceSlot::of_workspace(workspace),
-            workspace,
-            name,
-        ));
+        tree.workspaces.push(Workspace::new(workspace, name));
         handle.replace_tree(tree);
     }
 
@@ -2331,7 +2294,6 @@ mod tests {
         let entering = crate::Shared::entry_to_ask(&BTreeMap::new(), &opened, Some(hint.clone()))
             .expect("the host its list names is asked at its address");
         assert_eq!(entering.workspace_id, workspace);
-        assert_eq!(entering.slot, WorkspaceSlot::of_workspace(workspace));
         assert_eq!(entering.name, "Notes");
         assert_eq!(entering.host, hint, "it is asked where its host is");
 

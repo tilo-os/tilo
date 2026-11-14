@@ -386,7 +386,7 @@ mod tests {
         let mut snapshot = ActivitySnapshot::of_desktop(tree, doc);
         let mut pane = WorkspaceActivityPane::new();
         register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.begin_view(snapshot.active.raw());
+        pane.begin_view(snapshot.active);
         pane.refresh(&mut snapshot);
         let entries = pane.entries();
         assert_eq!(entries.len(), 2, "{entries:?}");
@@ -464,7 +464,7 @@ mod tests {
             let authors = authors_of(&mut snapshot.doc);
             let mut pane = WorkspaceActivityPane::new();
             register_authors(pane.authors_mut(), &authors, &|_| None);
-            pane.begin_view(snapshot.active.raw());
+            pane.begin_view(snapshot.active);
             pane.refresh(&mut snapshot);
             let listed: Vec<(String, String)> = pane
                 .entries()

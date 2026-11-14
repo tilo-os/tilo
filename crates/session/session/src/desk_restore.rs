@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use crate::platform::surfaces::DesktopHost;
 use tilo_app_launch::Launch;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceId};
 
 use crate::apps::{self, Apps};
 use crate::i18n::t_args;
@@ -87,7 +87,7 @@ impl Restore {
             .flat_map(|workspace| workspace.tabs())
             .map(|tab| tab.id)
             .collect();
-        let mut saved: Vec<(WorkspaceSlot, Saved)> = waiting_in(tree, |_| true)
+        let mut saved: Vec<(WorkspaceId, Saved)> = waiting_in(tree, |_| true)
             .into_iter()
             .filter(|(_, saved)| !here.contains(&saved.tab))
             .collect();
@@ -97,11 +97,11 @@ impl Restore {
         true
     }
 
-    /// Ask, after what is waiting already, for the windows of the workspace `slot` of `tree` that
+    /// Ask, after what is waiting already, for the windows of the workspace `workspace_id` of `tree` that
     /// wait for their apps: a workspace put on the desk with windows to open, as a branch is.
-    pub(crate) fn add(&mut self, tree: &DesktopTree, slot: WorkspaceSlot) {
+    pub(crate) fn add(&mut self, tree: &DesktopTree, workspace_id: WorkspaceId) {
         self.waiting.extend(
-            waiting_in(tree, |workspace| workspace == slot)
+            waiting_in(tree, |workspace| workspace == workspace_id)
                 .into_iter()
                 .map(|(_, saved)| saved),
         );
@@ -290,8 +290,8 @@ pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
     }
 }
 
-/// The workspace the tab `tab` stands in, as `of` reads it: its desk slot, where a place stands
-/// for the tab, or its id, which the tab's app is started into with that workspace's grants.
+/// What `of` reads of the workspace the tab `tab` stands in: its id, which the tab's app is started
+/// into with that workspace's grants.
 fn workspace_holding<T>(
     desktop: &DesktopHost,
     tab: TabId,
@@ -317,13 +317,13 @@ fn workspace_holding<T>(
 /// it, by the workspace it stands in.
 fn waiting_in(
     tree: &DesktopTree,
-    wanted: impl Fn(WorkspaceSlot) -> bool,
-) -> Vec<(WorkspaceSlot, Saved)> {
+    wanted: impl Fn(WorkspaceId) -> bool,
+) -> Vec<(WorkspaceId, Saved)> {
     let mut saved = Vec::new();
     for workspace in tree
         .workspaces
         .iter()
-        .filter(|workspace| wanted(workspace.slot))
+        .filter(|workspace| wanted(workspace.id()))
     {
         for tab in workspace.tabs() {
             let TileContent::LocalApp { app_id, label, .. } = &tab.tile else {
@@ -338,7 +338,7 @@ fn waiting_in(
                 label.clone()
             };
             saved.push((
-                workspace.slot,
+                workspace.id(),
                 Saved {
                     tab: tab.id,
                     app: app_id.clone(),
@@ -378,15 +378,14 @@ fn did_not_open(name: &str) -> String {
 mod tests {
     use tilo_desktop_model::{
         DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-        WorkspaceId, WorkspaceSlot,
+        WorkspaceId,
     };
 
     use super::Restore;
 
     /// A desk of one workspace whose one window group holds `tabs`.
     fn desk(tabs: Vec<Tab>) -> DesktopTree {
-        let mut workspace = Workspace::in_workspace(
-            WorkspaceSlot(1),
+        let mut workspace = Workspace::new(
             WorkspaceId::parse("3024f582-9315-461d-a32f-2c67269385e1").unwrap(),
             "Shared",
         );
@@ -401,7 +400,7 @@ mod tests {
         });
         workspace.strips.push(strip);
         DesktopTree {
-            active: WorkspaceSlot(1),
+            active: WorkspaceId::from_u128(1),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         }

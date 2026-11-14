@@ -504,7 +504,7 @@ impl DesktopSurface {
             .tree
             .workspaces
             .iter()
-            .find(|w| w.slot == current.workspace)
+            .find(|w| w.id() == current.workspace)
             .and_then(|w| w.strips.iter().find(|s| s.id == current.strip))?;
         let windows: Vec<(GroupId, TabId)> = strip
             .window_groups

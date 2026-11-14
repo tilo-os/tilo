@@ -121,7 +121,7 @@ mod tests {
     use super::*;
     use collab_types::caps::Scope;
     use tilo_action_policy::Grantee;
-    use tilo_desktop_model::WorkspaceSlot;
+    use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
     const PEER: &str = "peer-user";
@@ -129,7 +129,7 @@ mod tests {
     /// The owner's workspace with one member admitted as `role`, as a host installs an accepted
     /// invite.
     fn ws_with_member(role: CapRole) -> Workspace {
-        let mut ws = Workspace::new(WorkspaceSlot::from(23), "authority-test");
+        let mut ws = Workspace::new(WorkspaceId::from_u128(23), "authority-test");
         ws.set_owner(OWNER);
         ws.admit(PEER, role);
         ws

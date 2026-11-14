@@ -11,7 +11,7 @@ use tilo_actions::remote::{
     ActionHostError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
     PendingPoll, RemoteActionTarget, settings_records,
 };
-use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId};
 use tilo_identity_host::provisioning::IdentityStorage;
 use tilo_peer_state::TransportOrigin;
 use tilo_peer_state::owner::{self, testing};
@@ -99,12 +99,11 @@ fn person_id(root: &[u8; 32]) -> String {
 /// A desk showing the workspace, known by its id, owned by the person.
 fn desk(fixture: &Fixture) -> DesktopTree {
     let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
-    let slot = WorkspaceSlot::of_workspace(workspace_id);
-    let mut workspace = Workspace::in_workspace(slot, workspace_id, "Desk");
+    let mut workspace = Workspace::new(workspace_id, "Desk");
     workspace.set_owner(person_id(&fixture.cert.user_public_key));
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.slot,
+        active: workspace.id(),
         ..DesktopTree::default()
     }
 }

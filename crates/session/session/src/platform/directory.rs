@@ -175,7 +175,7 @@ pub(crate) fn held(handle: &DesktopHandle) -> Vec<Held> {
             .iter()
             .map(|workspace| Held {
                 workspace: workspace.id().to_string(),
-                key: workspace.slot.0.to_string(),
+                key: workspace.id().to_string(),
                 name: workspace.name.clone(),
             })
             .collect()

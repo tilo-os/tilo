@@ -1,6 +1,6 @@
 //! Synthetic execution fixtures: no model, transport grants, UI input or capture.
 use super::*;
-use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
@@ -48,7 +48,7 @@ fn fixture_granting(
     Caller,
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
-    let mut workspace = Workspace::new(WorkspaceSlot(52), "Synthetic execution presence");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(52), "Synthetic execution presence");
     workspace.set_owner("a1".repeat(32));
     let workspace_id = workspace.id().to_string();
     workspace.policy.grants.extend(grants(&workspace_id));
@@ -1008,7 +1008,7 @@ fn continuation_fixture() -> (
     mpsc::UnboundedReceiver<InvocationEnvelope>,
 ) {
     use crate::test_support::{Grantee, Grants as _, KindSet, Role, TreePath};
-    let mut workspace = Workspace::new(WorkspaceSlot(53), "Effect continuation");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(53), "Effect continuation");
     workspace.set_owner("a1".repeat(32));
     let workspace_id = workspace.id().to_string();
     workspace.allow_agent("scribe", KindSet::READ);

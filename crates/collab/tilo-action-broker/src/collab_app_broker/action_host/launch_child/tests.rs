@@ -7,7 +7,6 @@ use super::*;
 use crate::collab_app_broker::InvocationOwner;
 use crate::collab_app_broker::host_steps::signed_test_support::Fixture;
 use crate::services::{HostServices, LaunchableApplication, LauncherServices};
-use crate::test_support::WorkspaceSlot;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Launcher {
@@ -60,8 +59,7 @@ impl LauncherServices for Launcher {
 }
 
 fn destination(fixture: &Fixture) -> LaunchDestination {
-    let workspace = Workspace::in_workspace(
-        WorkspaceSlot(9),
+    let workspace = Workspace::new(
         tilo_desktop_model::WorkspaceId::parse(&fixture.workspace).unwrap(),
         "Launch child",
     );

@@ -177,7 +177,7 @@ impl DesktopChrome {
             let workspace = tree
                 .workspaces
                 .iter()
-                .find(|workspace| workspace.slot.0.to_string() == route.workspace)?;
+                .find(|workspace| workspace.id().to_string() == route.workspace)?;
             let strip = workspace
                 .strips
                 .iter()
@@ -203,7 +203,7 @@ impl DesktopChrome {
     fn active_workspace(&self) -> Option<String> {
         self.handle.read(|tree| {
             tree.active_workspace()
-                .map(|workspace| workspace.slot.0.to_string())
+                .map(|workspace| workspace.id().to_string())
         })
     }
 
@@ -234,7 +234,7 @@ impl DesktopChrome {
     fn step_tab(&self, steps: isize) {
         let next = self.handle.read(|tree| {
             let workspace = tree.active_workspace()?;
-            let strip_id = tree.active_strip.get(&workspace.slot).copied()?;
+            let strip_id = tree.active_strip.get(&workspace.id()).copied()?;
             let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
             let focused = tree.active_group_for(strip.id)?;
             let group = strip
@@ -445,7 +445,7 @@ impl DesktopChrome {
     fn toggle_float(&self) {
         let floating = self.handle.read(|tree| -> Option<bool> {
             let workspace = tree.active_workspace()?;
-            let strip = *tree.active_strip.get(&workspace.slot)?;
+            let strip = *tree.active_strip.get(&workspace.id())?;
             let group = tree.active_group_for(strip)?;
             Some(workspace.arrangement.float_of(group).is_some())
         });

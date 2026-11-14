@@ -3,17 +3,17 @@
 
 use super::DesktopChrome;
 use crate::overview_panel::OverviewDesk;
-use tilo_desktop_model::WorkspaceSlot;
+use tilo_desktop_model::WorkspaceId;
 use tilo_desktop_surface::HostActionSource;
 
 impl DesktopChrome {
     pub(super) fn overview_desk(&self) -> OverviewDesk {
         let mut desk = OverviewDesk::of(self.cards());
         desk.can_join = self.may_join_workspace();
-        let ids: std::collections::HashMap<WorkspaceSlot, String> = self.handle.read(|tree| {
+        let ids: std::collections::HashMap<WorkspaceId, String> = self.handle.read(|tree| {
             tree.workspaces
                 .iter()
-                .map(|workspace| (workspace.slot, workspace.id().to_string()))
+                .map(|workspace| (workspace.id(), workspace.id().to_string()))
                 .collect()
         });
         for card in &mut desk.cards {

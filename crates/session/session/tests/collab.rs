@@ -27,7 +27,7 @@ use tilo_compositor::{InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
-    Workspace, WorkspaceId, WorkspaceSlot,
+    Workspace, WorkspaceId,
 };
 use tilo_desktop_search::SHOW_PEOPLE;
 use tilo_desktop_search::providers::PublishedActions;
@@ -55,8 +55,7 @@ fn workspace_id() -> WorkspaceId {
 /// person is working.
 fn desk() -> DesktopTree {
     let workspace = workspace_id();
-    let slot = WorkspaceSlot::of_workspace(workspace);
-    let mut workspace = Workspace::in_workspace(slot, workspace, "Desk");
+    let mut workspace = Workspace::new(workspace, "Desk");
     let tab = Tab {
         id: TabId::from(NOTES),
         title: "Notes".to_owned(),
@@ -81,7 +80,7 @@ fn desk() -> DesktopTree {
     workspace.strips.push(strip);
     DesktopTree {
         workspaces: vec![workspace.clone()],
-        active: workspace.slot,
+        active: workspace.id(),
         ..DesktopTree::default()
     }
 }

@@ -19,7 +19,7 @@ use collab_types::handoff::{HandoffReport, HandoffRequest, Successor};
 use tilo_action_broker::collab_broker::SessionFollowDispatcher;
 use tilo_app_launch::Launch;
 use tilo_compositor::Compositor;
-use tilo_desktop_model::{DesktopTree, TabId, TileContent, Workspace, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, TabId, TileContent, Workspace, WorkspaceId};
 use ui::record::RecordId;
 use ui::record::transfer::{Origin, Retirement, TransferError};
 
@@ -55,10 +55,10 @@ const CLOSING: Duration = Duration::from_secs(10);
 struct Asked {
     tab: TabId,
     /// The workspace it is in now, where it stays unless they say otherwise.
-    from: WorkspaceSlot,
+    from: WorkspaceId,
     /// What the workspace it leaves is called, for the notice that answers a failed move.
     from_name: String,
-    to: WorkspaceSlot,
+    to: WorkspaceId,
     /// What the destination is called and its identity: what the app is started into,
     /// and where the record it shows is kept.
     to_name: String,
@@ -87,7 +87,7 @@ struct Travelling {
 /// A move under way.
 struct Crossing {
     tab: TabId,
-    from: WorkspaceSlot,
+    from: WorkspaceId,
     from_name: String,
     from_id: String,
     to_name: String,
@@ -196,7 +196,7 @@ impl Moves {
         shared: &Shared,
         handoff: Option<&SessionFollowDispatcher>,
         tab: TabId,
-        to: WorkspaceSlot,
+        to: WorkspaceId,
     ) {
         let read = shared.desktop.with_policy(|policy| {
             policy.handle().read(|tree| {
@@ -219,11 +219,11 @@ impl Moves {
         };
         let asked = Asked {
             tab,
-            from: here.workspace.slot,
+            from: here.workspace.id,
             from_name: here.workspace.name,
             to,
             to_name: there.name,
-            to_id: there.id,
+            to_id: there.id.to_string(),
             app_name: app_name(&app),
             app,
             window: here.window,
@@ -307,7 +307,7 @@ impl Moves {
             self.failed(&app_name, &to_name, &from_name);
             return;
         };
-        let from_id = from_id.id;
+        let from_id = from_id.id.to_string();
         let mut crossing = Crossing {
             tab,
             from,
@@ -887,7 +887,7 @@ impl Moves {
     }
 
     /// Nothing crossed: the tab goes back where it was, still showing the window it had.
-    fn put_back(shared: &Shared, tab: TabId, from: WorkspaceSlot, app: &str) {
+    fn put_back(shared: &Shared, tab: TabId, from: WorkspaceId, app: &str) {
         shared
             .desktop
             .with_policy(|policy| policy.give_up_held(app));
@@ -1026,8 +1026,7 @@ fn reason(fault: &Fault) -> String {
 
 /// A workspace as a move reads it.
 struct WorkspaceRead {
-    slot: WorkspaceSlot,
-    id: String,
+    id: WorkspaceId,
     name: String,
     /// Whether anyone besides this person belongs to it: what it holds is shared with them whether
     /// or not they are here.
@@ -1076,21 +1075,20 @@ fn standing(tree: &DesktopTree, tab: TabId, person: &str, earlier: &[String]) ->
 
 fn workspace_at(
     tree: &DesktopTree,
-    slot: WorkspaceSlot,
+    id: WorkspaceId,
     person: &str,
     earlier: &[String],
 ) -> Option<WorkspaceRead> {
     tree.workspaces
         .iter()
-        .find(|workspace| workspace.slot == slot)
+        .find(|workspace| workspace.id() == id)
         .map(|workspace| read(workspace, person, earlier))
 }
 
 fn read(workspace: &Workspace, person: &str, earlier: &[String]) -> WorkspaceRead {
     let mine = |id: &str| id == person || earlier.iter().any(|old| old == id);
     WorkspaceRead {
-        slot: workspace.slot,
-        id: workspace.id().to_string(),
+        id: workspace.id(),
         name: workspace.name.clone(),
         others: workspace
             .workspace_readers_at(tilo_clock::unix_now())
@@ -1144,7 +1142,7 @@ mod tests {
 
     /// A workspace owned by `owner` , with `members` in it.
     fn workspace(owner: &str, members: &[&str]) -> Workspace {
-        let mut workspace = Workspace::create("Studio");
+        let mut workspace = Workspace::new(WorkspaceId::new(), "Studio");
         workspace.set_owner(owner.to_owned());
         for member in members {
             workspace.admit((*member).to_owned(), Role::Editor);
@@ -1191,7 +1189,7 @@ mod tests {
         session: Session,
         /// The workspace the window is in, and the one behind it.
         from: String,
-        to: WorkspaceSlot,
+        to: WorkspaceId,
         to_id: String,
         /// The tab the window fills.
         tab: TabId,
@@ -1244,8 +1242,8 @@ mod tests {
                     let away = tree
                         .workspaces
                         .iter()
-                        .find(|held| held.slot != WorkspaceSlot(1))?;
-                    Some((front, away.slot, away.id().to_string()))
+                        .find(|held| held.id() != WorkspaceId::from_u128(1))?;
+                    Some((front, away.id(), away.id().to_string()))
                 })
                 .expect("a workspace in front and one behind it");
             // The app's window, as the compositor would map it.
@@ -1325,11 +1323,7 @@ mod tests {
         fn carry(&mut self) {
             self.session
                 .handle()
-                .choose_window_menu(
-                    self.tab,
-                    &format!("{MOVE_TO_WORKSPACE}:{}", self.to.0),
-                    None,
-                )
+                .choose_window_menu(self.tab, &format!("{MOVE_TO_WORKSPACE}:{}", self.to), None)
                 .expect("the person moves the window");
             self.session
                 .step(Duration::from_millis(1))
@@ -1423,16 +1417,17 @@ mod tests {
     /// The desk the person is at: the workspace in front, with a strip the app's window takes, and
     /// one behind it.
     fn two_workspaces() -> DesktopTree {
-        let mut home = Workspace::new(WorkspaceSlot(1), "Home");
+        let mut home = Workspace::new(WorkspaceId::from_u128(1), "Home");
         home.strips = vec![Strip::new(StripId(1), "Main")];
         let mut tree = DesktopTree {
-            active: home.slot,
+            active: home.id(),
             workspaces: vec![home],
             ..DesktopTree::default()
         };
-        tree.active_strip.insert(WorkspaceSlot(1), StripId(1));
+        tree.active_strip
+            .insert(WorkspaceId::from_u128(1), StripId(1));
         tree.set_active_group(StripId(1), 10);
-        let mut away = Workspace::new(WorkspaceSlot(2), "Away");
+        let mut away = Workspace::new(WorkspaceId::from_u128(2), "Away");
         away.strips = vec![Strip::new(StripId(3), "Later")];
         tree.workspaces.push(away);
         tree
@@ -1565,7 +1560,7 @@ mod tests {
     }
 
     /// The workspace the tab `id` stands in.
-    fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceSlot> {
+    fn workspace_of(session: &Session, id: TabId) -> Option<WorkspaceId> {
         session.handle().read(|tree| {
             tree.workspaces
                 .iter()
@@ -1577,7 +1572,7 @@ mod tests {
                             .any(|group| group.tabs.iter().any(|tab| tab.id == id))
                     })
                 })
-                .map(|workspace| workspace.slot)
+                .map(tilo_desktop_model::Workspace::id)
         })
     }
 
@@ -1675,7 +1670,7 @@ mod tests {
         );
         assert_eq!(
             workspace_of(&desk.session, desk.tab),
-            Some(WorkspaceSlot(1)),
+            Some(WorkspaceId::from_u128(1)),
             "the tab went back where it was"
         );
         assert_eq!(

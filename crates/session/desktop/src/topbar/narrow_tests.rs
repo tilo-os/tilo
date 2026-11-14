@@ -2,10 +2,12 @@ use super::*;
 use ui::headless::Framed;
 
 fn fixture_bar() -> TopBarChrome {
-    let workspace =
-        tilo_desktop_model::Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Design review");
+    let workspace = tilo_desktop_model::Workspace::new(
+        tilo_desktop_model::WorkspaceId::from_u128(1),
+        "Design review",
+    );
     let tree = DesktopTree {
-        active: workspace.slot,
+        active: workspace.id(),
         workspaces: vec![workspace],
         ..DesktopTree::default()
     };

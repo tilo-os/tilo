@@ -11,56 +11,7 @@ use serde::{Deserialize, Serialize};
 
 pub use collab_types::WorkspaceId;
 
-/// A workspace's slot on this desk: its local handle, newtype-wrapped over a
-/// salted `u64` minted by an [`IdMinter`]. Logs call it a slot. Stored under
-/// the `id` key it has always been written with, so a document from an older
-/// build still reads.
-#[derive(
-    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
-)]
-#[serde(transparent)]
-pub struct WorkspaceSlot(pub u64);
-
-impl WorkspaceSlot {
-    pub fn raw(&self) -> u64 {
-        self.0
-    }
-
-    /// The slot a workspace with `identity` takes on a desk that has never
-    /// held it: derived from its id, the value every host derives the same.
-    /// A new workspace takes it; one stored before keeps the slot it has.
-    #[must_use]
-    pub fn of_workspace(identity: WorkspaceId) -> Self {
-        // Encoded on the stack, as the transport derivation does.
-        let mut canonical = [0u8; 36];
-        let hash = blake3::derive_key(
-            "tilo-room-transport-v1",
-            identity
-                .as_uuid()
-                .hyphenated()
-                .encode_lower(&mut canonical)
-                .as_bytes(),
-        );
-        let mut first8 = [0u8; 8];
-        first8.copy_from_slice(&hash[..8]);
-        let id = u64::from_le_bytes(first8);
-        Self(if id == 0 { 1 } else { id })
-    }
-}
-
-impl From<u64> for WorkspaceSlot {
-    fn from(v: u64) -> Self {
-        Self(v)
-    }
-}
-
-impl From<WorkspaceSlot> for u64 {
-    fn from(v: WorkspaceSlot) -> Self {
-        v.0
-    }
-}
-
-/// Local strip identifier, newtype-wrapped like [`WorkspaceSlot`].
+/// A strip's id.
 #[derive(
     Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
 )]
@@ -267,20 +218,6 @@ pub fn mint_in_namespace(salt: u16, counter: &mut u64) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_workspaces_slot_is_derived_from_its_id() {
-        let identity = WorkspaceId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a11").unwrap();
-        assert_eq!(
-            WorkspaceSlot::of_workspace(identity).raw(),
-            3_029_697_355_180_468_570
-        );
-        let other = WorkspaceId::parse("0b7e7dfa-3ad5-4b43-9d6c-5f0d7c1f6a12").unwrap();
-        assert_ne!(
-            WorkspaceSlot::of_workspace(other),
-            WorkspaceSlot::of_workspace(identity)
-        );
-    }
 
     #[test]
     fn id_minter_salts_counts_and_observes_within_its_bits() {

@@ -141,12 +141,12 @@ impl DesktopTree {
     /// Split `tab_id` out of its group into a new single-tab group at
     /// `insert_at` in the same strip — the tree side of dragging a tab out
     /// into a seam, or "Split Right". The source group's active tab follows
-    /// the tab bar's rule: the neighbour that slid into the slot, else the
+    /// the tab bar's rule: the neighbour that slid into its place, else the
     /// last tab.
     ///
     /// `None`, with the tree unchanged, when the tab is not in `strip_id`
     /// or is its group's only tab (splitting it would dissolve and
-    /// re-create the group one slot over).
+    /// re-create the group one place over).
     pub fn split_tab_into_new_group(
         &mut self,
         strip_id: StripId,
@@ -246,7 +246,7 @@ impl DesktopTree {
     /// Move the window group `group_id` to `new_index` within `strip_id`,
     /// as a unit. `new_index` is clamped to the post-removal index space,
     /// so a raw gap index (which may equal the length, "append") lands on
-    /// the last slot. Returns the moved group and where it landed; `None`,
+    /// the last place. Returns the moved group and where it landed; `None`,
     /// with nothing changed, when the order would not change.
     pub fn reorder_group_within_strip(
         &mut self,
@@ -271,7 +271,7 @@ impl DesktopTree {
     }
 
     /// Move the tab at `from` to `to` inside `group_id`'s tab list — an
-    /// intra-group tab drag. `to` is clamped to the last slot. Returns the
+    /// intra-group tab drag. `to` is clamped to the last place. Returns the
     /// reordered tab list; `None`, with nothing changed, when the order
     /// would not change.
     pub fn reorder_tab_within_group(

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tilo_desktop_model::partition::OutputPartition;
-use tilo_desktop_model::{DesktopTree, GroupId, Workspace, WorkspaceId, WorkspaceSlot};
+use tilo_desktop_model::{DesktopTree, GroupId, Workspace, WorkspaceId};
 
 /// The file this device's state is kept in, under `state`.
 pub(crate) const FILE: &str = "shown.json";
@@ -27,7 +27,7 @@ pub(crate) struct Shown {
     pub workspaces: Vec<ShownWorkspace>,
     /// The workspace in front.
     #[serde(default)]
-    pub active: WorkspaceSlot,
+    pub active: WorkspaceId,
     /// Which display each window group is shown on.
     #[serde(default, skip_serializing_if = "OutputPartition::is_empty")]
     pub outputs: OutputPartition,
@@ -36,10 +36,9 @@ pub(crate) struct Shown {
     pub fullscreen: Option<GroupId>,
 }
 
-/// A workspace the desk shows: where it stands here, which workspace it is, and the name it showed.
+/// A workspace the desk shows, and the name it showed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ShownWorkspace {
-    pub slot: WorkspaceSlot,
     pub id: WorkspaceId,
     pub name: String,
 }
@@ -53,7 +52,6 @@ impl Shown {
                 .iter()
                 .filter(|workspace| !workspace.id().is_nil())
                 .map(|workspace| ShownWorkspace {
-                    slot: workspace.slot,
                     id: workspace.id(),
                     name: workspace.name.clone(),
                 })
@@ -79,20 +77,20 @@ impl Shown {
                         .iter()
                         .position(|held| held.id() == shown.id)
                         .map_or_else(
-                            || Workspace::in_workspace(shown.slot, shown.id, shown.name.clone()),
+                            || Workspace::new(shown.id, shown.name.clone()),
                             |at| opened.swap_remove(at),
                         )
                 })
                 .collect();
             changed = true;
         }
-        let holds = tree.workspaces.iter().any(|held| held.slot == self.active);
+        let holds = tree.workspaces.iter().any(|held| held.id() == self.active);
         let active = if holds || tree.workspaces.is_empty() {
             self.active
         } else {
             tree.workspaces
                 .first()
-                .map_or(self.active, |held| held.slot)
+                .map_or(self.active, tilo_desktop_model::Workspace::id)
         };
         if tree.active != active {
             tree.active = active;
@@ -206,13 +204,12 @@ mod tests {
     use super::*;
     use tilo_desktop_model::{Strip, StripId};
 
-    fn desk(slot: u64) -> DesktopTree {
-        let mut workspace =
-            Workspace::in_workspace(WorkspaceSlot(slot), WorkspaceId::new(), "Garden");
+    fn desk(id: u128) -> DesktopTree {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(id), "Garden");
         workspace.strips.push(Strip::new(StripId(2), "Main"));
         DesktopTree {
             workspaces: vec![workspace],
-            active: WorkspaceSlot(slot),
+            active: WorkspaceId::from_u128(id),
             ..DesktopTree::default()
         }
     }
@@ -239,16 +236,16 @@ mod tests {
         assert!(state.keep(Some(3), || second.clone()));
         let mut reopened = desk(1);
         assert!(state.applied(&mut reopened));
-        assert_eq!(reopened.active, WorkspaceSlot(2));
+        assert_eq!(reopened.active, WorkspaceId::from_u128(2));
         let shown: Vec<_> = reopened
             .workspaces
             .iter()
-            .map(|workspace| (workspace.slot, workspace.id(), workspace.name.clone()))
+            .map(|workspace| (workspace.id(), workspace.id(), workspace.name.clone()))
             .collect();
         let kept = &second.workspaces[0];
         assert_eq!(
             shown,
-            [(WorkspaceSlot(2), kept.id(), "Garden".to_owned())],
+            [(WorkspaceId::from_u128(2), kept.id(), "Garden".to_owned())],
             "the desk shows the workspace it showed, not the one it was opened with"
         );
     }

@@ -1268,7 +1268,6 @@ mod tests {
             use crate::providers::happening::{Happening, PersonHere, WorkspaceHere};
             use crate::providers::people::{People, PersonEntry};
             let here = WorkspaceHere {
-                id: 1,
                 workspace: "workspace".into(),
                 name: "Studio".into(),
                 active: true,
@@ -1782,7 +1781,6 @@ mod tests {
             tab: None,
         };
         let here = WorkspaceHere {
-            id: 1,
             workspace: "workspace".into(),
             name: "Studio".into(),
             active: true,

@@ -9,7 +9,7 @@ use crate::collab_app_broker::invocation_journal::{InvocationJournal, Invocation
 use crate::services::{
     HostServices, LocalPersonServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
-use crate::test_support::{Workspace, WorkspaceSlot, WorkspaceTree};
+use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
 
 struct Library(tokio::runtime::Handle);
 
@@ -109,7 +109,7 @@ impl Fixture {
             time: time.clone(),
         });
         let principal = crate::collab_app_broker::person_id_for_root(certificate.user_public_key);
-        let mut workspace = Workspace::new(WorkspaceSlot(9), "Shortcuts");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(9), "Shortcuts");
         workspace.set_owner(principal.clone());
         let workspace_id = workspace.id().to_string();
         let echo: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({

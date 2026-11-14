@@ -326,7 +326,7 @@ mod tests {
     use tilo_action_broker::services::{
         NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads as _,
     };
-    use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
+    use tilo_desktop_model::WorkspaceId;
     use tilo_peer_state::owner::testing::{self, governor::TestGovernor};
     use tilo_session_client::Cmd;
     use tilo_session_client::plane::topic_of;
@@ -364,7 +364,7 @@ mod tests {
     /// A workspace this device founded, holding one record of `APP` written under `key`.
     fn workspace_with_record(engine: &Engine, key: &SigningKey) -> WorkspaceId {
         let workspace = WorkspaceId::new();
-        pollster::block_on(engine.found(WorkspaceSlot(1), workspace, "Desk", None));
+        pollster::block_on(engine.found(workspace, "Desk", None));
         assert!(engine.holds(workspace), "the desk's workspace is held here");
         testing::start_record(engine.owner(), workspace, APP, RECORD, key, testing::now());
         workspace

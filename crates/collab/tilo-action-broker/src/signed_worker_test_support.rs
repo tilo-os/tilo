@@ -405,13 +405,9 @@ impl OriginalWorkspace {
         let (clock, time_control) = crate::policy_clock::OwnerPolicyClock::for_test(start);
         let origin = clock.new_origin();
         let mut workspace = match workspace.flatten() {
-            Some(workspace) => crate::test_support::Workspace::in_workspace(
-                crate::test_support::WorkspaceSlot(83),
-                workspace,
-                "Original workspace",
-            ),
+            Some(workspace) => crate::test_support::Workspace::new(workspace, "Original workspace"),
             None => crate::test_support::Workspace::new(
-                crate::test_support::WorkspaceSlot(83),
+                crate::test_support::WorkspaceId::from_u128(83),
                 "Original workspace",
             ),
         };

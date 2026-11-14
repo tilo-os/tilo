@@ -275,7 +275,7 @@ fn published(descriptor: &tilo_actions::ActionDescriptor) -> PublishedAction {
 /// The broker's workspace, governed by the same policy.
 fn broker_workspace(member: &str) -> tilo_desktop_model::Workspace {
     let mut workspace = tilo_desktop_model::Workspace::new(
-        tilo_desktop_model::WorkspaceSlot(1),
+        tilo_desktop_model::WorkspaceId::from_u128(1),
         "Hosted workspace",
     );
     workspace.policy = workspace_policy(member);

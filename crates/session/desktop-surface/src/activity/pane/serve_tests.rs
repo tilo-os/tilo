@@ -9,7 +9,7 @@ use super::super::{ActivityView, WorkspaceActivityPane};
 use crate::activity::testing::{TestHost, TestTree};
 
 /// A workspace another person changed three times since this device arrived.
-fn workspace_a_peer_changed() -> (TestTree, u64) {
+fn workspace_a_peer_changed() -> (TestTree, tilo_desktop_model::WorkspaceId) {
     let mut tree = TestTree::bootstrap_demo();
     let reader = tree.doc.get_actor().clone();
     tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
@@ -36,14 +36,14 @@ fn workspace_a_peer_changed() -> (TestTree, u64) {
             .desktop
             .workspaces
             .iter_mut()
-            .find(|candidate| candidate.slot == workspace)
+            .find(|candidate| candidate.id() == workspace)
         {
             named.name = "Design review".into();
         }
         tree.govern(workspace);
     });
     tree.doc.set_actor(reader);
-    (tree, workspace.raw())
+    (tree, workspace)
 }
 
 fn pane() -> WorkspaceActivityPane {

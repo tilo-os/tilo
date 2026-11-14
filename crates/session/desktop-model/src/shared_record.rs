@@ -27,7 +27,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
 use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
-use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
 use crate::tree::DesktopTree;
@@ -124,18 +124,15 @@ impl<D: ReadDoc> At<'_, D> {
     /// that did not hold the workspace's record yet makes a container of its
     /// own, so what such a container holds was written without seeing the
     /// workspace's desktop.
-    fn placed_entries(&self, key: &str) -> BTreeMap<u64, (ObjId, bool)> {
+    fn placed_entries(&self, key: &str) -> BTreeMap<String, (ObjId, bool)> {
         let mut entries = BTreeMap::new();
         for (index, container) in self.containers(key).into_iter().enumerate() {
             for id in self.keys(&container) {
-                let Ok(parsed) = id.parse::<u64>() else {
-                    continue;
-                };
-                if entries.contains_key(&parsed) {
+                if entries.contains_key(&id) {
                     continue;
                 }
                 if let Some((Value::Object(ObjType::Map), entry)) = self.get(&container, &id) {
-                    entries.insert(parsed, (entry, index > 0));
+                    entries.insert(id, (entry, index > 0));
                 }
             }
         }
@@ -200,11 +197,7 @@ fn tab_from(value: serde_json::Value) -> Option<Tab> {
     serde_json::from_value(value).ok()
 }
 
-fn parse_id(text: Option<String>) -> Option<u64> {
-    text?.parse().ok()
-}
-
-fn sorted<T>(mut items: Vec<(f64, u64, T)>) -> Vec<T> {
+fn sorted<K: Ord, T>(mut items: Vec<(f64, K, T)>) -> Vec<T> {
     items.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     items.into_iter().map(|(_, _, item)| item).collect()
 }
@@ -216,7 +209,7 @@ struct Parts {
     opened_by: BTreeMap<TabId, crate::ownership::OpenedBy>,
     records: Vec<(TabId, String)>,
     workspaces: Vec<Workspace>,
-    strips: HashMap<Option<u64>, Vec<(f64, u64, Strip)>>,
+    strips: HashMap<Option<WorkspaceId>, Vec<(f64, u64, Strip)>>,
     /// Groups by the strip that holds them.
     groups: HashMap<u64, Vec<(f64, u64, GroupId)>>,
     /// Windows by the group that holds them.
@@ -227,7 +220,7 @@ struct Parts {
     places: HashMap<GroupId, CanvasPlace>,
     /// Which of those groups float, and where.
     floats: HashMap<GroupId, FloatPlace>,
-    /// Workspaces and strips written blind ([`At::placed_entries`]).
+    /// Strips written blind ([`At::placed_entries`]).
     blind: HashSet<u64>,
 }
 
@@ -271,14 +264,10 @@ impl Parts {
         let mut parts = Self::default();
         let mut workspaces = Vec::new();
         for (id, held) in held.workspaces {
-            if held.blind {
-                parts.blind.insert(id);
-            }
             let entry = held.entry;
             let Some(mut workspace) = entry.json(WORKSPACE).and_then(workspace_from) else {
                 continue;
             };
-            workspace.slot = WorkspaceSlot(id);
             workspace.strips.clear();
             workspace.arrangement = Arrangement {
                 kind: entry
@@ -299,7 +288,7 @@ impl Parts {
                 parts.authors.insert(id, author.to_owned());
             }
             let strip = Strip::new(StripId(id), entry.text(NAME).unwrap_or_default());
-            let workspace = entry.parent.map(|(_, workspace)| workspace);
+            let workspace = entry.text(WORKSPACE).and_then(WorkspaceId::parse);
             let strips = parts.strips.entry(workspace).or_default();
             strips.push((entry.order(), id, strip));
         }
@@ -359,30 +348,22 @@ impl Parts {
     /// into the first workspace or strip.
     ///
     /// A page that publishes before the workspace's desktop reached it writes
-    /// its own fresh one (a workspace named after the workspace, a "Main"
-    /// strip) into maps of its own, concurrent with the workspace's; read side
-    /// by side, every such page added another workspace under the workspace's
-    /// name. A workspace or strip written blind like that folds into the
-    /// one of its name the workspace has, and what it held moves there.
+    /// its own fresh "Main" strip into a map of its own, concurrent with the
+    /// workspace's. A strip written blind like that folds into the one of its
+    /// name the workspace has, and what it held moves there.
     fn assemble(mut self) -> Option<SharedDesktop> {
-        let (workspaces, folded_workspaces) =
-            fold(std::mem::take(&mut self.workspaces), &self.blind, |w| {
-                (w.slot.0, w.name.as_str())
-            });
-        self.workspaces = workspaces;
-        let first_workspace = self.workspaces.first()?.slot.0;
-        let slots: Vec<u64> = self.workspaces.iter().map(|w| w.slot.0).collect();
-        let mut strips: HashMap<u64, Vec<(f64, u64, Strip)>> = HashMap::new();
+        let first_workspace = self.workspaces.first()?.id();
+        let held: Vec<WorkspaceId> = self.workspaces.iter().map(Workspace::id).collect();
+        let mut strips: HashMap<WorkspaceId, Vec<(f64, u64, Strip)>> = HashMap::new();
         for (parent, list) in self.strips.drain() {
             let parent = parent
-                .map(|id| folded_workspaces.get(&id).copied().unwrap_or(id))
-                .filter(|id| slots.contains(id))
+                .filter(|id| held.contains(id))
                 .unwrap_or(first_workspace);
             strips.entry(parent).or_default().extend(list);
         }
         let mut folded_strips = HashMap::new();
         for workspace in &mut self.workspaces {
-            let list = sorted(strips.remove(&workspace.slot.0).unwrap_or_default());
+            let list = sorted(strips.remove(&workspace.id()).unwrap_or_default());
             let (list, folded) = fold(list, &self.blind, |s| (s.id.0, s.name.as_str()));
             workspace.strips = list;
             folded_strips.extend(folded);
@@ -442,11 +423,10 @@ impl Parts {
             }
         }
         self.records.compact_sort();
-        let active = WorkspaceSlot(first_workspace);
         Some(SharedDesktop {
             tree: DesktopTree {
                 workspaces: self.workspaces,
-                active,
+                active: first_workspace,
                 ..DesktopTree::default()
             },
             records: self.records,
@@ -613,7 +593,7 @@ fn rising(values: &[Option<f64>]) -> Vec<usize> {
 /// Orders for `ids`, in order, keeping each `held` order that still rises
 /// (the longest run of them that does) and placing the rest between their
 /// neighbours: a move writes only what moved.
-fn orders(ids: &[u64], held: &HashMap<u64, f64>) -> Vec<f64> {
+fn orders<K: Eq + std::hash::Hash>(ids: &[K], held: &HashMap<K, f64>) -> Vec<f64> {
     let values: Vec<Option<f64>> = ids.iter().map(|id| held.get(id).copied()).collect();
     let kept = rising(&values);
     let mut out: Vec<Option<f64>> = values
@@ -658,7 +638,7 @@ fn orders(ids: &[u64], held: &HashMap<u64, f64>) -> Vec<f64> {
 
 /// The entries of each kind a desktop is written as, or a document holds.
 struct Levels<T> {
-    workspaces: BTreeMap<u64, T>,
+    workspaces: BTreeMap<WorkspaceId, T>,
     strips: BTreeMap<u64, T>,
     groups: BTreeMap<u64, T>,
     windows: BTreeMap<u64, T>,
@@ -855,13 +835,29 @@ fn write_json(
 }
 
 /// The held orders of the entries in `level` under `parent`.
-fn held_orders(level: &BTreeMap<u64, HeldEntry>, parent: Option<u64>) -> HashMap<u64, f64> {
+fn held_orders<K: Copy + Eq + std::hash::Hash>(
+    level: &BTreeMap<K, HeldEntry>,
+    parent: Option<u64>,
+) -> HashMap<K, f64> {
     level
         .iter()
         .filter(|(_, held)| held.entry.parent.map(|(_, id)| id) == parent)
         .filter(|(_, held)| held.entry.order.is_finite())
         .map(|(id, held)| (*id, held.entry.order))
         .collect()
+}
+
+/// Where a window group stands on the canvas and how it floats, as its entry keeps them.
+fn group_fields(arrangement: &Arrangement, group: u64) -> Vec<(&'static str, Field)> {
+    let place = arrangement
+        .place_of(group)
+        .and_then(|place| serde_json::to_value(place).ok())
+        .map(|place| (PLACE, Field::Json(place)));
+    let float = arrangement
+        .float_of(group)
+        .and_then(|float| serde_json::to_value(float).ok())
+        .map(|float| (FLOAT, Field::Json(float)));
+    place.into_iter().chain(float).collect()
 }
 
 /// The entries `desktop` is written as, its orders kept from `held`'s.
@@ -875,8 +871,8 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
     };
     let mut want = Levels::default();
     let workspaces = &desktop.tree.workspaces;
-    let slots: Vec<u64> = workspaces.iter().map(|w| w.slot.0).collect();
-    let workspace_orders = orders(&slots, &held_orders(&held.workspaces, None));
+    let ids: Vec<WorkspaceId> = workspaces.iter().map(Workspace::id).collect();
+    let workspace_orders = orders(&ids, &held_orders(&held.workspaces, None));
     for (workspace, order) in workspaces.iter().zip(workspace_orders) {
         let mut bare = workspace.clone();
         bare.strips.clear();
@@ -890,7 +886,7 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             ));
         }
         want.workspaces.insert(
-            workspace.slot.0,
+            workspace.id(),
             Entry {
                 parent: None,
                 order,
@@ -898,15 +894,17 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             },
         );
         let ids: Vec<u64> = workspace.strips.iter().map(|s| s.id.0).collect();
-        let strip_orders = orders(&ids, &held_orders(&held.strips, Some(workspace.slot.0)));
+        let strip_orders = orders(&ids, &held_orders(&held.strips, None));
         for (strip, order) in workspace.strips.iter().zip(strip_orders) {
-            let mut fields = vec![(NAME, Field::Text(strip.name.clone()))];
+            let mut fields = vec![
+                (WORKSPACE, Field::Text(workspace.id().to_string())),
+                (NAME, Field::Text(strip.name.clone())),
+            ];
             fields.extend(author(strip.id.0));
-            let parent = Some((WORKSPACE, workspace.slot.0));
             want.strips.insert(
                 strip.id.0,
                 Entry {
-                    parent,
+                    parent: None,
                     order,
                     fields,
                 },
@@ -914,26 +912,12 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             let ids: Vec<u64> = strip.window_groups.iter().map(|g| g.id).collect();
             let group_orders = orders(&ids, &held_orders(&held.groups, Some(strip.id.0)));
             for (group, order) in strip.window_groups.iter().zip(group_orders) {
-                let parent = Some((STRIP, strip.id.0));
-                let mut fields: Vec<(&'static str, Field)> = workspace
-                    .arrangement
-                    .place_of(group.id)
-                    .and_then(|place| serde_json::to_value(place).ok())
-                    .map(|place| vec![(PLACE, Field::Json(place))])
-                    .unwrap_or_default();
-                if let Some(float) = workspace
-                    .arrangement
-                    .float_of(group.id)
-                    .and_then(|float| serde_json::to_value(float).ok())
-                {
-                    fields.push((FLOAT, Field::Json(float)));
-                }
                 want.groups.insert(
                     group.id,
                     Entry {
-                        parent,
+                        parent: Some((STRIP, strip.id.0)),
                         order,
-                        fields,
+                        fields: group_fields(&workspace.arrangement, group.id),
                     },
                 );
                 let ids: Vec<u64> = group.tabs.iter().map(|t| t.id).collect();
@@ -986,6 +970,14 @@ enum Shape {
 }
 use Shape::{Json, Text};
 
+/// Each level's ids are its own kind: a workspace's id, a strip's or a window's number.
+fn keyed<K: std::str::FromStr + Ord>(entries: Vec<(String, HeldEntry)>) -> BTreeMap<K, HeldEntry> {
+    entries
+        .into_iter()
+        .filter_map(|(id, held)| Some((id.parse().ok()?, held)))
+        .collect()
+}
+
 /// What `doc` holds of each kind of entry, by id, now (`None`) or as of `heads`.
 fn held(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Levels<HeldEntry> {
     let at = At { doc, heads };
@@ -1001,14 +993,12 @@ fn held(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Levels<HeldEntry> {
             })
             .collect()
     };
-    let level = |key: &str, parent: Option<&'static str>, fields: &[(&'static str, Shape)]| {
+    let level = |key: &str, fields: &[(&'static str, Shape)]| {
         at.placed_entries(key)
             .into_iter()
             .map(|(id, (obj, blind))| {
-                let parent =
-                    parent.and_then(|field| parse_id(at.text(&obj, field)).map(|id| (field, id)));
                 let entry = Entry {
-                    parent,
+                    parent: None,
                     order: at.number(&obj, ORDER).unwrap_or(f64::NAN),
                     fields: fields_of(&obj, fields),
                 };
@@ -1020,21 +1010,23 @@ fn held(doc: &impl ReadDoc, heads: Option<&[ChangeHash]>) -> Levels<HeldEntry> {
                 };
                 (id, held)
             })
-            .collect::<BTreeMap<u64, HeldEntry>>()
+            .collect::<Vec<_>>()
     };
     let mut held = Levels {
-        workspaces: level(WORKSPACES, None, &[(WORKSPACE, Json), (ARRANGEMENT, Text)]),
-        strips: level(STRIPS, Some(WORKSPACE), &[(NAME, Text), (AUTHOR, Text)]),
-        windows: level(
+        workspaces: keyed(level(WORKSPACES, &[(WORKSPACE, Json), (ARRANGEMENT, Text)])),
+        strips: keyed(level(
+            STRIPS,
+            &[(WORKSPACE, Text), (NAME, Text), (AUTHOR, Text)],
+        )),
+        windows: keyed(level(
             WINDOWS,
-            None,
             &[
                 (TAB, Json),
                 (AUTHOR, Text),
                 (RECORD, Text),
                 (OPENED_BY, Json),
             ],
-        ),
+        )),
         ..Levels::default()
     };
     let strips = held
@@ -1089,13 +1081,13 @@ enum Keeps {
 
 /// Make the entries at `ROOT[key]` exactly `want`, writing only what differs. Returns the map of
 /// each.
-fn reconcile(
+fn reconcile<K: Copy + Ord + ToString>(
     doc: &mut AutoCommit,
     key: &str,
-    held: &BTreeMap<u64, HeldEntry>,
-    want: &BTreeMap<u64, Entry>,
+    held: &BTreeMap<K, HeldEntry>,
+    want: &BTreeMap<K, Entry>,
     keeps: Keeps,
-) -> Result<BTreeMap<u64, ObjId>, automerge::AutomergeError> {
+) -> Result<BTreeMap<K, ObjId>, automerge::AutomergeError> {
     let containers = At {
         doc: &*doc,
         heads: None,

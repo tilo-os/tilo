@@ -1369,7 +1369,7 @@ pub fn place_here(tree: &mut DesktopTree, people: &[Person], following: Option<&
     let Some(workspace) = tree
         .workspaces
         .iter_mut()
-        .find(|workspace| workspace.slot == active)
+        .find(|workspace| workspace.id() == active)
     else {
         return;
     };
@@ -1899,7 +1899,7 @@ mod tests {
         // Where someone is says only what their status line does not: no strip in a workspace of one,
         // and no app their status already names.
         {
-            use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceSlot};
+            use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceId};
             let chat = Tab {
                 id: 7,
                 title: "chat".into(),
@@ -1921,10 +1921,10 @@ mod tests {
                 maximized: false,
                 focus_history: Vec::new(),
             });
-            let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
             workspace.strips = vec![main];
             let mut tree = DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             };
@@ -2119,10 +2119,10 @@ mod tests {
             // The bar and the People list read the workspace's rows, which this page fills from its
             // board: the same colour again.
             let mut tree = DesktopTree {
-                workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Desk")],
+                workspaces: vec![Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Desk")],
                 ..DesktopTree::default()
             };
-            tree.active = tree.workspaces[0].slot;
+            tree.active = tree.workspaces[0].id();
             place_here(&mut tree, &people, None);
             let rows = crate::people::roster_rows(&tree, "me-root");
             let row = rows
@@ -2531,7 +2531,7 @@ mod tests {
         // presence names it: the host that holds the same window knows which window they are in.
         {
             use tilo_desktop_model::{
-                Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
+                Strip, StripId, Tab, WindowGroup, WindowWidth, Workspace, WorkspaceId,
             };
             let digest = "0123456789abcdef";
             let welcome = Tab {
@@ -2555,10 +2555,10 @@ mod tests {
                 maximized: false,
                 focus_history: Vec::new(),
             });
-            let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
+            let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Design");
             workspace.strips = vec![strip];
             let tree = DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             };
@@ -2595,7 +2595,7 @@ mod tests {
         // sort in.
         {
             // The workspace admitted z before a, though a's id sorts first.
-            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceSlot(1), "Studio");
+            let mut workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Studio");
             for (person, admitted) in [("person-z", 10_u64), ("person-a", 20)] {
                 workspace
                     .policy
@@ -2605,7 +2605,7 @@ mod tests {
                 workspace.member_here(Member::keyed(person, "Alex"));
             }
             let tree = DesktopTree {
-                active: workspace.slot,
+                active: workspace.id(),
                 workspaces: vec![workspace],
                 ..DesktopTree::default()
             };
@@ -2783,7 +2783,7 @@ mod tests {
         // that face when it has room for only one.
         {
             let mut tree = DesktopTree::default();
-            let workspace = tilo_desktop_model::WorkspaceSlot::default();
+            let workspace = tilo_desktop_model::WorkspaceId::nil();
             tree.workspaces
                 .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
             tree.active = workspace;
@@ -2833,7 +2833,7 @@ mod tests {
         // with nothing under it.
         {
             let mut tree = DesktopTree::default();
-            let workspace = tilo_desktop_model::WorkspaceSlot::default();
+            let workspace = tilo_desktop_model::WorkspaceId::nil();
             tree.workspaces
                 .push(tilo_desktop_model::Workspace::new(workspace, "Design"));
             tree.active = workspace;
@@ -2891,10 +2891,10 @@ mod tests {
         // so, never a marker a later frame has to correct.
         {
             let mut tree = DesktopTree::default();
-            let slot = tilo_desktop_model::WorkspaceSlot::default();
+            let workspace_id = tilo_desktop_model::WorkspaceId::nil();
             tree.workspaces
-                .push(tilo_desktop_model::Workspace::new(slot, "Design"));
-            tree.active = slot;
+                .push(tilo_desktop_model::Workspace::new(workspace_id, "Design"));
+            tree.active = workspace_id;
             let people = vec![Person {
                 id: "bot".into(),
                 user: None,

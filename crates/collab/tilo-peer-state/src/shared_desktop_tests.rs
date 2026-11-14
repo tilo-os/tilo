@@ -11,12 +11,11 @@ use ed25519_dalek::SigningKey;
 use tilo_desktop_model::layout::{Strip, Tab, TileContent, WindowGroup};
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_KIND, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
-    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceSlot, shared_record,
+    DesktopTree, StripId, WindowWidth, Workspace, WorkspaceId, shared_record,
 };
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::join::WorkspaceId;
 use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
@@ -42,7 +41,7 @@ fn tab(id: u64) -> Tab {
 /// A desktop of one strip holding a window per `(tab, who)`, each in a
 /// group of its own.
 fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+    let mut workspace = Workspace::new(WorkspaceId::from_u128(1), "Workspace");
     let mut strip = Strip::new(StripId(10), "Workspace");
     for (id, _) in windows {
         strip.window_groups.push(WindowGroup {
@@ -57,7 +56,7 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
     workspace.strips.push(strip);
     SharedDesktop {
         tree: DesktopTree {
-            active: workspace.slot,
+            active: workspace.id(),
             workspaces: vec![workspace],
             ..DesktopTree::default()
         },
