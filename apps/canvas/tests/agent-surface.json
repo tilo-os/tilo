@@ -3651,6 +3651,18 @@
         "ty": "text",
         "description": "A change id, exact causal frontier, or checkpoint name (default: current)",
         "nullable": true
+      },
+      {
+        "name": "cursor",
+        "ty": "text",
+        "description": "The next_cursor an earlier read answered, for the next page of its lists",
+        "nullable": true
+      },
+      {
+        "name": "pageSize",
+        "ty": "integer",
+        "description": "How many entries of each list a page holds (default 25, at most 200)",
+        "nullable": true
       }
     ]
   },
@@ -5525,6 +5537,18 @@
         "name": "version",
         "ty": "text",
         "description": "A change id, exact causal frontier, or checkpoint name (default: current)",
+        "nullable": true
+      },
+      {
+        "name": "cursor",
+        "ty": "text",
+        "description": "The next_cursor an earlier read answered, for the next page of its lists",
+        "nullable": true
+      },
+      {
+        "name": "pageSize",
+        "ty": "integer",
+        "description": "How many entries of each list a page holds (default 25, at most 200)",
         "nullable": true
       }
     ]

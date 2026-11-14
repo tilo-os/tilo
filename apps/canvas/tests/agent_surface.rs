@@ -24,8 +24,11 @@ use ui::prelude::TestApp;
 /// from 72 KiB when the brush, colour and pigment choices became view
 /// effects an agent can make, and from 76 KiB when a field edit's schema
 /// began naming the arguments of each operation the record's paths take, so
-/// an agent's call no longer fails on an argument the schema never mentioned.
-const BUDGET: usize = 85 * 1024;
+/// an agent's call no longer fails on an argument the schema never mentioned,
+/// and to 86 KiB when a map's entries began offering the operations of the
+/// value type they hold beside `set`, so an edit of one is offered rather
+/// than refused.
+const BUDGET: usize = 86 * 1024;
 
 #[test]
 fn the_agent_surface_matches_its_golden_file_and_budget() {
