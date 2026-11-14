@@ -97,6 +97,12 @@ pub fn installed_bundle() -> Option<&'static Bundle> {
     INSTALLED.get().map(|bundle| &**bundle)
 }
 
+/// [`installed_bundle`], to hold: what an instance of it runs.
+#[must_use]
+pub fn installed_bundle_shared() -> Option<Arc<Bundle>> {
+    INSTALLED.get().map(Arc::clone)
+}
+
 /// The platform icon an `icon: .file_text` declaration names: `file-text`.
 #[must_use]
 pub fn icon_name(declared: &str) -> &'static str {

@@ -1,9 +1,9 @@
 //! The tilolang runtime as a framework app: the installed package, shown through the framework's
 //! root like every native app.
 //!
-//! The root brings the content ground, the save state, per-author undo, History, permissions, the
-//! action palette, the agent door, search and the unreadable-record state; [`Window`] only renders
-//! the package's views onto the native shell.
+//! The root brings the content ground and the unreadable-record state; the window
+//! ([`crate::hosted::HostedWindow`]) shows the package's instance, which a tilolang host runs: the
+//! session's, or one in this process without a session.
 //!
 //! A process runs one package: the one the launcher installed ([`crate::install`]). Its id, title
 //! and icon are the app's ([`ResourceApp::named`]). The window's own tests run the built-in
@@ -13,13 +13,11 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use tilolang_tilo::host::Host;
-use tilolang_tilo::personal::{self, Personal};
 use tilolang_tilo::tilolang::PackageMeta;
 use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
 use ui::widget::Element;
 
 use crate::resource::Workspace;
-use crate::window::Window;
 
 /// The app the installed package is.
 pub struct TlApp;
@@ -123,125 +121,143 @@ impl ResourceApp for TlApp {
     // The first frame shows what the workspace's indexes hold; the record is read off the frame.
     const OPENS_BEFORE_RECORD: bool = true;
 
-    /// The window over the workspace's indexes, kept from an earlier session (or built once the
-    /// record is had, the platform's loading state meanwhile).
+    /// The window, before the record: in a session, the one whose instance its tilolang host
+    /// runs; without one, the window running its instance in this process.
     fn opening(cx: &OpeningCx<'_>) -> Option<Box<dyn OpeningView>> {
         crate::i18n::ensure();
-        // A tilolang host runs the instance: the window presents it, and reads no record.
         #[cfg(target_os = "linux")]
-        if crate::hosted::is_hosted() {
-            return Some(Box::new(crate::hosted::HostedWindow::new(
-                crate::hosted::window_instance(),
-            )));
+        {
+            let window = if crate::hosted::is_hosted() {
+                crate::hosted::HostedWindow::new(crate::hosted::window_instance())
+            } else {
+                in_process(cx.me(), cx.workspace(), &cx.files())?
+            };
+            Some(Box::new(window))
         }
-        let meta = hosted()?;
-        let indexes = indexes(&cx.files())?;
-        Some(Box::new(
-            Window::new(
-                meta.app.clone(),
-                cx.me().to_owned(),
-                ui::framework::RunMode::Live,
-            )
-            .keep_indexes_in(indexes)
-            .in_workspace(cx.workspace())
-            .opening(cx.record().clone()),
-        ))
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = cx;
+            None
+        }
     }
 
     fn view(cx: &mut ViewCx<Workspace>) -> Element {
         crate::i18n::ensure();
         #[cfg(target_os = "linux")]
-        if crate::hosted::is_hosted() {
+        {
+            // The window shown before the record, taken over with what the person did in it.
             let opened = cx
                 .take_lent::<ui::framework::Opened>()
                 .and_then(|opened| opened.take::<crate::hosted::HostedWindow>());
-            return match opened {
-                Some(window) => window,
-                None => Box::new(crate::hosted::HostedWindow::new(
-                    crate::hosted::window_instance(),
-                )),
+            if crate::hosted::is_hosted() {
+                return opened.unwrap_or_else(|| {
+                    Box::new(crate::hosted::HostedWindow::new(
+                        crate::hosted::window_instance(),
+                    ))
+                });
+            }
+            let window = match opened {
+                Some(window) => Some(*window),
+                None => cx.workspace().and_then(|workspace| {
+                    in_process(
+                        cx.me().unwrap_or_default(),
+                        &workspace,
+                        &cx.storage().files(),
+                    )
+                }),
             };
+            let Some(mut window) = window else {
+                return Box::new(ui::widget::EmptyState::new(crate::i18n::t(
+                    "tilolang-open-failed",
+                )));
+            };
+            if cx.mode() == ui::framework::RunMode::Live {
+                live_origins(&mut window, cx.storage().config_root());
+            }
+            // A search hit, or an agent's `open`, shows the resource it names.
+            if let Some(reveals) = window.reveals() {
+                cx.on_open(move |anchor: &str| reveals.borrow_mut().push(anchor.to_owned()));
+            }
+            cx.surface(window)
         }
-        let Some(meta) = hosted() else {
-            return Box::new(ui::widget::EmptyState::new(crate::i18n::t(
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = cx;
+            Box::new(ui::widget::EmptyState::new(crate::i18n::t(
                 "tilolang-open-failed",
-            )));
-        };
-        // The window shown before the record, taken over with what the person did in it.
-        let opened = cx
-            .take_lent::<ui::framework::Opened>()
-            .and_then(|opened| opened.take::<Window>());
-        let window = if let Some(window) = opened {
-            (*window).taken_over()
-        } else {
-            let mut window = Window::new(
-                meta.app.clone(),
-                cx.me().unwrap_or_default().to_owned(),
-                cx.mode(),
-            );
-            if let Some(indexes) = indexes(&cx.storage().files()) {
-                window = window.keep_indexes_in(indexes);
-            }
-            if let Some(workspace) = cx.workspace() {
-                window = window.in_workspace(&workspace);
-            }
-            // Another record than the workspace's: the person's own, for a package that keeps
-            // each member's.
-            if let Some(record) = cx.record_id().filter(|id| !id.is_package_primary()) {
-                window = window.of_record(record.as_str());
-            }
-            window
-        };
-        // What the person picked in their views and what they have seen is theirs: it is kept in
-        // the workspace's record of it, and given back to the window when it opens.
-        let personal_record = cx.shared_workspace::<Personal>(personal::OWNER);
-        let window = window.keeping_personal(personal_record);
-        // What its runtime invokes is decided by the person's standing as the host keeps it.
-        let mut window = window.with_standing(cx.standing());
-        // Types whose origin is a mail server are kept in step with the servers of the
-        // workspace's mail accounts, in a live window.
-        if cx.mode() == ui::framework::RunMode::Live
-            && tilolang_tilo::origin::uses_origin(meta, "imap")
-        {
-            let wake = ui::wake::WakeHandle::new();
-            let origin = tilolang_mail::live_origin(
-                tilolang_mail::settings_accounts(cx.storage().config_root()),
-                std::sync::Arc::new(move || wake.wake()),
-            );
-            window = window.with_origin(origin);
+            )))
         }
-        // Types whose origin is YouTube are kept in step with it, in a live window: the client
-        // asks, and this origin, in native code with the network, writes what YouTube answers.
-        if cx.mode() == ui::framework::RunMode::Live
-            && tilolang_tilo::origin::uses_origin(meta, "youtube")
-        {
-            let wake = ui::wake::WakeHandle::new();
-            let origin = tilolang_youtube::origin(
-                std::sync::Arc::new(tilolang_youtube::service::Live::new()),
-                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            );
-            let waker = std::sync::Arc::new(move || wake.wake());
-            window = window.with_origin(tilolang_youtube::waking(origin, waker));
-        }
-        // A search hit, or an agent's `open`, shows the resource it names.
-        let opens = window.open_requests();
-        cx.on_open(move |anchor: &str| {
-            opens.borrow_mut().push(tilolang_tilo::OpenEffect::Open {
-                anchor: anchor.to_owned(),
-            });
-        });
-        cx.surface(window)
     }
 }
 
-/// Where windows keep their workspaces' indexes: in the app's cache area, which its host gives it.
-pub fn indexes(files: &ui::storage::AppFiles) -> Option<std::path::PathBuf> {
-    match files.paths().cache().native_path() {
-        Ok(cache) => Some(cache.join("indexes")),
+/// The window of the installed package for `me` in `workspace`, running its instance in this
+/// process over the app's record on this device, kept in the app's data area (`files`): a
+/// window without a session (`tilolang dev`, a capture). `None` when nothing is installed, or
+/// the instance does not start.
+#[cfg(target_os = "linux")]
+fn in_process(
+    me: &str,
+    workspace: &str,
+    files: &ui::storage::AppFiles,
+) -> Option<crate::hosted::HostedWindow> {
+    let Some(bundle) = crate::installed_bundle_shared() else {
+        tracing::error!("no package is installed in this runtime");
+        return None;
+    };
+    // The record is this device's alone: its route only names where it is kept, one per
+    // workspace, whether the profile names its workspace by id or by name (`personal`).
+    let workspace_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, workspace.as_bytes());
+    let storage = match files.paths().data().native_path() {
+        Ok(data) => Some(data.join("tilolang")),
         Err(error) => {
-            tracing::warn!(%error, "no cache area for the workspaces' indexes: they are kept in memory");
+            tracing::warn!(%error, "no data area for the app's record: it is kept in memory");
             None
         }
+    };
+    let route = tilolang_host::route_of(&bundle.meta, workspace_id, me);
+    let spec = tilolang_host::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
+    let kind = tilolang_tilo::meta::MetaExt::record_kind(&bundle.meta);
+    let person = me.to_owned();
+    crate::hosted::HostedWindow::in_process(
+        spec,
+        |kept| {
+            tilolang_tilo::instance::record::InstanceRecord::open_local(
+                route,
+                &kept.documents,
+                person,
+                kind,
+            )
+        },
+        bundle,
+        storage,
+    )
+    .inspect_err(|error| tracing::error!(%error, "the app's instance did not start"))
+    .ok()
+}
+
+/// Keep the types of the package whose origin is a mail server in step with the servers of the
+/// workspace's mail accounts (kept under `config`), and those whose origin is a video site with it:
+/// the client asks, and the origin, in native code with the network, writes what they answer.
+#[cfg(target_os = "linux")]
+fn live_origins(window: &mut crate::hosted::HostedWindow, config: Option<std::path::PathBuf>) {
+    let Some(meta) = hosted() else {
+        return;
+    };
+    if tilolang_tilo::origin::uses_origin(meta, "imap") {
+        let wake = ui::wake::WakeHandle::new();
+        window.add_origin(tilolang_mail::live_origin(
+            tilolang_mail::settings_accounts(config),
+            std::sync::Arc::new(move || wake.wake()),
+        ));
+    }
+    if tilolang_tilo::origin::uses_origin(meta, "youtube") {
+        let wake = ui::wake::WakeHandle::new();
+        let origin = tilolang_youtube::origin(
+            std::sync::Arc::new(tilolang_youtube::service::Live::new()),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let waker = std::sync::Arc::new(move || wake.wake());
+        window.add_origin(tilolang_youtube::waking(origin, waker));
     }
 }
 

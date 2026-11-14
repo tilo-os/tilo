@@ -287,8 +287,7 @@ fn a_card_dragged_within_its_lane_and_into_another_lands_where_it_was_dropped() 
 #[test]
 fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     use crate::change_marks::{RUN, action_id, chroma_in, marks, published_with, run, settle};
-    let mut app =
-        ui::framework::testing::HostedApp::open(crate::support::installed("tasks"), "ada").unwrap();
+    let mut app = super::Session::new("so.tilo.lang.tasks", "ada", |_| {});
     settle(&mut app);
     // What a person adds in the list's entry waits in the inbox, and the window shows it there.
     crate::change_marks::choose(&mut app, "Inbox");
@@ -303,7 +302,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         args
     };
     // Ada's own task first: nothing to mark.
-    app.invoke(None, None, &tasks, &add, &titled("Water the plants"), false)
+    app.invoke(None, None, &tasks, &add, &titled("Water the plants"))
         .unwrap();
     settle(&mut app);
     assert!(marks(&mut app).is_empty());
@@ -315,7 +314,6 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
             &tasks,
             &add,
             &titled(title),
-            false,
         )
         .unwrap();
     }
@@ -329,7 +327,6 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         &task,
         &complete,
         &serde_json::Map::new(),
-        false,
     )
     .unwrap();
     // And removes one it added.
@@ -339,7 +336,7 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
         "t".to_owned(),
         crate::change_marks::reference("so.tilo.lang.tasks", &mut app, "Book the dentist"),
     );
-    app.invoke(Some(agent), Some(&ambient), &tasks, &remove, &which, false)
+    app.invoke(Some(agent), Some(&ambient), &tasks, &remove, &which)
         .unwrap();
     settle(&mut app);
     let ground = chroma_in(&mut app, [0.0, 0.0, 8.0, 8.0]);
@@ -405,8 +402,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     use crate::change_marks::{action_id, choose, named, published_with, run, settle};
     use crate::history_window::{after, shoot, times};
     let _settled = ui::motion::testing::settled();
-    let mut app =
-        ui::framework::testing::HostedApp::open(crate::support::installed("tasks"), "ada").unwrap();
+    let mut app = super::Session::new("so.tilo.lang.tasks", "ada", |_| {});
     settle(&mut app);
     // The task a person adds waits in the inbox, which the window shows it in.
     choose(&mut app, "Inbox");
@@ -417,8 +413,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
     let add = action_id(&mut app, &tasks, "New task");
     let mut titled = serde_json::Map::new();
     titled.insert("title".to_owned(), "Call the landlord".into());
-    app.invoke(None, None, &tasks, &add, &titled, false)
-        .unwrap();
+    app.invoke(None, None, &tasks, &add, &titled).unwrap();
     settle(&mut app);
     // The row opens where it stands, and stays open while the days the task waits at move it
     // out of the inbox, into Today and on to Upcoming.
@@ -433,7 +428,7 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
         args.insert("due".to_owned(), day.into());
         args
     };
-    app.invoke(None, None, &task, &schedule, &due("2026-11-02"), false)
+    app.invoke(None, None, &task, &schedule, &due("2026-11-02"))
         .unwrap();
     settle(&mut app);
     // The agent's run puts it off twice: one entry of two changes.
@@ -445,7 +440,6 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
             &task,
             &schedule,
             &due(day),
-            false,
         )
         .unwrap();
     }
@@ -874,7 +868,7 @@ fn title_field() -> String {
 
 /// Bo writing in the title of `task`, his caret `at` bytes into it, as his own window says: where
 /// the window draws his caret.
-fn bo_writing(app: &mut crate::hosted::Session, task: &str, at: usize) -> [f64; 4] {
+fn bo_writing(app: &mut super::Session, task: &str, at: usize) -> [f64; 4] {
     let key = ui::presence::PresenceKey::Widget {
         path: ["tilolang", task, title_field().as_str()]
             .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
@@ -900,9 +894,9 @@ fn bo_writing(app: &mut crate::hosted::Session, task: &str, at: usize) -> [f64; 
 }
 
 /// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.
-fn a_task_of_adas(title: &str) -> (crate::hosted::Session, String) {
+fn a_task_of_adas(title: &str) -> (super::Session, String) {
     use crate::change_marks::{action_id, settle};
-    let mut app = crate::hosted::Session::new("so.tilo.lang.tasks", "ada", |_| {});
+    let mut app = super::Session::new("so.tilo.lang.tasks", "ada", |_| {});
     settle(&mut app);
     crate::change_marks::choose(&mut app, "Inbox");
     let root = app

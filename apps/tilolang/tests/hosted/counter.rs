@@ -9,14 +9,13 @@
     reason = "test assertions"
 )]
 
-use crate::change_marks::settle;
+use crate::change_marks::{Driven as _, settle};
 use tilolang_tilo::action::resource_ids;
-use ui::framework::testing::HostedApp;
 
 const COUNTER: &str = "so.tilo.lang.counter";
 
 /// The id of the control whose accessible name is `name`.
-fn control_named(app: &mut HostedApp, name: &str) -> String {
+fn control_named(app: &mut super::Session, name: &str) -> String {
     let named = |node: &&ui::headless::InspectionNode| {
         node.semantics
             .as_ref()
@@ -30,7 +29,7 @@ fn control_named(app: &mut HostedApp, name: &str) -> String {
 
 #[test]
 fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
-    let mut app = HostedApp::open(crate::support::installed("counter"), "ada").unwrap();
+    let mut app = super::Session::new("so.tilo.lang.counter", "ada", |_| {});
     settle(&mut app);
     for _ in 0..3 {
         let plus = control_named(&mut app, "Increment");

@@ -7,9 +7,10 @@
 //! With `TILO_LEGIBILITY_SHOTS=<dir>` the tests write the window, light and dark, with the
 //! marks.
 
+use super::Session;
+use crate::change_marks::Driven as _;
 use serde_json::Map;
 use tilolang_tilo::action::resource_ids;
-use ui::framework::testing::HostedApp;
 
 use crate::change_marks::{
     action_id, chroma_in, marks, named, published_with, rows, run, settle, shots_dir, text_field,
@@ -18,14 +19,14 @@ use crate::change_marks::{
 const NOTES: &str = "so.tilo.lang.notes";
 
 /// The Notes window with one note of Ada's and two the agent's run made, and the notebook.
-fn notes_after_a_run() -> (HostedApp, String) {
-    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
+fn notes_after_a_run() -> (Session, String) {
+    let mut app = Session::new("so.tilo.lang.notes", "ada", |_| {});
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");
     let new_note = action_id(&mut app, &notebook, "New note");
     // Ada's own note: nothing to mark.
-    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+    app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
     assert!(
@@ -40,7 +41,6 @@ fn notes_after_a_run() -> (HostedApp, String) {
             &notebook,
             &new_note,
             &Map::new(),
-            false,
         )
         .unwrap();
     }
@@ -48,7 +48,7 @@ fn notes_after_a_run() -> (HostedApp, String) {
     (app, notebook)
 }
 
-fn shoot(app: &mut HostedApp, name: &str) {
+fn shoot(app: &mut Session, name: &str) {
     let Some(dir) = shots_dir() else {
         return;
     };
@@ -102,7 +102,7 @@ fn the_field_the_run_renamed_takes_its_colour() {
     let retitle = action_id(&mut app, &item, "Rename…");
     let mut title = Map::new();
     title.insert("title".to_owned(), "Meeting notes".into());
-    app.invoke(Some(agent), Some(&ambient), &item, &retitle, &title, false)
+    app.invoke(Some(agent), Some(&ambient), &item, &retitle, &title)
         .unwrap();
     settle(&mut app);
     let row = named(&mut app, "ListRow", "Meeting notes");

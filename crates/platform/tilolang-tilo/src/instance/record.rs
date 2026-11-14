@@ -118,6 +118,9 @@ pub struct InstanceRecord {
     /// in: what it keeps is offered on the route, and what it lacks is asked of it.
     content: ContentStore,
     lane: Arc<ContentLane>,
+    /// Whether the record runs on this device alone ([`Self::open_local`]): there is no workspace
+    /// to hand its changes to, so they are kept on disk and counted as handed over.
+    local: bool,
 }
 
 /// The record's chunk documents: the record's own until the instance's store opens over them,
@@ -219,6 +222,47 @@ fn copy_document(
     .ok()
 }
 
+/// The document `route`'s record is kept in, in `documents`: the workspace's record of the app,
+/// or the one the route names, a member's own.
+fn route_document(
+    documents: &Rc<dyn DurableStore>,
+    route: &RouteSpec,
+) -> Result<DocStore, RecordError> {
+    let workspace = route.cluster_id.to_string();
+    match &route.record {
+        None => {
+            collaboration::record::save::workspace_document(documents, &route.app_id, &workspace)
+        }
+        Some(record) => {
+            let id = RecordId::parse(record)
+                .ok_or_else(|| RecordError::Open(format!("`{record}` is no record id")))?;
+            record_document(documents, &route.app_id, &workspace, &id.storage_key())
+        }
+    }
+    .map_err(|error| RecordError::Open(error.to_string()))
+}
+
+/// The record `doc` of `route`, kept by `writer`, with every chunk its manifest names that this
+/// device kept a copy of in `documents`: what was written into one here and not handed to the
+/// workspace yet is still there, and what comes next reaches it as any change does.
+fn held_chunks(
+    documents: &Rc<dyn DurableStore>,
+    route: &RouteSpec,
+    doc: Doc,
+    writer: DocWriter,
+) -> (Chunks, Writers) {
+    let mut writers = Writers::of(documents, writer);
+    let mut chunks = Chunks::of(doc);
+    let named: Vec<ChunkNo> = chunks.placement().chunks().into_iter().collect();
+    for chunk in named {
+        if let Some((copy, writer)) = writers.held(route, chunk) {
+            chunks.insert(chunk, copy);
+            writers.chunks.insert(chunk, writer);
+        }
+    }
+    (chunks, writers)
+}
+
 impl InstanceRecord {
     /// The record `doc`, shared on `route` through `manager`, changed by `person`.
     #[must_use]
@@ -285,6 +329,7 @@ impl InstanceRecord {
             words: HostWords::new("en-US"),
             writers,
             governs: true,
+            local: false,
         }
     }
 
@@ -294,6 +339,13 @@ impl InstanceRecord {
     #[must_use]
     pub const fn governs(&self) -> bool {
         self.governs
+    }
+
+    /// Whether the record runs on this device alone ([`Self::open_local`]): nothing it publishes
+    /// has a broker to go to.
+    #[must_use]
+    pub const fn is_local(&self) -> bool {
+        self.local
     }
 
     /// The record, its history verbs speaking `locale` (`en-US`, `de-DE`).
@@ -376,6 +428,32 @@ impl InstanceRecord {
         Self::open_with(manager, Read::Here, documents, person, kind)
     }
 
+    /// The record `route` names, kept in `documents`, changed by `person`, on this device alone: a
+    /// window run without a session, which has no connection to a workspace. It is the on-disk
+    /// copy, which this device governs; its changes are kept there and go nowhere else.
+    ///
+    /// # Errors
+    /// The route names no record, or its copy cannot be opened.
+    pub fn open_local(
+        route: RouteSpec,
+        documents: &Rc<dyn DurableStore>,
+        person: impl Into<String>,
+        kind: impl Into<String>,
+    ) -> Result<Self, RecordError> {
+        let (doc, writer) = open_stored(route_document(documents, &route)?);
+        let (chunks, writers) = held_chunks(documents, &route, doc, writer);
+        let mut record = Self::holding(
+            chunks,
+            Some(writers),
+            CollaborationManager::disabled(),
+            route,
+            kind.into(),
+            person.into(),
+        );
+        record.local = true;
+        Ok(record)
+    }
+
     /// [`Self::open`], with the broker's committed read taken off this thread: `read` is what
     /// [`PrimaryRead::of`](collaboration::native_initial::PrimaryRead::of) said the manager's
     /// route needs, and what it read. An owner that runs other instances meanwhile waits for
@@ -418,16 +496,7 @@ impl InstanceRecord {
             .map(|joined| joined.route().clone())
             .ok_or_else(|| RecordError::Open("the connection joined no route".to_owned()))?;
         let workspace = route.cluster_id.to_string();
-        // The workspace's record of the app, or the one the route names: a member's own.
-        let store = match &route.record {
-            None => workspace_document(documents, &route.app_id, &workspace),
-            Some(record) => {
-                let id = collaboration::record::RecordId::parse(record)
-                    .ok_or_else(|| RecordError::Open(format!("`{record}` is no record id")))?;
-                record_document(documents, &route.app_id, &workspace, &id.storage_key())
-            }
-        }
-        .map_err(|error| RecordError::Open(error.to_string()))?;
+        let store = route_document(documents, &route)?;
         // Construction custody reads the committed history before the record is built, as a
         // native launch's does: only a route whose reads are committed has one.
         let construction = match read {
@@ -467,20 +536,15 @@ impl InstanceRecord {
             .map_err(RecordError::Open)?
             .ok_or_else(|| RecordError::Open("the connection was not handed back".to_owned()))?;
         drop(construction);
-        let person = person.into();
-        let mut writers = Writers::of(documents, writer);
-        let mut chunks = Chunks::of(doc);
-        // Every chunk the record's manifest names that this device kept a copy of is read with
-        // it: what was written into it here and not handed to the workspace yet is still there,
-        // and what comes next reaches it as any change does.
-        let named: Vec<ChunkNo> = chunks.placement().chunks().into_iter().collect();
-        for chunk in named {
-            if let Some((copy, writer)) = writers.held(&route, chunk) {
-                chunks.insert(chunk, copy);
-                writers.chunks.insert(chunk, writer);
-            }
-        }
-        let mut record = Self::holding(chunks, Some(writers), manager, route, kind.into(), person);
+        let (chunks, writers) = held_chunks(documents, &route, doc, writer);
+        let mut record = Self::holding(
+            chunks,
+            Some(writers),
+            manager,
+            route,
+            kind.into(),
+            person.into(),
+        );
         record.governs = governs;
         if handed_nothing {
             record.sent.clear();
@@ -1153,6 +1217,14 @@ impl InstanceRecord {
     }
 
     fn send(&mut self, commit: Option<&collab_types::WorkspaceCommit>) -> Option<String> {
+        if self.local {
+            // No workspace to hand them to: what is kept on disk is all there is.
+            for chunk in self.unsent_chunks() {
+                self.keep(chunk);
+                self.note_sent(chunk);
+            }
+            return None;
+        }
         // What the changes name as content goes first, so the record's host holds it when a
         // reader asks for it.
         self.send_content();
@@ -1584,8 +1656,16 @@ impl InstanceRecord {
         };
         self.keep_on_disk(chunk);
         // What the store wrote of the action is its change, as replaying the action writes it:
-        // committed as the author's, never applied a second time.
-        let check = |doc: &mut Doc, before| kept_or_refused(&record, doc, before);
+        // committed as the author's, never applied a second time. A record on this device alone
+        // has no workspace whose receivers could refuse it: what is written is kept.
+        let local = self.local;
+        let check = |doc: &mut Doc, before| {
+            if local {
+                Ok((before, None))
+            } else {
+                kept_or_refused(&record, doc, before)
+            }
+        };
         let (before, refused) = match &self.chunks {
             Docs::Store(store) => {
                 let (out, moved) = store.commit_action(

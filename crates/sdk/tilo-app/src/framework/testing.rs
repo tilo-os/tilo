@@ -21,7 +21,7 @@ use super::app::{ResourceApp, definition, prepare_on, role_permissions};
 use super::headless::{AUTHOR, INSTANCE, operation, profile_directory, surface_of};
 use super::root::ResourceRoot;
 
-pub use super::headless::{DATA_DIR_WORKSPACE, HeadlessApp, HostedApp, TEST_WORKSPACE, surface_in};
+pub use super::headless::{DATA_DIR_WORKSPACE, HeadlessApp, TEST_WORKSPACE, surface_in};
 
 /// The hang bound and bounded waits a test uses, re-exported from the
 /// toolkit's `test-support` so an app's tests reach them through `ui`

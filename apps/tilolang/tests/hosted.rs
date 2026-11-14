@@ -68,20 +68,28 @@ mod typing;
 #[path = "hosted/controls.rs"]
 mod controls;
 
+#[path = "hosted/counter.rs"]
+mod counter;
 #[path = "hosted/door.rs"]
 mod door;
-
 #[path = "hosted/history.rs"]
 mod history;
-
-#[path = "hosted/personal.rs"]
-mod personal;
-
+#[path = "hosted/history_undo.rs"]
+mod history_undo;
+#[path = "hosted/marks.rs"]
+mod marks;
 #[path = "hosted/narrow.rs"]
 mod narrow;
-
+#[path = "hosted/personal.rs"]
+mod personal;
 #[path = "hosted/replay.rs"]
 mod replay;
+#[path = "hosted/sync.rs"]
+mod sync;
+#[path = "hosted/tasks_board.rs"]
+mod tasks_board;
+#[path = "hosted/workspaces.rs"]
+mod workspaces;
 use replay::replayed;
 
 const NOTES: &str = "so.tilo.lang.notes";
@@ -614,25 +622,18 @@ impl Session {
             "tl.test",
         );
         let woken = Arc::new(Woken::default());
-        let wake: tilolang_tilo::background::Waker = woken.waker();
-        let mut host = TilolangHost::new(storage, Arc::clone(&wake));
         let app = spec.app.clone();
         let person = spec.person.clone();
-        let kept = host.kept(&spec.app).unwrap();
         let bundle = package(package_of(&spec.app));
-        let (ours, theirs) = Channel::pair().unwrap();
-        let watched = ours.as_fd().try_clone_to_owned().unwrap();
-        let hosted = Hosted::with_record(
+        let (host, theirs) = tilolang_app::hosted::start(
             spec,
-            record,
+            |_| Ok(record),
             bundle,
-            &kept,
-            Box::new(ChannelTransport::new(ours).unwrap()),
             &Rc::new(Phrases::new("en-US")),
-            host.formats(),
-            wake,
-        );
-        host.add(hosted, Some(watched));
+            storage,
+            woken.waker(),
+        )
+        .unwrap();
         Self {
             app,
             person,

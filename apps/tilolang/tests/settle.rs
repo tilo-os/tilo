@@ -6,8 +6,6 @@
 //! workspace held before it, so a test settles and never takes a quiet moment for a settled host:
 //! under load the quiet moment comes before the work.
 
-use std::sync::{Arc, Condvar, Mutex};
-
 use tilolang_host::TilolangHost;
 use ui::headless::FrameHarness;
 
@@ -20,52 +18,7 @@ const LIMIT: std::time::Duration = std::time::Duration::from_secs(120);
 const MOTION_SLICE: std::time::Duration = std::time::Duration::from_millis(16);
 const MOTION: u8 = 16;
 
-/// What wakes the host: its work off the frames (an index built from the record, the whole search
-/// index read) is ready to be taken in.
-#[derive(Default)]
-pub struct Woken {
-    woken: Mutex<bool>,
-    signal: Condvar,
-}
-
-impl Woken {
-    /// The host's waker: what its work off the frames calls when a result waits.
-    pub fn waker(self: &Arc<Self>) -> tilolang_tilo::background::Waker {
-        let woken = Arc::clone(self);
-        Arc::new(move || woken.mark())
-    }
-
-    fn mark(&self) {
-        *self
-            .woken
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
-        self.signal.notify_all();
-    }
-
-    /// Whether the host was woken since this was last taken: its frames have something to take
-    /// in.
-    fn take(&self) -> bool {
-        std::mem::take(
-            &mut *self
-                .woken
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-    }
-
-    /// Wait until the host is woken, at most `timeout`: the frames have nothing to take in until
-    /// then.
-    pub fn wait(&self, timeout: std::time::Duration) {
-        let _ = self.signal.wait_timeout_while(
-            self.woken
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-            timeout,
-            |woken| !*woken,
-        );
-    }
-}
+pub use tilolang_app::hosted::Woken;
 
 /// The harness window's frame, and whether a frame drawn now would still show something the last
 /// one did not: a window is read at rest only once it took in what the instance sent it, laid it

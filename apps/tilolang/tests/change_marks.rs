@@ -1,7 +1,6 @@
 //! What tests of change marks read of a window: the marks it shows, their pixels, and the
 //! door the run goes through.
 
-use ui::framework::testing::HostedApp;
 use ui::tilo_actions::{ActionContext, ActionInvoker};
 
 pub(crate) const RUN: &str = "issue-7@8000000000000001";
@@ -18,22 +17,12 @@ pub(crate) fn run() -> (ActionInvoker, ActionContext) {
     )
 }
 
-/// A window a test drives: the in-process framework's, or a session's hosted one.
+/// A window a test drives.
 pub(crate) trait Driven {
     /// The frame harness the window is drawn in.
     fn harness(&mut self) -> &mut ui::headless::FrameHarness;
     /// Its frames until it is at rest.
     fn settle(&mut self);
-}
-
-impl Driven for HostedApp {
-    fn harness(&mut self) -> &mut ui::headless::FrameHarness {
-        HostedApp::harness(self)
-    }
-
-    fn settle(&mut self) {
-        captured(self, 12);
-    }
 }
 
 /// `rounds` of the frames a capture waits for, each laid out again: the window at rest, as a

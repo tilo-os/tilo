@@ -6,12 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::change_marks::{flattened, settle};
+use crate::change_marks::{Driven as _, flattened, settle};
 use serde_json::Map;
 use tilo_automerge::ApplyIncoming as _;
 use tilolang_tilo::action::resource_ids;
 use ui::automerge::{ActorId, AutoCommit, ChangeHash, ReadDoc as _};
-use ui::framework::testing::HostedApp;
 
 const NOTES: &str = "so.tilo.lang.notes";
 
@@ -36,7 +35,7 @@ impl tracing::Subscriber for Errors {
 
 #[test]
 fn a_new_note_reaches_another_replica_in_order_and_whole() {
-    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
+    let mut app = super::Session::new("so.tilo.lang.notes", "ada", |_| {});
     settle(&mut app);
     let root = app.read(|doc| resource_ids(doc, NOTES)).remove(0);
     let notebook = format!("tl:{NOTES}:{root}");
@@ -54,7 +53,7 @@ fn a_new_note_reaches_another_replica_in_order_and_whole() {
         .and_then(|resource| resource.actions.iter().find(|a| a.label == "New note"))
         .map(|action| action.id.clone())
         .expect("the notebook publishes New note");
-    app.invoke(None, None, &notebook, &new_note, &Map::new(), false)
+    app.invoke(None, None, &notebook, &new_note, &Map::new())
         .unwrap();
     settle(&mut app);
 

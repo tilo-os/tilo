@@ -7,14 +7,25 @@
 //! hands it on its window door (`ui::window_door::take_patch`). The window shows them through
 //! the UI host's half (`tilo_ui_host::AppWindow`) and sends back what the person did. Its own
 //! launch identity stays for its surface and accessibility.
+//!
+//! Without a session (`tilolang dev`, a capture), there is no host to run the instance: the
+//! window runs one in its own process ([`start`]), over the app's record on this device alone,
+//! and turns it on its own frames. The instance runs the same either way.
 
+use std::cell::RefCell;
 use std::os::fd::{AsRawFd as _, OwnedFd};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_ui_host::AppWindow;
+use tilolang_host::TilolangHost;
+use tilolang_host::hosted::{Hosted, Kept, Spec};
+use tilolang_host::phrases::Phrases;
+use tilolang_tilo::bundle::Bundle;
+use tilolang_tilo::instance::record::{InstanceRecord, RecordError};
 use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
@@ -70,11 +81,10 @@ struct Watch {
 }
 
 impl Watch {
-    fn start(fd: OwnedFd, wake: ui::wake::WakeHandle) -> Option<Self> {
+    fn start(fd: OwnedFd, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> Option<Self> {
         let signalled = Arc::new(AtomicBool::new(false));
         let (resume, resumed) = std::sync::mpsc::channel::<()>();
         let flag = Arc::clone(&signalled);
-        let wake = Arc::new(Mutex::new(wake));
         let waking = Arc::clone(&wake);
         let (stopped, stop) = std::io::pipe().ok()?;
         std::thread::Builder::new()
@@ -161,6 +171,165 @@ impl Watch {
     }
 }
 
+/// What says a host has work for its next turn: its instances' connections and the work they
+/// do off the frame wake it through [`Self::waker`], and its runner waits on it.
+#[derive(Default)]
+pub struct Woken {
+    woken: Mutex<bool>,
+    signal: Condvar,
+}
+
+impl Woken {
+    /// What wakes the host: marks it woken.
+    pub fn waker(self: &Arc<Self>) -> tilolang_tilo::background::Waker {
+        self.waker_and(|| {})
+    }
+
+    /// [`Self::waker`], and `then` after each wake: the window the host runs in, woken too.
+    pub fn waker_and(
+        self: &Arc<Self>,
+        then: impl Fn() + Send + Sync + 'static,
+    ) -> tilolang_tilo::background::Waker {
+        let woken = Arc::clone(self);
+        Arc::new(move || {
+            woken.mark();
+            then();
+        })
+    }
+
+    fn mark(&self) {
+        *self
+            .woken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        self.signal.notify_all();
+    }
+
+    /// Whether the host was woken since this was last asked.
+    pub fn take(&self) -> bool {
+        std::mem::take(
+            &mut *self
+                .woken
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Wait until the host is woken, `timeout` at most.
+    pub fn wait(&self, timeout: std::time::Duration) {
+        let _ = self.signal.wait_timeout_while(
+            self.woken
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            timeout,
+            |woken| !*woken,
+        );
+    }
+}
+
+/// A tilolang host in this process running the one instance `spec` of `bundle`, over the record
+/// `record` opens where the host keeps the app's data, its words read by `phrases`, woken by
+/// `wake`; the host keeps what it keeps under `storage` (in memory without). Answers the host
+/// and the window's end of the instance's patch connection: what a window shows it through
+/// ([`HostedWindow::over`]). The host is the one a session runs, and turns as it does.
+///
+/// # Errors
+/// The app's data cannot be kept, its record does not open, or the patch connection cannot be
+/// made.
+pub fn start(
+    spec: Spec,
+    record: impl FnOnce(&Kept) -> Result<InstanceRecord, RecordError>,
+    bundle: Arc<Bundle>,
+    phrases: &Rc<Phrases>,
+    storage: Option<std::path::PathBuf>,
+    wake: tilolang_tilo::background::Waker,
+) -> Result<(TilolangHost, Channel), StartError> {
+    let mut host = TilolangHost::new(storage, Arc::clone(&wake));
+    let kept = host.kept(&spec.app)?;
+    let record = record(&kept)?;
+    let (ours, theirs) = Channel::pair()?;
+    let watched = ours.as_fd().try_clone_to_owned()?;
+    let hosted = Hosted::with_record(
+        spec,
+        record,
+        bundle,
+        &kept,
+        Box::new(ChannelTransport::new(ours)?),
+        phrases,
+        host.formats(),
+        wake,
+    );
+    host.add(hosted, Some(watched));
+    Ok((host, theirs))
+}
+
+/// Why [`start`] ran no instance.
+#[derive(Debug, thiserror::Error)]
+pub enum StartError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Record(#[from] RecordError),
+}
+
+/// The longest a capture waits for the instance it runs to show what it stages.
+const STAGE_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The host a window runs in its own process ([`start`]), and what wakes it.
+struct InProcess {
+    host: TilolangHost,
+    woken: Arc<Woken>,
+    /// What a search hit or an agent's `open` asked the window to show, for its instance.
+    reveals: Rc<RefCell<Vec<String>>>,
+}
+
+impl InProcess {
+    /// The host's turns until it has nothing more to take in now. Whether anything changed.
+    fn turn(&mut self) -> bool {
+        for anchor in self.reveals.borrow_mut().drain(..) {
+            if let Some(hosted) = self.host.instances_mut().next() {
+                hosted.reveal(anchor);
+            }
+        }
+        let mut changed = false;
+        // A turn's work can be what the next one takes in (a change committed, then answered).
+        for _ in 0..16 {
+            self.woken.take();
+            if !self.host.turn() {
+                break;
+            }
+            changed = true;
+        }
+        changed
+    }
+
+    /// The host's turns until it owes nothing: what a capture stages is all shown.
+    fn settle(&mut self) {
+        let began = std::time::Instant::now();
+        while began.elapsed() < STAGE_WAIT {
+            if self.turn() {
+                continue;
+            }
+            if !self.host.owes_work() {
+                return;
+            }
+            self.woken.wait(STAGE_WAIT.saturating_sub(began.elapsed()));
+        }
+        tracing::error!(owed = ?self.host.owed(), "the instance did not settle for the capture");
+    }
+
+    /// Close the instance as a session's host does when its window goes: its record is written
+    /// to disk.
+    fn close(mut self) {
+        let began = std::time::Instant::now();
+        while !self.host.is_empty() && began.elapsed() < STAGE_WAIT {
+            if !self.host.turn() {
+                self.woken.wait(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
 /// The window, once its patch connection arrived, and what wakes it.
 struct Connected {
     view: AppWindow,
@@ -181,6 +350,8 @@ pub struct HostedWindow {
     waiting: ui::widget::Element,
     /// What the window last told the instance it calls people (`ToApp::Names`).
     told: Option<(String, Vec<(String, String)>)>,
+    /// The host running the window's instance in this process, without a session.
+    in_process: Option<InProcess>,
 }
 
 impl HostedWindow {
@@ -198,6 +369,7 @@ impl HostedWindow {
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
             told: None,
+            in_process: None,
         };
         window.connect();
         window
@@ -217,7 +389,7 @@ impl HostedWindow {
         match Channel::from_socket(patch) {
             Ok(channel) => {
                 tilo_startup_metrics::mark("tilolang-patch-connected");
-                self.take_channel(channel)
+                self.take_channel(channel, Arc::new(Mutex::new(ui::wake::WakeHandle::new())))
             }
             Err(error) => {
                 tracing::error!(%error, "a hosted tilolang window's patch connection is unusable");
@@ -230,7 +402,13 @@ impl HostedWindow {
     /// holds: what the session hands it on the window door.
     #[must_use]
     pub fn over(channel: Channel) -> Self {
-        let mut window = Self {
+        let mut window = Self::unconnected();
+        window.take_channel(channel, Arc::new(Mutex::new(ui::wake::WakeHandle::new())));
+        window
+    }
+
+    fn unconnected() -> Self {
+        Self {
             instance: None,
             connected: None,
             tree_drawn: false,
@@ -238,9 +416,62 @@ impl HostedWindow {
             activation: std::cell::Cell::new(false),
             waiting: Box::new(ui::widget::Spinner::new()),
             told: None,
-        };
-        window.take_channel(channel);
-        window
+            in_process: None,
+        }
+    }
+
+    /// The window running its instance in this process ([`start`]): `spec` of `bundle`, over the
+    /// record `record` opens, the host keeping the app's data under `storage`. The window turns
+    /// the host on its frames, and is woken when the host's work off the frame is ready.
+    ///
+    /// # Errors
+    /// As [`start`].
+    pub fn in_process(
+        spec: Spec,
+        record: impl FnOnce(&Kept) -> Result<InstanceRecord, RecordError>,
+        bundle: Arc<Bundle>,
+        storage: Option<std::path::PathBuf>,
+    ) -> Result<Self, StartError> {
+        let wake = Arc::new(Mutex::new(ui::wake::WakeHandle::new()));
+        let woken = Arc::new(Woken::default());
+        let waking = Arc::clone(&wake);
+        let waker = woken.waker_and(move || {
+            waking
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .wake();
+        });
+        let phrases = Rc::new(Phrases::from_env());
+        let (host, channel) = start(spec, record, bundle, &phrases, storage, waker)?;
+        let mut window = Self::unconnected();
+        window.take_channel(channel, wake);
+        window.in_process = Some(InProcess {
+            host,
+            woken,
+            reveals: Rc::default(),
+        });
+        Ok(window)
+    }
+
+    /// Where a search hit or an agent's `open` asks the window to show what it names: its
+    /// instance shows it on the next frame. `None` for a window whose instance runs elsewhere.
+    #[must_use]
+    pub fn reveals(&self) -> Option<Rc<RefCell<Vec<String>>>> {
+        self.in_process
+            .as_ref()
+            .map(|running| Rc::clone(&running.reveals))
+    }
+
+    /// Keep the types of the package with an origin in step with `origin`'s service, in a window
+    /// whose instance runs in this process.
+    pub fn add_origin(&mut self, origin: tilolang_tilo::origin::SharedOrigin) {
+        if let Some(hosted) = self
+            .in_process
+            .as_mut()
+            .and_then(|running| running.host.instances_mut().next())
+        {
+            hosted.add_origin(origin);
+        }
     }
 
     /// The window's half of the UI host, once its patch connection arrived.
@@ -249,14 +480,14 @@ impl HostedWindow {
         self.connected.as_ref().map(|connected| &connected.view)
     }
 
-    fn take_channel(&mut self, channel: Channel) -> bool {
+    fn take_channel(&mut self, channel: Channel, wake: Arc<Mutex<ui::wake::WakeHandle>>) -> bool {
         let connected = channel
             .as_fd()
             .try_clone_to_owned()
             .and_then(|watched| Ok((ChannelTransport::new(channel)?, watched)));
         match connected {
             Ok((transport, watched)) => {
-                let watch = Watch::start(watched, ui::wake::WakeHandle::new());
+                let watch = Watch::start(watched, wake);
                 self.connected = Some(Connected {
                     view: AppWindow::new(Box::new(transport), Vec::new()),
                     watch,
@@ -298,6 +529,35 @@ impl HostedWindow {
             Some(connected) => &mut connected.view,
             None => self.waiting.as_mut(),
         }
+    }
+}
+
+impl Drop for HostedWindow {
+    /// A window running its instance in this process closes it as a session's host does: the
+    /// patch connection goes first, and the instance ends, its record written to disk.
+    fn drop(&mut self) {
+        if let Some(running) = self.in_process.take() {
+            self.connected = None;
+            running.close();
+        }
+    }
+}
+
+/// A window running its instance in this process is the framework's surface of the app: what a
+/// capture stages runs in the instance, and is shown once the instance settled.
+impl ui::framework::ResourceSurface<crate::resource::Workspace> for HostedWindow {
+    fn present(&mut self, _state: &Rc<crate::resource::WorkspaceState>) {}
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        let Some(running) = &mut self.in_process else {
+            return;
+        };
+        if let Some(scenario) = scenario
+            && let Some(hosted) = running.host.instances_mut().next()
+        {
+            hosted.stage(scenario);
+        }
+        running.settle();
     }
 }
 
@@ -420,6 +680,10 @@ impl ui::widget::Decorator for HostedWindow {
         let received = match &mut self.connected {
             Some(connected) => {
                 connected.view.flush();
+                // What the person did runs before what it shows is read.
+                if let Some(running) = &mut self.in_process {
+                    running.turn();
+                }
                 Self::receive(connected, &self.activation)
             }
             None => false,
@@ -476,6 +740,32 @@ impl ui::widget::Decorator for HostedWindow {
         }
         self.content_mut()
             .draw_child(scene, transform, text, theme, presence);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.in_process
+            .as_ref()
+            .is_some_and(|running| running.host.owes_work())
+            || self.content().needs_idle_sync()
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        self.in_process
+            .as_ref()
+            .is_some_and(|running| running.host.owes_work())
+            || self.content().has_pending_visual_work()
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let host = self
+            .in_process
+            .as_ref()
+            .and_then(|running| running.host.wakes_in())
+            .and_then(|wait| ui::time::now().checked_add(wait));
+        match (host, self.content().next_wake_deadline()) {
+            (Some(host), Some(content)) => Some(host.min(content)),
+            (host, content) => host.or(content),
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {

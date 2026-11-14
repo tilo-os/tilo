@@ -4,7 +4,6 @@
 //! workspace has synced.
 
 use crate::change_marks::{said, settle};
-use ui::framework::testing::HostedApp;
 use ui::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
 
 /// What the shell tells a window in the workspace "Lounge" about its state.
@@ -19,8 +18,8 @@ fn told(state: WorkspaceSyncState) -> WorkspaceSync {
 }
 
 /// The window of the installed Notes package over a workspace with nothing in it yet.
-fn empty_notebook() -> HostedApp {
-    let mut app = HostedApp::open(crate::support::installed("notes"), "ada").unwrap();
+fn empty_notebook() -> super::Session {
+    let mut app = super::Session::new("so.tilo.lang.notes", "ada", |_| {});
     settle(&mut app);
     app
 }

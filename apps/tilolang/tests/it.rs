@@ -19,31 +19,23 @@
 )]
 mod change_marks;
 mod history_window;
-mod marks;
-mod narrow;
-mod opening;
-mod settle;
-mod support;
-mod sync;
-mod workspaces;
 
 #[path = "board.rs"]
 mod board;
-#[path = "counter.rs"]
-mod counter;
 #[path = "forms.rs"]
 mod forms;
-#[path = "history_undo.rs"]
-mod history_undo;
-#[path = "hosted.rs"]
-mod hosted;
 #[path = "interaction.rs"]
 mod interaction;
 #[path = "mentions.rs"]
 mod mentions;
 #[path = "motion.rs"]
 mod motion;
-#[path = "tasks_board.rs"]
-mod tasks_board;
+#[path = "narrow.rs"]
+mod narrow;
+mod settle;
+mod support;
 #[path = "views.rs"]
 mod views;
+
+#[path = "hosted.rs"]
+mod hosted;

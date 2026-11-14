@@ -2059,11 +2059,7 @@ impl Hosted {
                     self.published.as_ref().map(|(d, s)| (s, d.as_slice())),
                     &[],
                 );
-                if self
-                    .record
-                    .manager_mut()
-                    .send(CollabRequest::PublishActionSurface { delta })
-                {
+                if self.send_surface(delta) {
                     self.published = Some((Vec::new(), state));
                     self.published_from = None;
                 }
@@ -2090,12 +2086,7 @@ impl Hosted {
             .map(|(held, state)| (state, held.as_slice()));
         let (delta, state) = SurfacePublication::next(prior, &descriptors);
         self.offer(&delta, &descriptors);
-        if delta.is_empty()
-            || self
-                .record
-                .manager_mut()
-                .send(CollabRequest::PublishActionSurface { delta })
-        {
+        if delta.is_empty() || self.send_surface(delta) {
             self.published = Some((descriptors, state));
             self.published_from = Some((surface, inputs));
         } else {
@@ -2237,12 +2228,7 @@ impl Hosted {
             |resource| changed.contains(&resource),
             true,
         );
-        if !delta.is_empty()
-            && !self
-                .record
-                .manager_mut()
-                .send(CollabRequest::PublishActionSurface { delta })
-        {
+        if !delta.is_empty() && !self.send_surface(delta) {
             // What the broker holds is no longer what was patched: a later turn sends the
             // surface whole, as a reset.
             self.published = None;
@@ -2251,6 +2237,16 @@ impl Hosted {
         }
         self.published_from = Some((Rc::clone(surface), inputs));
         true
+    }
+
+    /// Hand the broker `delta` of the instance's surface. Whether it took it: a record on this
+    /// device alone has no broker, and its window's catalogue is all there is to publish to.
+    fn send_surface(&mut self, delta: SurfaceDelta) -> bool {
+        self.record.is_local()
+            || self
+                .record
+                .manager_mut()
+                .send(CollabRequest::PublishActionSurface { delta })
     }
 
     /// Write what the record holds to its on-disk copy, as the instance ends.
