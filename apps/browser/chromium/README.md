@@ -1212,6 +1212,9 @@ content scripts (with `sender.tab`) work without help.
   pages of one extension can trade theirs and be taken for each other's
   tab; such an id gives way to the one Chromium lists once the tab shows a
   page it lists with its tab, before any extension asks after that page.
+  What the worker answers is about the page a tab showed when the host
+  asked: a tab that went on to another page meanwhile is asked again at
+  once, and what waited for its id waits for that answer.
 - What a tab shows an extension follows Chrome: its address and title with
   `tabs`, a host permission for the site, or a click on the extension's
   button over it (`activeTab`), which also lets it script the page until the

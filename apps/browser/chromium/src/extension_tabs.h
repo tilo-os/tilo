@@ -1514,36 +1514,55 @@ class ExtensionTabs {
   // extension's own page is no page target there; it sends the Browser's
   // extension a word only the host and the page know, and Chromium tells
   // that extension the tab the message came from.
-  void Identify(const std::vector<int>& tabs) {
+  //
+  // The answer is about the page each tab showed when it was asked. A tab
+  // that went on to another page meanwhile was asked about the page before:
+  // an extension's page on its way to a web page is listed without its tab
+  // until that page is there, and the word it sent is its old page's say.
+  // Such a tab is asked again at once, about the page it shows now, and what
+  // waits for it waits for that answer. It is not kept as one that could not
+  // be identified on a page it was never asked about, which would leave it
+  // unasked there while another tab answers to its id by a word. `again` is
+  // that second question; no third follows it.
+  void Identify(const std::vector<int>& tabs, bool again = false) {
+    std::map<int, std::string> asked;
+    for (const auto& tab : hooks_.tabs())
+      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end()) asked[tab.tab] = tab.url;
     auto once = std::make_shared<bool>(false);
-    auto finish = [this, tabs, once] {
+    auto finish = [this, tabs, asked, again, once] {
       if (*once) return;
       *once = true;
       // An extension's page may have been between documents when asked: it
       // is asked again on the next call.
       const auto open = hooks_.tabs();
+      std::vector<int> moved;
       for (int tab : tabs) {
         const auto* entry = Find(open, tab);
-        const bool page = entry && Worded(entry->url);
-        if (entry && !page && (!native_.count(tab) || worded_.count(tab))) unknown_[tab] = entry->url;
+        const auto was = asked.find(tab);
+        const bool listed = native_.count(tab) && !worded_.count(tab);
+        const bool stayed = entry && was != asked.end() && was->second == entry->url;
+        if (entry && !listed && stayed && !Worded(entry->url)) unknown_[tab] = entry->url;
         else unknown_.erase(tab);
+        if (entry && !listed && !stayed && !again) moved.push_back(tab);
       }
       for (int tab : tabs) {
+        if (std::find(moved.begin(), moved.end(), tab) != moved.end()) continue;
         auto callbacks = std::move(identifying_[tab]);
         identifying_.erase(tab);
         for (auto& callback : callbacks) callback();
       }
+      if (!moved.empty()) Identify(moved, true);
     };
     // Every call and event on these tabs waits for this: an answer lost on
     // the way (a worker gone as it was asked) holds none of them past ten
-    // seconds; the tabs are asked about again on their next page.
+    // seconds a question; the tabs are asked about again on their next page.
     std::weak_ptr<bool> alive = alive_;
     CefPostDelayedTask(TID_UI, base::BindOnce([](std::weak_ptr<bool> alive, std::function<void()> finish) {
       if (!alive.expired()) finish();
     }, alive, std::function<void()>(finish)), 10000);
     std::map<int, std::string> words;
-    for (const auto& tab : hooks_.tabs())
-      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end() && Worded(tab.url)) words[tab.tab] = Word();
+    for (const auto& [tab, url] : asked)
+      if (Worded(url)) words[tab] = Word();
     Tell(words, [this, tabs, words, finish] {
       Targets(tabs, [this, words, finish](std::map<int, std::string> targets) {
         if (targets.empty() && words.empty()) { finish(); return; }
