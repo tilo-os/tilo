@@ -951,10 +951,16 @@ fn edit_paths(
                             .unwrap_or_else(|| items.clone())
                     },
                 );
+                // A collection of text items takes the text operations at each item, not only
+                // the whole-value `set` a record item takes.
+                let item_ops: &[&str] = match *inner {
+                    crate::Shape::Text => &["set", "splice", "replace", "rich"],
+                    _ => &["set"],
+                };
                 out.push(alternative(
                     &items,
                     false,
-                    &["set"],
+                    item_ops,
                     item_value,
                     None,
                     field.title,

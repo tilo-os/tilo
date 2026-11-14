@@ -73,6 +73,7 @@ code-editor-samples = { package = "code-editor", path = ".", features = ["sample
 iai-callgrind = "=0.16.1"
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tilo-wake.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [[test]]
