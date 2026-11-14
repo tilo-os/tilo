@@ -1004,7 +1004,11 @@ impl DirectSync {
             live,
             only_here,
         );
-        let receiving = self.receive_all(connection, remote, &own);
+        // The dialling device takes the other device's retained history in
+        // before the live writes the link brings meanwhile: each author's
+        // writes to a record apply in the order the author wrote them.
+        let (history_in_hand, in_hand) = watch::channel(!dialing);
+        let receiving = self.receive_all(connection, remote, &own, in_hand);
         let history = async {
             let mut control = control;
             if !dialing {
@@ -1015,6 +1019,7 @@ impl DirectSync {
                 return std::future::pending().await;
             }
             self.ask_store(&mut control).await?;
+            history_in_hand.send_replace(true);
             // The history is in hand: the frames from here on are the live
             // ones the link brings. A write this device let go unapplied
             // waits in the other device's history; once what it waited for
@@ -1274,30 +1279,94 @@ impl DirectSync {
     /// A frame that leaves something waiting for history asks `remote` for
     /// its state, and `remote`'s ask for this device's is answered, each on
     /// `link`, this link alone: no other device sent the frame, or asked.
+    ///
+    /// An app write waits until `history` says the link's retained history is
+    /// in hand: written after that history, it applies after it. The stream
+    /// is read meanwhile, so the other device's writes never stall.
     async fn receive_all(
         &self,
         connection: &Connection,
         remote: [u8; 32],
         link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
+        history: watch::Receiver<bool>,
     ) -> Result<(), String> {
         let mut recv = connection
             .accept_uni()
             .await
             .map_err(|error| error.to_string())?;
-        while let Some(authored) = read_authored(&mut recv).await? {
-            // An ask another device made reached this one only because a
-            // host forwarded it, and is not this device's to answer.
-            if matches!(authored.message, NeighbourMsg::SyncReq { .. }) {
-                if authored.from == remote {
-                    let _ = link.send(OnlyHere::Answer);
+        // Frames are taken off the stream as they are admitted; only the
+        // app writes held for the history pile up while it is read.
+        let (read, frames) = tokio::sync::mpsc::channel(1);
+        let reading = async move {
+            while let Some(authored) = read_authored(&mut recv).await? {
+                if read.send(authored).await.is_err() {
+                    break;
                 }
+            }
+            Ok::<(), String>(())
+        };
+        let admitting = self.admit_in_order(remote, link, frames, history);
+        tokio::try_join!(reading, async {
+            admitting.await;
+            Ok(())
+        })
+        .map(|_| ())
+    }
+
+    /// Take in `frames`, the other device's live frames in the order it sent
+    /// them, holding its app writes back until `history` is in hand.
+    async fn admit_in_order(
+        &self,
+        remote: [u8; 32],
+        link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
+        mut frames: tokio::sync::mpsc::Receiver<Authored>,
+        mut history: watch::Receiver<bool>,
+    ) {
+        let mut waiting = Vec::new();
+        loop {
+            let next = tokio::select! {
+                biased;
+                Ok(_) = history.wait_for(|in_hand| *in_hand), if !waiting.is_empty() => None,
+                next = frames.recv() => match next {
+                    Some(authored) => Some(authored),
+                    None => return,
+                },
+            };
+            let in_hand = *history.borrow();
+            if in_hand {
+                for authored in std::mem::take(&mut waiting) {
+                    self.receive_live(remote, link, authored).await;
+                }
+            }
+            let Some(authored) = next else {
+                continue;
+            };
+            if !in_hand && matches!(authored.message, NeighbourMsg::AppDocument { .. }) {
+                waiting.push(authored);
                 continue;
             }
-            if self.admit(authored.from, authored.message, false).await {
-                let _ = link.send(OnlyHere::Ask);
-            }
+            self.receive_live(remote, link, authored).await;
         }
-        Ok(())
+    }
+
+    /// Take in one frame the other device sent live on the link.
+    async fn receive_live(
+        &self,
+        remote: [u8; 32],
+        link: &tokio::sync::mpsc::UnboundedSender<OnlyHere>,
+        authored: Authored,
+    ) {
+        // An ask another device made reached this one only because a
+        // host forwarded it, and is not this device's to answer.
+        if matches!(authored.message, NeighbourMsg::SyncReq { .. }) {
+            if authored.from == remote {
+                let _ = link.send(OnlyHere::Answer);
+            }
+            return;
+        }
+        if self.admit(authored.from, authored.message, false).await {
+            let _ = link.send(OnlyHere::Ask);
+        }
     }
 
     /// Take `message` in as `claimed`'s frame, admitted into this device's
@@ -2129,8 +2198,12 @@ mod tests {
     }
 
     /// A link over a replica of `roster`'s workspace, its first certificate
-    /// the authority's, holding `revocations`.
-    fn link(roster: &[(SigningKey, DeviceCert)], revocations: RevocationList) -> DirectSync {
+    /// the authority's, holding `revocations` and `documents`.
+    fn link(
+        roster: &[(SigningKey, DeviceCert)],
+        revocations: RevocationList,
+        documents: Vec<crate::SeedDocument>,
+    ) -> DirectSync {
         let (key, authority) = roster.first().unwrap();
         let now = tilo_clock::wall();
         let mut peer = StatePeer::new(
@@ -2152,7 +2225,7 @@ mod tests {
         peer.install_seed(
             crate::SeedState {
                 workspace_changes: crate::seed_workspace(WORKSPACE, authority, &roster).unwrap(),
-                documents: Vec::new(),
+                documents,
             },
             key,
             now,
@@ -2175,7 +2248,7 @@ mod tests {
         theirs
             .insert(revocation(&stranger, member.device_public_key))
             .unwrap();
-        let sync = link(&roster, theirs);
+        let sync = link(&roster, theirs, Vec::new());
         assert_eq!(
             sync.admits(member.device_public_key),
             Ok(()),
@@ -2203,5 +2276,102 @@ mod tests {
             sync.admits(member.device_public_key),
             Err("the device is revoked".to_owned())
         );
+    }
+
+    /// A write the other device sent live while this one still reads the
+    /// history written before it waits for that history: the author's writes
+    /// to a record apply in the order the author wrote them, even where the
+    /// later one does not build on the earlier.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_live_write_waits_for_the_history_written_before_it() {
+        use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
+        use collab_types::CommitNamed as _;
+        const APP: &str = "test.app";
+        const RECORD: &str = "tab:1";
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let roster = [device(&root, 2), device(&root, 3)];
+        let mut record = AutoCommit::new();
+        record.put(ROOT, "start", "here").unwrap();
+        record.commit_edit("fixture", "start");
+        let host = link(
+            &roster,
+            RevocationList::new(),
+            vec![crate::SeedDocument {
+                app_id: APP.into(),
+                record_id: RECORD.into(),
+                kind: "test".into(),
+                bytes: record.save(),
+            }],
+        );
+        let member = DirectSync::new(
+            StatePeer::from_join(
+                WORKSPACE,
+                roster[0].1.clone(),
+                roster.iter().map(|(_, cert)| cert.clone()).collect(),
+                &[],
+                tilo_clock::wall(),
+            )
+            .unwrap(),
+            roster[1].0.clone(),
+        );
+        let state = host.catch_up().await.unwrap();
+        // Two writes on the record as the member's history has it, neither
+        // built on the other.
+        let mut edit = |field: &str, actor: u8| {
+            let mut edit = record
+                .fork()
+                .with_actor(automerge::ActorId::from(vec![actor; 16]));
+            let heads = edit.get_heads();
+            edit.put(ROOT, field, "written").unwrap();
+            edit.commit_edit("fixture", field);
+            edit.save_after(&heads)
+        };
+        let (first, second) = (edit("first", 4), edit("second", 5));
+        let publish = |bytes: Vec<u8>| {
+            host.publish(|host| {
+                host.publication_mut().publish_incremental(
+                    APP,
+                    RECORD,
+                    bytes,
+                    &roster[0].0,
+                    tilo_clock::wall(),
+                )
+            })
+            .unwrap()
+        };
+        let (first, second) = (publish(first), publish(second));
+
+        // The later write comes live before the member has read the history
+        // that holds the earlier one.
+        let (live, frames) = tokio::sync::mpsc::channel(1);
+        live.try_send(Authored {
+            from: host.device(),
+            message: second,
+            published: false,
+        })
+        .unwrap();
+        let (in_hand, history) = watch::channel(false);
+        let (asks, _asked) = tokio::sync::mpsc::unbounded_channel();
+        let reading_history = async {
+            for authored in state {
+                member.admit(authored.from, authored.message, true).await;
+            }
+            member.admit(host.device(), first, true).await;
+            in_hand.send_replace(true);
+            drop(live);
+        };
+        tokio::join!(
+            member.admit_in_order(host.device(), &asks, frames, history),
+            reading_history
+        );
+
+        let held =
+            AutoCommit::load(&member.read(|member| member.document(APP, RECORD)).unwrap()).unwrap();
+        for field in ["start", "first", "second"] {
+            assert!(
+                held.get(ROOT, field).unwrap().is_some(),
+                "the member holds the {field} write"
+            );
+        }
     }
 }
