@@ -731,8 +731,7 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 /// person's agents.
 ///
 /// Two questions about agents are still open. Until they are decided each
-/// keeps the answer the first agent-collaborator release gave it, and each
-/// is changed here:
+/// keeps the answer it was first given, and each is changed here:
 ///
 /// 1. Is an agent's role capped at Editor? [`ROLE_CAP`](agent_policy::ROLE_CAP): yes.
 /// 2. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`](agent_policy::WITHDRAWAL_IS_FINAL): a

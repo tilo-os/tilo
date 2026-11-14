@@ -10,7 +10,7 @@ impl PeerWorkspace<'_> {
     /// Whether `agent_id` is still admitted to the workspace. A check of existing
     /// capabilities, never a grant.
     ///
-    /// A collaborator is admitted by its live grant on the workspace. A task agent
+    /// A member is admitted by its live grant on the workspace. A task agent
     /// is admitted by the task delegation its run carries (`delegation`, as
     /// `TaskDelegation::encode` wrote it): it verifies as a chain from the
     /// workspace's device list, whose certificate for the signing device is

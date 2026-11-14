@@ -4,7 +4,7 @@
 //! part in its channels. Ada asks for an agent from her page and approves it on her
 //! laptop with a delegation naming the workspace; the agent runs on the node
 //! under its own device key. When it opens a sealed record it asks the
-//! channel's participants for it like any collaborator: the governor admits
+//! channel's participants for it like any member: the governor admits
 //! it to the workspace's roster through the one admission decision, bound to its
 //! delegation, and a participant admits it to the channel. Its change
 //! arrives at Bob, another member, sealed, signed by the agent's own key and

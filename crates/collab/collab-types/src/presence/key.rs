@@ -68,7 +68,7 @@ pub enum PresenceKey {
 pub enum PointerSpace {
     /// Compositor scene coordinates on this device's own desktop. Only
     /// meaningful on the device that measured them: its monitors decide
-    /// where anything is, so a collaborator's desktop is a different shape.
+    /// where anything is, so a member's desktop is a different shape.
     /// A person's pointer goes to other devices as [`Self::Tile`] instead.
     Desktop {
         /// The workspace whose desktop this is. It keeps the key `room` on

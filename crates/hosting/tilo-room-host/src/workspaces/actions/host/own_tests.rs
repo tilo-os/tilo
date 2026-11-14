@@ -1593,7 +1593,7 @@ async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
 /// key of theirs, as before, though the site never let them in: entering
 /// what they were invited into is no workspace of their own.
 #[tokio::test]
-async fn an_invited_collaborator_enters_what_they_were_invited_into() {
+async fn an_invited_member_enters_what_they_were_invited_into() {
     let (host, workspaces, lounge, stranger, _state) = gated_host().await;
     let (_, ada) = guest_device();
     let invitation = let_in(&workspaces, &lounge, ada.user_public_key).await;

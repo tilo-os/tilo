@@ -35,10 +35,10 @@ fn proof(
 }
 
 /// The owner's own device is answered as the workspace's owner, which a
-/// member's answer cannot say: it names the strongest collaborator role, and
+/// member's answer cannot say: it names the strongest member role, and
 /// its authority stays governance's to decide.
 #[test]
-fn the_owner_s_own_device_is_answered_the_strongest_collaborator_role() {
+fn the_owner_s_own_device_is_answered_the_strongest_member_role() {
     let (peer, _, key, cert, now) = crate::admission_tests::seeded();
     let membership = proof(&peer, &cert, &key, now);
     assert_eq!(
@@ -52,7 +52,7 @@ fn the_owner_s_own_device_is_answered_the_strongest_collaborator_role() {
 }
 
 #[test]
-fn all_collaborator_roles_remain_refreshable_until_removed() {
+fn all_member_roles_remain_refreshable_until_removed() {
     use crate::join::*;
     let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
     let root = SigningKey::from_bytes(&[41; 32]);

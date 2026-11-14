@@ -12,7 +12,7 @@
 //! focuses, where in it the action left it (the record's own item and
 //! position, [`ConfinedReplica::presence`]), and its own view of itself as an
 //! agent with its label, colour and activity ([`tilo_session_client::saying`]) — so every
-//! participant's window draws it there as it draws any collaborator. Other
+//! participant's window draws it there as it draws any member. Other
 //! participants' presence arrives the same way and is readable through
 //! [`AgentParticipant::remote_members`].
 //!

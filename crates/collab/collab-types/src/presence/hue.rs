@@ -192,10 +192,10 @@ impl PresenceHue {
     }
 }
 
-/// Stable identity colour for a collaborator who has not chosen one: the
+/// Stable identity colour for a member who has not chosen one: the
 /// presence hue [`PresenceHue::of_identity`] derives from
 /// their id, as the sRGB colour in [`PEER_PALETTE`]. A pure function of the
-/// id alone: two hosts painting the same room see different peer sets
+/// id alone: two hosts painting the same workspace see different peer sets
 /// (everyone but themselves), so a colour derived from who's present
 /// couldn't agree across machines.
 ///
@@ -207,10 +207,10 @@ pub fn user_color(user_id: &str) -> (u8, u8, u8) {
 }
 
 /// What every task agent's id starts with: a task agent is minted for a run of one, never a
-/// collaborator the workspace's governance admits.
+/// member the workspace's governance admits.
 pub const TASK_AGENT_PREFIX: &str = "task-";
 
-/// Whether `agent` names a task agent, minted for a run, rather than a collaborator: its id
+/// Whether `agent` names a task agent, minted for a run, rather than a member: its id
 /// tells one run of it from the next, so the agent it works as is the one its admission names.
 #[must_use]
 pub fn is_task_agent(agent: &str) -> bool {

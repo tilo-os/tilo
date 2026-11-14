@@ -181,7 +181,7 @@ pub struct PeerContext {
     pub autobind: Option<WorkspaceAutobind>,
     /// Live revocation list, refreshed independently of this session.
     pub revocations: Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
-    /// Live signed-workspace-derived collaborator admission policy.
+    /// Live signed-workspace-derived member admission policy.
     pub trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// The user pubkey this relay itself chains to.
     pub own_user_public_key: [u8; 32],

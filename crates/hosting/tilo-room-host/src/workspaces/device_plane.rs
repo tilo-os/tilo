@@ -162,7 +162,7 @@ impl HostWork {
 
     /// Whether the device `from` may run `route`'s action in `workspace` now:
     /// the workspace's per-action permission decides it, whatever kind of
-    /// collaborator the device belongs to.
+    /// member the device belongs to.
     async fn permits(&self, from: [u8; 32], workspace: &str, route: &Route) -> bool {
         let held = self.workspaces.lock().await.get(workspace).cloned();
         let Some(held) = held else {
@@ -355,7 +355,7 @@ impl ActionHost for HostActions {
         self.0.runtime.spawn(async move {
             // This host's compute is the workspace's: the permission for the
             // action decides who may run it here, whatever kind of
-            // collaborator their device belongs to.
+            // member their device belongs to.
             if !shared.permits(requester, &workspace, &route).await {
                 completer.complete(Err(ActionHostError::NotPermitted));
                 return;

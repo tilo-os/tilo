@@ -115,7 +115,7 @@ pub struct StateSource {
 impl StateSource {
     /// The source of an outbound lease to a host attached to the workspace.
     /// Its trust is this host's own user only — not the live handshake policy,
-    /// which may admit collaborators' roots — and it carries no agent
+    /// which may admit members' roots — and it carries no agent
     /// delegations: a host carrying this one's changes is never an agent.
     pub fn leased(
         peer: AuthenticatedPeer,

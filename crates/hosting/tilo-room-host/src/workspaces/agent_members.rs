@@ -3,7 +3,7 @@
 //! An agent of this relay's user is a device of that person, with its own
 //! key, its own certificate and a root-signed delegation naming the workspaces
 //! and apps it may act in, until when. To act in a governed workspace it needs
-//! what every collaborator needs: a place on the workspace's governed roster,
+//! what every member needs: a place on the workspace's governed roster,
 //! which every member reads, which the relay admits to the workspace, and from
 //! which the workspace's participants admit devices to each record's channel.
 //!

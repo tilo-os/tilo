@@ -223,7 +223,7 @@ fn a_changes_read_between_the_frames_of_one_checkpoint_is_pending() {
 }
 
 /// Characters in the large document, one text op each, written in
-/// [`LARGE_EDITS`] changes of a line each, as a collaborator's typing leaves
+/// [`LARGE_EDITS`] changes of a line each, as a member's typing leaves
 /// a document's history.
 const LARGE_CHARACTERS: usize = 50_000;
 const LARGE_EDITS: usize = 100;

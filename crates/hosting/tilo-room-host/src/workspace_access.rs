@@ -67,7 +67,7 @@
 //! And one plane admits a device to a workspace's governance itself:
 //! [`WorkspaceOperation::DelegateMembership`], a delegated agent of this relay's own
 //! user joining, as a governed member, a workspace this relay governs. Agents are
-//! collaborators: each has its own device key, a certificate and a
+//! members: each has its own device key, a certificate and a
 //! delegation its person's root signed, and the governor records it on the
 //! workspace's roster bound to that delegation, so every member admits its
 //! changes as its own, at its person's role and never above Editor, only
@@ -263,7 +263,7 @@ impl DenyReason {
         match self {
             Self::CertExpired => "device certificate expired",
             Self::Revoked => "authenticated device was revoked",
-            Self::NotTrusted => "collaborator was removed from signed workspace authority",
+            Self::NotTrusted => "the member was removed from the workspace's signed authority",
             Self::AgentWithdrawn => "the agent was withdrawn",
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",

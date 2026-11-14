@@ -348,7 +348,7 @@ async fn each_device_runs_the_work_it_offered_and_no_other() {
 }
 
 /// Who may use the host's compute is the workspace's permission for the
-/// action, not the kind of collaborator the device belongs to: an editor's
+/// action, not the kind of member the device belongs to: an editor's
 /// invocation runs, a viewer's is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_workspaces_permission_for_the_action_decides_who_runs_work_here() {

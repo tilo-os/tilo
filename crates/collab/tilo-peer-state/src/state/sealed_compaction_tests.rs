@@ -20,7 +20,7 @@ struct Fixture {
     owner: SigningKey,
     /// The owner's second device.
     other: SigningKey,
-    /// A collaborator with the editor role.
+    /// A member with the editor role.
     editor: SigningKey,
     authority: DeviceCert,
     /// The record channel's group, whose content keys key holders use.

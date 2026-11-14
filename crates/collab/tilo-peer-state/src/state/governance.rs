@@ -245,7 +245,7 @@ impl PeerGovernance<'_> {
         }
         Ok(said)
     }
-    /// Authority-authored collaborator projection. The structural owner is
+    /// Authority-authored member projection. The structural owner is
     /// exposed separately by [`PeerGovernance::owner_user_public_key`].
     pub fn governed_members(self, now: SystemTime) -> Result<Vec<GovernedMember>, String> {
         let doc = self
@@ -400,7 +400,7 @@ impl PeerGovernance<'_> {
     /// answer to it names it: the person's role in the workspace, which is
     /// what the device takes part as. An answer never names the owner's
     /// authority, which governance alone decides; a device of the owner hears
-    /// the strongest collaborator role.
+    /// the strongest member role.
     pub fn member_role(
         self,
         membership: &crate::join::VerifiedMembership,
@@ -756,7 +756,7 @@ impl PeerGovernanceMut<'_> {
         self.peer.write_governance(doc, &before, key, now)
     }
 
-    /// Change a governed collaborator's workspace role.
+    /// Change a governed member's workspace role.
     ///
     /// # Errors
     ///
@@ -997,7 +997,7 @@ impl PeerGovernanceMut<'_> {
         }
         self.peer.write_changes(doc, changes, key, now)
     }
-    /// Remove a governed collaborator and their grants; someone removing
+    /// Remove a governed member and their grants; someone removing
     /// themselves also takes their own devices' rows.
     ///
     /// # Errors
