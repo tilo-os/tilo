@@ -256,8 +256,11 @@ pub fn drop_target(id: u64, x: f64, y: f64) -> Result<JsValue, JsValue> {
             set("height", (rect.height() * px).into());
         };
         match desktop.drop_target(point, size) {
-            super::drops::DropTarget::Window { rect, app, .. } => {
+            super::drops::DropTarget::Window { rect, app, tab } => {
                 set("kind", "window".into());
+                if app.as_deref() == Some(fs_protocol::tree::FILES_APP) {
+                    set("label", desktop.files_label(tab).into());
+                }
                 let takes = app.as_deref().is_some_and(super::drops::takes_files);
                 set("takes", takes.into());
                 set(

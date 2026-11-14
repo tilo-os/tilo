@@ -8,14 +8,16 @@
 //   1. onto an empty place of the strip: one file of each kind, which open
 //      side by side there (a PDF, a picture, a markdown file, and one no app
 //      opens);
-//   2. a folder onto an empty place of the strip;
-//   3. a picture onto the open Photos window, which imports it;
-//   4. a picture onto the open Notes window, which takes it itself;
-//   5. onto a window whose app opens no files (Calculator, opened from the
+//   2. a folder onto an empty place of the strip, which opens Files;
+//   3. a file onto that Files window, which copies it into the folder Files
+//      shows;
+//   4. a picture onto the open Photos window, which imports it;
+//   5. a picture onto the open Notes window, which takes it itself;
+//   6. onto a window whose app opens no files (Calculator, opened from the
 //      desk's search), which says so where it fell;
-//   6. a large file no app opens onto an empty place of the strip, kept a
+//   7. a large file no app opens onto an empty place of the strip, kept a
 //      chunk at a time;
-//   7. the folder again, chosen in the desk's menu ("Upload a folder…").
+//   8. the folder again, chosen in the desk's menu ("Upload a folder…").
 //
 // Each keeps a picture of the hover and of the end, and reads what the page
 // said at the drop's place.
@@ -174,16 +176,17 @@ const openApp = async app => {
 const strip = seen => seen.kind === 'strip';
 await dropStep('1-files-on-strip', ['plan.pdf', 'photo.png', 'notes.md', 'data.json'].map(file), strip);
 await dropStep('2-folder-on-strip', [file('docs')], strip);
-await dropStep('3-picture-on-photos', [file('second.png')], seen => seen.note === 'Open in Photos');
-await dropStep('4-picture-on-notes', [file('second.png')], seen => seen.note === 'Open in Notes');
+await dropStep('3-file-onto-files', [file('notes.md')], seen => /^Add to /.test(seen.note ?? ''));
+await dropStep('4-picture-on-photos', [file('second.png')], seen => seen.note === 'Open in Photos');
+await dropStep('5-picture-on-notes', [file('second.png')], seen => seen.note === 'Open in Notes');
 await openApp('Calculator');
-await dropStep('5-on-a-window-that-opens-no-files', [file('data.json')], seen => / doesn't open files$/.test(seen.note ?? ''));
+await dropStep('6-on-a-window-that-opens-no-files', [file('data.json')], seen => / doesn't open files$/.test(seen.note ?? ''));
 
 // The large file: each step reports how long the page took from the drop to
 // its end.
-await dropStep('6-large-file-on-strip', [file('big.bin')], strip);
+await dropStep('7-large-file-on-strip', [file('big.bin')], strip);
 
-// 7. The desk's menu: "Upload a folder…", found in the desk's search, and the
+// 8. The desk's menu: "Upload a folder…", found in the desk's search, and the
 // folder given to the chooser it opens.
 await tab.send('Page.enable', {});
 await tab.send('Page.setInterceptFileChooserDialog', {enabled: true});
@@ -202,12 +205,12 @@ while (!chooserOpened && Date.now() < deadline) await sleep(250);
 if (!chooserOpened) await finish(1, `the desk menu opening the folder chooser never happened: ${await text()}`);
 const chose = await tab.send('DOM.setFileInputFiles', {files: [file('docs')], backendNodeId: chooserOpened.backendNodeId});
 if (chose.error) await finish(1, `the chooser took no folder: ${chose.error.message}`);
-report.steps['7-menu-upload'] = await until(`(() => {
+report.steps['8-menu-upload'] = await until(`(() => {
   const end = [...document.querySelectorAll('.tilo-drop-progress:not([data-seen])')].find(box => ['done', 'failed'].includes(box.dataset.phase));
   return end ? JSON.stringify({phase: end.dataset.phase, said: end.innerText.trim()}) : '';
 })()`, 'the end of the menu upload', 120_000).then(JSON.parse);
 await sleep(1000);
-await shot('7-menu-upload-end');
-console.error(`ok: menu upload: ${JSON.stringify(report.steps['7-menu-upload'])}`);
+await shot('8-menu-upload-end');
+console.error(`ok: menu upload: ${JSON.stringify(report.steps['8-menu-upload'])}`);
 
 await finish(0);

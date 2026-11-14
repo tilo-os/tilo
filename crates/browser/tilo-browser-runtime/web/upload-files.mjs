@@ -83,6 +83,7 @@ export function dropRoute({target, files, folder}) {
 export function dropLabel(target) {
   if (!target) return '';
   if (target.kind === 'refused') return target.why;
+  if (target.label) return target.label;
   if (target.kind === 'strip') return 'Open here';
   if (target.takes) return target.app ? `Open in ${target.app}` : 'Open here';
   return `${target.app ?? 'This window'} doesn't open files`;

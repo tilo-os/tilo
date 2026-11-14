@@ -416,6 +416,11 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
+    /// The record the window of `tab` shows, once its component opened one.
+    pub fn record_of(&self, tab: TabId) -> Option<RecordCheckout> {
+        self.records.borrow().get(&tab).cloned()
+    }
+
     /// `person` as the desktop's policy asks about them here, among the
     /// workspace's `members` (borrowed from [`Self::members`]).
     pub fn standing_of<'a>(

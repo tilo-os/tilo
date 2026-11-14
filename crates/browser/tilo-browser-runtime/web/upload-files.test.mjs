@@ -71,6 +71,8 @@ test('a drop is copied into the workspace where something takes it, and a window
 
 test('the place under the pointer says what a drop there does', () => {
   assert.equal(dropLabel({kind: 'strip'}), 'Open here');
+  assert.equal(dropLabel({kind: 'window', takes: true, app: 'Files', label: 'Add to docs'}), 'Add to docs',
+    'Files says which folder they go into');
   assert.equal(dropLabel({kind: 'window', takes: true, app: 'Photos'}), 'Open in Photos');
   assert.equal(dropLabel({kind: 'window', takes: false, app: 'Calculator'}), "Calculator doesn't open files");
   assert.equal(dropLabel({kind: 'window', takes: false, app: null}), "This window doesn't open files");

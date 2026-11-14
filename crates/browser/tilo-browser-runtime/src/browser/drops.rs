@@ -61,7 +61,9 @@ pub(crate) fn hands_files(app: &str) -> bool {
 /// Whether a window of `app` takes files dropped on it: by its own window's drop, or opened beside
 /// it in the app as its Import takes a file.
 pub(crate) fn takes_files(app: &str) -> bool {
-    TAKES_WINDOW_DROPS.contains(&app) || tilo_content_types::landing_in(app).is_some()
+    app == FILES_APP
+        || TAKES_WINDOW_DROPS.contains(&app)
+        || tilo_content_types::landing_in(app).is_some()
 }
 
 /// Where files dropped at a point of the desk go.
@@ -148,6 +150,8 @@ impl Desktop {
             DropTarget::Refused(why) => return Err(why.clone()),
             DropTarget::Strip { slot, .. } => Opens::Strip(slot.index),
             DropTarget::Window { tab, app, .. } => match app.as_deref() {
+                // Files takes them into the folder it shows, and shows them there.
+                Some(FILES_APP) => Opens::Nothing,
                 Some(app) if hands_files(app) => {
                     // The page hands the bytes to the focused window once it has read them.
                     self.handle.focus_tab(*tab);
@@ -164,7 +168,48 @@ impl Desktop {
                 }
             },
         };
-        self.start(files, opens, progress)
+        let into = match target {
+            DropTarget::Window { tab, app, .. } if app.as_deref() == Some(FILES_APP) => {
+                self.files_folder(*tab)
+            }
+            _ => None,
+        };
+        self.start(files, opens, into, progress)
+    }
+
+    /// The folder of the workspace's tree the Files window of `tab` shows, by its node; `None`
+    /// for the tree's root.
+    fn files_folder(&self, tab: u64) -> Option<String> {
+        let checkout = self.shared.record_of(tab)?;
+        let store = self.files.as_ref()?.records().store_of(FILES_APP).ok()?;
+        store
+            .read(&checkout.id, |doc| {
+                use ui::automerge::ReadDoc as _;
+                match doc.get(ui::automerge::ROOT, "folder") {
+                    Ok(Some((ui::automerge::Value::Scalar(value), _))) => match value.as_ref() {
+                        ui::automerge::ScalarValue::Str(folder) => Some(folder.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            })
+            .flatten()
+            .filter(|folder| !folder.is_empty() && folder != fs_protocol::tree::ROOT_ID)
+    }
+
+    /// What hovering files over the Files window of `tab` says: the folder they go into.
+    pub(super) fn files_label(&self, tab: u64) -> String {
+        let named = self.files_folder(tab).and_then(|folder| {
+            let page = self.files.as_ref()?;
+            let tree = page.tree_record().ok()?.read(|doc| doc.clone().save())?;
+            let tree = Tree::of_record(&tree).ok()?;
+            let node = tree.node(&folder)?;
+            Some(String::from_utf8_lossy(node.name.as_bytes()).into_owned())
+        });
+        named.map_or_else(
+            || "Add to the workspace's files".to_owned(),
+            |name| format!("Add to {name}"),
+        )
     }
 
     /// Copy `files` into the workspace's files, opening nothing: what the desk menu's uploads
@@ -178,13 +223,16 @@ impl Desktop {
         files: Vec<Picked>,
         progress: js_sys::Function,
     ) -> Result<(), String> {
-        self.start(files, Opens::Nothing, progress)
+        self.start(files, Opens::Nothing, None, progress)
     }
 
+    /// Copy `files` into the folder `into` of the tree (its root for `None`), then open them as
+    /// `opens` says.
     fn start(
         &self,
         files: Vec<Picked>,
         opens: Opens,
+        into: Option<String>,
         progress: js_sys::Function,
     ) -> Result<(), String> {
         let Some(page) = self.files.clone() else {
@@ -213,10 +261,14 @@ impl Desktop {
                 }
                 let _ = progress.call1(&JsValue::NULL, &state);
             };
-            match copy(&page, &files, &report).await {
+            match copy(&page, &files, into.as_deref(), &report).await {
                 Ok(copied) => {
                     let opened = open(&handle, &names, &copied, &opens);
-                    let mut line = dropped_files::added_line(&copied.top, copied.files.len(), None);
+                    let mut line = dropped_files::added_line(
+                        &copied.top,
+                        copied.files.len(),
+                        copied.folder_name.as_deref(),
+                    );
                     if let Some(opened) = opened {
                         line = format!("{line} · {opened}");
                     }
@@ -247,6 +299,8 @@ struct Copied {
     top: Vec<String>,
     folder: bool,
     bytes: u64,
+    /// The name of the folder they went into; `None` for the tree's root.
+    folder_name: Option<String>,
 }
 
 struct CopiedFile {
@@ -257,10 +311,12 @@ struct CopiedFile {
 }
 
 /// Keep each of `files` in the page's content as its manifest and chunks, then put them all into
-/// the tree's root in one change: what the drop added, every device sees at once.
+/// the folder `into` of the tree (its root for `None`, or when the folder is gone) in one change:
+/// what the drop added, every device sees at once.
 async fn copy(
     page: &WorkspaceFiles,
     files: &[Picked],
+    into: Option<&str>,
     report: &dyn Fn(&str, u64, u64, &str),
 ) -> Result<Copied, String> {
     let total: u64 = files.iter().map(Picked::size).sum();
@@ -295,9 +351,25 @@ async fn copy(
     )]
     let mtime = js_sys::Date::now().max(0.0) as u64;
     let author = page.records().author().0.clone();
-    let placed = record.edit(false, |doc| {
+    let (placed, folder_name) = record.edit(false, |doc| {
         let mut tree = Tree::of_record(&doc.save()).map_err(|error| error.to_string())?;
-        dropped_files::place(doc, &mut tree, DESK_FOLDER, &kept, (mtime, &author))
+        let folder = into
+            .and_then(|folder| {
+                tree.node(folder)
+                    .filter(|_| !tree.trashed(folder))
+                    .map(|node| (folder, node))
+            })
+            .map(|(folder, node)| {
+                (
+                    folder.to_owned(),
+                    String::from_utf8_lossy(node.name.as_bytes()).into_owned(),
+                )
+            });
+        let at = folder
+            .as_ref()
+            .map_or(DESK_FOLDER, |(folder, _)| folder.as_str());
+        dropped_files::place(doc, &mut tree, at, &kept, (mtime, &author))
+            .map(|placed| (placed, folder.map(|(_, name)| name)))
     })?;
     let folder = kept.iter().any(|file| file.path.contains('/'));
     Ok(Copied {
@@ -315,6 +387,7 @@ async fn copy(
         top: placed.top,
         folder,
         bytes: total,
+        folder_name,
     })
 }
 
