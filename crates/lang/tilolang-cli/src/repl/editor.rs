@@ -491,51 +491,55 @@ fn unescape(line: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn history_entries_survive_their_file() {
-        let entry = "let a = {\n  1 \\ 2\n}";
-        assert_eq!(unescape(&escape(entry)), entry);
-    }
+    tilo_test_env::scenario! {
+        fn the_line_editor_reads_keys_words_and_history;
 
-    #[test]
-    fn completion_extends_to_what_every_candidate_shares() {
-        let candidates = vec!["notes.pin".to_owned(), "notes.pinned".to_owned()];
-        assert_eq!(common_prefix(&candidates), "notes.pin");
-    }
-
-    #[test]
-    fn words_end_at_dots() {
-        let mut line = Line::default();
-        line.set("notes.pin(n1)");
-        line.cursor = 9;
-        assert_eq!(line.word_start(), 6);
-        line.cursor = 0;
-        assert_eq!(line.word_end(), 5);
-        line.cursor = 9;
-        line.kill_word();
-        assert_eq!(line.text(), "notes.(n1)");
-    }
-
-    #[test]
-    fn keys_read_as_a_terminal_sends_them() {
-        let mut keys = Keys {
-            input: "a\u{1b}[D\u{1b}[3~é\t\r".as_bytes(),
-            pending: Vec::new(),
-        };
-        let mut read = Vec::new();
-        while let Some(key) = keys.next().unwrap() {
-            read.push(key);
+        phase history_entries_survive_their_file;
+        {
+            let entry = "let a = {\n  1 \\ 2\n}";
+            assert_eq!(unescape(&escape(entry)), entry);
         }
-        assert_eq!(
-            read,
-            [
-                Key::Char('a'),
-                Key::Left,
-                Key::Delete,
-                Key::Char('é'),
-                Key::Tab,
-                Key::Enter
-            ]
-        );
+
+        phase completion_extends_to_what_every_candidate_shares;
+        {
+            let candidates = vec!["notes.pin".to_owned(), "notes.pinned".to_owned()];
+            assert_eq!(common_prefix(&candidates), "notes.pin");
+        }
+
+        phase words_end_at_dots;
+        {
+            let mut line = Line::default();
+            line.set("notes.pin(n1)");
+            line.cursor = 9;
+            assert_eq!(line.word_start(), 6);
+            line.cursor = 0;
+            assert_eq!(line.word_end(), 5);
+            line.cursor = 9;
+            line.kill_word();
+            assert_eq!(line.text(), "notes.(n1)");
+        }
+
+        phase keys_read_as_a_terminal_sends_them;
+        {
+            let mut keys = Keys {
+                input: "a\u{1b}[D\u{1b}[3~é\t\r".as_bytes(),
+                pending: Vec::new(),
+            };
+            let mut read = Vec::new();
+            while let Some(key) = keys.next().unwrap() {
+                read.push(key);
+            }
+            assert_eq!(
+                read,
+                [
+                    Key::Char('a'),
+                    Key::Left,
+                    Key::Delete,
+                    Key::Char('é'),
+                    Key::Tab,
+                    Key::Enter
+                ]
+            );
+        }
     }
 }

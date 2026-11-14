@@ -77,24 +77,64 @@ fn repl(args: &[&str], input: &str) -> std::process::Output {
     child.wait_with_output().unwrap()
 }
 
-#[test]
-fn a_session_whose_door_runs_no_programs_is_refused_with_why() {
-    let dir = tempfile::tempdir().unwrap();
-    let socket = dir.path().join("agent.sock");
-    let listener = UnixListener::bind(&socket).unwrap();
-    let door = std::thread::spawn(move || old_door(&listener));
-    let output = repl(
-        &["--door", socket.to_str().unwrap()],
-        "notes.notebook.notes\n",
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("has no `tilo` tool") && stderr.contains("tilo_ls"),
-        "says what the door lacks and what it serves: {stderr}"
-    );
-    assert!(output.stdout.is_empty(), "nothing was evaluated");
-    door.join().unwrap();
+tilo_test_env::scenario! {
+    fn a_door_that_runs_no_programs_refuses_the_repl;
+
+    phase a_session_whose_door_runs_no_programs_is_refused_with_why;
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("agent.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let door = std::thread::spawn(move || old_door(&listener));
+        let output = repl(
+            &["--door", socket.to_str().unwrap()],
+            "notes.notebook.notes\n",
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(
+            stderr.contains("has no `tilo` tool") && stderr.contains("tilo_ls"),
+            "says what the door lacks and what it serves: {stderr}"
+        );
+        assert!(output.stdout.is_empty(), "nothing was evaluated");
+        door.join().unwrap();
+    }
+
+    phase the_repl_asks_the_person_and_never_answers_its_own_admission;
+    // A REPL started on a nested session (`--session`) tells the person at the desk that it asks to
+    // act as them, and gives itself no answer: the door's admission stays theirs, on the sheet, or
+    // their `--admit-repl` made as they started the session.
+    {
+        let runtime = tempfile::tempdir().unwrap();
+        std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
+        let door = UnixListener::bind(runtime.path().join("tilo-session/agent.sock")).unwrap();
+        let control = UnixListener::bind(runtime.path().join("control.sock")).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let person = std::thread::spawn({
+            let (seen, stop) = (seen.clone(), stop.clone());
+            move || person_at_control(&control, &seen, &stop)
+        });
+        let door = std::thread::spawn(move || old_door(&door));
+        let output = repl(&["--session", runtime.path().to_str().unwrap()], "");
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        person.join().unwrap();
+        door.join().unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("asking to act as you") && stderr.contains("--admit-repl"),
+            "the person is told what waits for them: {stderr}"
+        );
+        assert!(
+            stderr.contains("has no `tilo` tool"),
+            "the door's answer came back: {stderr}"
+        );
+        let seen = std::mem::take(&mut *seen.lock().unwrap());
+        assert!(
+            seen.is_empty(),
+            "the REPL gives itself no answers: {seen:?}"
+        );
+    }
 }
 
 /// The lines of `out` that a run printed after the entry `entry` and before the next prompt.
@@ -187,40 +227,4 @@ fn person_at_control(
         )
         .unwrap();
     }
-}
-
-/// A REPL started on a nested session (`--session`) tells the person at the desk that it asks to
-/// act as them, and gives itself no answer: the door's admission stays theirs, on the sheet, or
-/// their `--admit-repl` made as they started the session.
-#[test]
-fn the_repl_asks_the_person_and_never_answers_its_own_admission() {
-    let runtime = tempfile::tempdir().unwrap();
-    std::fs::create_dir(runtime.path().join("tilo-session")).unwrap();
-    let door = UnixListener::bind(runtime.path().join("tilo-session/agent.sock")).unwrap();
-    let control = UnixListener::bind(runtime.path().join("control.sock")).unwrap();
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let person = std::thread::spawn({
-        let (seen, stop) = (seen.clone(), stop.clone());
-        move || person_at_control(&control, &seen, &stop)
-    });
-    let door = std::thread::spawn(move || old_door(&door));
-    let output = repl(&["--session", runtime.path().to_str().unwrap()], "");
-    stop.store(true, std::sync::atomic::Ordering::Relaxed);
-    person.join().unwrap();
-    door.join().unwrap();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("asking to act as you") && stderr.contains("--admit-repl"),
-        "the person is told what waits for them: {stderr}"
-    );
-    assert!(
-        stderr.contains("has no `tilo` tool"),
-        "the door's answer came back: {stderr}"
-    );
-    let seen = std::mem::take(&mut *seen.lock().unwrap());
-    assert!(
-        seen.is_empty(),
-        "the REPL gives itself no answers: {seen:?}"
-    );
 }

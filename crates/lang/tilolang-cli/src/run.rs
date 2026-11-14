@@ -242,26 +242,30 @@ mod tests {
     use super::*;
     use tilo_test_env::SpawnUnderEnvLock as _;
 
-    /// A run that ends, however it ends, stops the session it started and waits until it has.
-    #[test]
-    fn dropping_a_started_session_stops_it() {
-        let mut child = Command::new("sleep")
-            .arg("600")
-            .spawn_locked()
-            .expect("a process stands in for the session");
-        drop(Started::new(&child).expect("a pidfd"));
-        let status = child
-            .try_wait()
-            .expect("its status")
-            .expect("stopped before the drop returned");
-        assert!(!status.success(), "{status}");
-    }
+    tilo_test_env::scenario! {
+        fn a_started_session_is_stopped_with_its_run;
 
-    #[test]
-    fn a_session_that_ended_is_not_signalled() {
-        let mut child = Command::new("true").spawn_locked().expect("a process");
-        let started = Started::new(&child).expect("a pidfd");
-        assert!(child.wait().expect("its status").success());
-        drop(started);
+        phase dropping_a_started_session_stops_it;
+        // A run that ends, however it ends, stops the session it started and waits until it has.
+        {
+            let mut child = Command::new("sleep")
+                .arg("600")
+                .spawn_locked()
+                .expect("a process stands in for the session");
+            drop(Started::new(&child).expect("a pidfd"));
+            let status = child
+                .try_wait()
+                .expect("its status")
+                .expect("stopped before the drop returned");
+            assert!(!status.success(), "{status}");
+        }
+
+        phase a_session_that_ended_is_not_signalled;
+        {
+            let mut child = Command::new("true").spawn_locked().expect("a process");
+            let started = Started::new(&child).expect("a pidfd");
+            assert!(child.wait().expect("its status").success());
+            drop(started);
+        }
     }
 }

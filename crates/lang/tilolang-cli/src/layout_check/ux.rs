@@ -1272,271 +1272,685 @@ mod tests {
         declared
     }
 
-    /// Rows of one box stand their titles on one x at each depth, and every nesting step indents by
-    /// the same gutter: a row whose leading control or nesting walks off that line is caught, and
-    /// one that stands on it is not.
-    #[test]
-    fn rows_of_one_box_must_share_their_columns() {
-        let shared = holding(
-            "DescribedList",
-            "list",
-            Some(Role::List),
-            vec![row("a", 0, 24.0, 400.0), row("b", 0, 24.0, 400.0)],
-        );
-        assert!(found(Kind::RaggedColumns, &shared, (1280, 800)).is_empty());
+    tilo_test_env::scenario! {
+        fn rows_and_columns_stand_on_their_lines;
 
-        let ragged = holding(
-            "DescribedList",
-            "list",
-            Some(Role::List),
-            vec![row("a", 0, 24.0, 400.0), row("b", 0, 40.0, 400.0)],
-        );
-        let problems = found(Kind::RaggedColumns, &ragged, (1280, 800));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("depth 0"), "{problems:?}");
-
-        let indented = holding(
-            "DescribedList",
-            "list",
-            Some(Role::List),
-            vec![
-                row("a", 0, 24.0, 400.0),
-                row("b", 1, 44.0, 400.0),
-                row("c", 2, 64.0, 400.0),
-            ],
-        );
-        assert!(found(Kind::RaggedColumns, &indented, (1280, 800)).is_empty());
-
-        let stepped = holding(
-            "DescribedList",
-            "list",
-            Some(Role::List),
-            vec![
-                row("a", 0, 24.0, 400.0),
-                row("b", 1, 44.0, 400.0),
-                row("c", 2, 56.0, 400.0),
-            ],
-        );
-        let problems = found(Kind::RaggedColumns, &stepped, (1280, 800));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("nesting steps"), "{problems:?}");
-    }
-
-    /// A list or tree keeps its first level within one nesting step of the title its section goes
-    /// by: a step for the title's column and no second step for the first level.
-    #[test]
-    fn a_first_level_stands_within_one_step_of_its_sections_title() {
-        let section = |first: f64, nested: f64| {
-            holding(
-                "Section",
-                "section",
-                None,
-                vec![
-                    named(
-                        "Text",
-                        "title",
-                        [24.0, 0.0, 200.0, 20.0],
-                        Role::Heading { level: 2 },
-                        "Subtasks",
-                    ),
-                    holding(
-                        "DescribedTreeView",
-                        "tree",
-                        Some(Role::Tree),
-                        vec![row("a", 0, first, 400.0), row("b", 1, nested, 400.0)],
-                    ),
-                ],
-            )
-        };
-        // The title's column, and the one step a folding chevron hangs in front of the rows.
-        let standing = section(46.0, 68.0);
-        assert!(found(Kind::FirstLevelIndent, &standing, (390, 844)).is_empty());
-        let flush = section(24.0, 46.0);
-        assert!(found(Kind::FirstLevelIndent, &flush, (390, 844)).is_empty());
-
-        // A step for the chevron and another for the first level:
-        // the section's rows stand adrift of the words that name
-        // them.
-        let adrift = section(68.0, 90.0);
-        let problems = found(Kind::FirstLevelIndent, &adrift, (390, 844));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("Subtasks"), "{problems:?}");
-        assert_eq!(problems[0].widget, "DescribedTreeView", "{problems:?}");
-
-        // A title beside the box, in another column of the page, says nothing of its rows.
-        let mut beside = section(68.0, 90.0);
-        beside.children[1].rect = [200.0, 0.0, 400.0, 300.0];
-        assert!(found(Kind::FirstLevelIndent, &beside, (390, 844)).is_empty());
-    }
-
-    /// A group's first row stands on the level its list starts at: a row indented there stands
-    /// under no row of its group, so it says what it belongs to in its own words instead.
-    #[test]
-    fn a_group_does_not_open_on_an_indented_row() {
-        /// One child of a list, as the check reads it: the heading
-        /// over a group, or a row and how deep it says it stands.
-        enum Line {
-            Heading(&'static str),
-            Row(usize),
-        }
-        let grouped = |lines: Vec<Line>| {
-            let mut list = node(
+        phase rows_of_one_box_must_share_their_columns;
+        // Rows of one box stand their titles on one x at each depth, and every nesting step indents by
+        // the same gutter: a row whose leading control or nesting walks off that line is caught, and
+        // one that stands on it is not.
+        {
+            let shared = holding(
                 "DescribedList",
                 "list",
-                [0.0, 0.0, 400.0, 600.0],
-                Some(Role::Tree),
+                Some(Role::List),
+                vec![row("a", 0, 24.0, 400.0), row("b", 0, 24.0, 400.0)],
             );
-            let mut semantics = AccessNode::new(Role::Tree);
-            let mut top = 0.0;
-            for line in lines {
-                match line {
-                    Line::Heading(name) => semantics.children.push(
-                        AccessNode::new(Role::Button)
-                            .with_name(name)
-                            .with_action_target(format!("group:{name}"))
-                            .with_bounds(Rect::new(0.0, top, 400.0, top + 24.0)),
-                    ),
-                    Line::Row(level) => {
-                        semantics.children.push(
-                            AccessNode::new(Role::TreeItem)
-                                .with_name("A task")
-                                .with_level(level)
-                                .with_bounds(Rect::new(0.0, top, 400.0, top + 36.0)),
-                        );
-                        top += 36.0;
+            assert!(found(Kind::RaggedColumns, &shared, (1280, 800)).is_empty());
+
+            let ragged = holding(
+                "DescribedList",
+                "list",
+                Some(Role::List),
+                vec![row("a", 0, 24.0, 400.0), row("b", 0, 40.0, 400.0)],
+            );
+            let problems = found(Kind::RaggedColumns, &ragged, (1280, 800));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("depth 0"), "{problems:?}");
+
+            let indented = holding(
+                "DescribedList",
+                "list",
+                Some(Role::List),
+                vec![
+                    row("a", 0, 24.0, 400.0),
+                    row("b", 1, 44.0, 400.0),
+                    row("c", 2, 64.0, 400.0),
+                ],
+            );
+            assert!(found(Kind::RaggedColumns, &indented, (1280, 800)).is_empty());
+
+            let stepped = holding(
+                "DescribedList",
+                "list",
+                Some(Role::List),
+                vec![
+                    row("a", 0, 24.0, 400.0),
+                    row("b", 1, 44.0, 400.0),
+                    row("c", 2, 56.0, 400.0),
+                ],
+            );
+            let problems = found(Kind::RaggedColumns, &stepped, (1280, 800));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("nesting steps"), "{problems:?}");
+        }
+
+        phase a_first_level_stands_within_one_step_of_its_sections_title;
+        // A list or tree keeps its first level within one nesting step of the title its section goes
+        // by: a step for the title's column and no second step for the first level.
+        {
+            let section = |first: f64, nested: f64| {
+                holding(
+                    "Section",
+                    "section",
+                    None,
+                    vec![
+                        named(
+                            "Text",
+                            "title",
+                            [24.0, 0.0, 200.0, 20.0],
+                            Role::Heading { level: 2 },
+                            "Subtasks",
+                        ),
+                        holding(
+                            "DescribedTreeView",
+                            "tree",
+                            Some(Role::Tree),
+                            vec![row("a", 0, first, 400.0), row("b", 1, nested, 400.0)],
+                        ),
+                    ],
+                )
+            };
+            // The title's column, and the one step a folding chevron hangs in front of the rows.
+            let standing = section(46.0, 68.0);
+            assert!(found(Kind::FirstLevelIndent, &standing, (390, 844)).is_empty());
+            let flush = section(24.0, 46.0);
+            assert!(found(Kind::FirstLevelIndent, &flush, (390, 844)).is_empty());
+
+            // A step for the chevron and another for the first level:
+            // the section's rows stand adrift of the words that name
+            // them.
+            let adrift = section(68.0, 90.0);
+            let problems = found(Kind::FirstLevelIndent, &adrift, (390, 844));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("Subtasks"), "{problems:?}");
+            assert_eq!(problems[0].widget, "DescribedTreeView", "{problems:?}");
+
+            // A title beside the box, in another column of the page, says nothing of its rows.
+            let mut beside = section(68.0, 90.0);
+            beside.children[1].rect = [200.0, 0.0, 400.0, 300.0];
+            assert!(found(Kind::FirstLevelIndent, &beside, (390, 844)).is_empty());
+        }
+
+        phase a_group_does_not_open_on_an_indented_row;
+        // A group's first row stands on the level its list starts at: a row indented there stands
+        // under no row of its group, so it says what it belongs to in its own words instead.
+        {
+            /// One child of a list, as the check reads it: the heading
+            /// over a group, or a row and how deep it says it stands.
+            enum Line {
+                Heading(&'static str),
+                Row(usize),
+            }
+            let grouped = |lines: Vec<Line>| {
+                let mut list = node(
+                    "DescribedList",
+                    "list",
+                    [0.0, 0.0, 400.0, 600.0],
+                    Some(Role::Tree),
+                );
+                let mut semantics = AccessNode::new(Role::Tree);
+                let mut top = 0.0;
+                for line in lines {
+                    match line {
+                        Line::Heading(name) => semantics.children.push(
+                            AccessNode::new(Role::Button)
+                                .with_name(name)
+                                .with_action_target(format!("group:{name}"))
+                                .with_bounds(Rect::new(0.0, top, 400.0, top + 24.0)),
+                        ),
+                        Line::Row(level) => {
+                            semantics.children.push(
+                                AccessNode::new(Role::TreeItem)
+                                    .with_name("A task")
+                                    .with_level(level)
+                                    .with_bounds(Rect::new(0.0, top, 400.0, top + 36.0)),
+                            );
+                            top += 36.0;
+                        }
                     }
                 }
-            }
-            list.semantics = Some(semantics);
-            list
-        };
+                list.semantics = Some(semantics);
+                list
+            };
 
-        // A step of a task due the same day stands under it, and
-        // one due another day opens its group on the list's own
-        // level.
-        let nested = grouped(vec![
-            Line::Heading("Monday"),
-            Line::Row(1),
-            Line::Row(2),
-            Line::Heading("Thursday"),
-            Line::Row(1),
-        ]);
-        assert!(found(Kind::OrphanedRow, &nested, (390, 844)).is_empty());
+            // A step of a task due the same day stands under it, and
+            // one due another day opens its group on the list's own
+            // level.
+            let nested = grouped(vec![
+                Line::Heading("Monday"),
+                Line::Row(1),
+                Line::Row(2),
+                Line::Heading("Thursday"),
+                Line::Row(1),
+            ]);
+            assert!(found(Kind::OrphanedRow, &nested, (390, 844)).is_empty());
 
-        // The day's first row stands a step in, under a row of the group above it.
-        let orphaned = grouped(vec![
-            Line::Heading("Monday"),
-            Line::Row(1),
-            Line::Row(2),
-            Line::Heading("Thursday"),
-            Line::Row(2),
-        ]);
-        let problems = found(Kind::OrphanedRow, &orphaned, (390, 844));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("Thursday"), "{problems:?}");
+            // The day's first row stands a step in, under a row of the group above it.
+            let orphaned = grouped(vec![
+                Line::Heading("Monday"),
+                Line::Row(1),
+                Line::Row(2),
+                Line::Heading("Thursday"),
+                Line::Row(2),
+            ]);
+            let problems = found(Kind::OrphanedRow, &orphaned, (390, 844));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("Thursday"), "{problems:?}");
 
-        // A list whose rows all stand the same depth starts there: the level it starts at is the
-        // one its rows share, and no group of it opens a step in.
-        let even = grouped(vec![
-            Line::Heading("Monday"),
-            Line::Row(2),
-            Line::Heading("Thursday"),
-            Line::Row(2),
-        ]);
-        assert!(found(Kind::OrphanedRow, &even, (390, 844)).is_empty());
-    }
+            // A list whose rows all stand the same depth starts there: the level it starts at is the
+            // one its rows share, and no group of it opens a step in.
+            let even = grouped(vec![
+                Line::Heading("Monday"),
+                Line::Row(2),
+                Line::Heading("Thursday"),
+                Line::Row(2),
+            ]);
+            assert!(found(Kind::OrphanedRow, &even, (390, 844)).is_empty());
+        }
 
-    /// A column keeps its titles to itself: the heading deep in the page behind a drawer names no
-    /// row of the drawer, whose box stands in a column of its own.
-    #[test]
-    fn a_column_hands_no_title_to_the_column_after_it() {
-        // The page in front of a narrow window: a section headed "History" over what it lists,
-        // under the page's stack, as a document's sections are.
-        let page = holding(
-            "Scrollable",
-            "page",
-            None,
-            vec![holding(
-                "Stack",
-                "sections",
+        phase a_column_hands_no_title_to_the_column_after_it;
+        // A column keeps its titles to itself: the heading deep in the page behind a drawer names no
+        // row of the drawer, whose box stands in a column of its own.
+        {
+            // The page in front of a narrow window: a section headed "History" over what it lists,
+            // under the page's stack, as a document's sections are.
+            let page = holding(
+                "Scrollable",
+                "page",
                 None,
                 vec![holding(
-                    "Section",
-                    "history",
+                    "Stack",
+                    "sections",
+                    None,
+                    vec![holding(
+                        "Section",
+                        "history",
+                        None,
+                        vec![
+                            holding(
+                                "SectionHeader",
+                                "head",
+                                None,
+                                vec![named(
+                                    "Text",
+                                    "title",
+                                    [24.0, 0.0, 200.0, 20.0],
+                                    Role::Heading { level: 2 },
+                                    "History",
+                                )],
+                            ),
+                            holding("Stack", "entries", None, vec![row("a", 0, 24.0, 400.0)]),
+                        ],
+                    )],
+                )],
+            );
+            // The drawer over it: a tree whose rows stand one step in, as a tree's do.
+            let drawer = holding(
+                "DescribedTreeView",
+                "tree",
+                Some(Role::Tree),
+                vec![
+                    holding(
+                        "HoverToolbar",
+                        "first",
+                        None,
+                        vec![row("b", 1, 52.0, 400.0)],
+                    ),
+                    holding(
+                        "HoverToolbar",
+                        "second",
+                        None,
+                        vec![row("c", 1, 52.0, 400.0)],
+                    ),
+                ],
+            );
+            let both = holding("Stack", "columns", None, vec![page, drawer]);
+            assert!(
+                found(Kind::FirstLevelIndent, &both, (390, 844)).is_empty(),
+                "the page's title names no row of the drawer"
+            );
+        }
+
+        phase a_field_holding_one_line_stands_it_in_the_middle_of_the_band;
+        // A field's one line stands in the middle of the band it is typed into: a band grown to a
+        // finger's target centres it, a line left at the top does not, and wrapped text, a box given
+        // rows and a document's page start at the inset.
+        {
+            fn field(
+                id: &str,
+                at: [f64; 4],
+                top: f64,
+                line: f64,
+                rows: u32,
+                lines: u32,
+            ) -> InspectionNode {
+                let mut field = node("TextInput", id, at, Some(Role::TextInput));
+                field.layout = Some(LayoutInfo::Text(ui::widget::TextLayout {
+                    top: f64_to_f32(top),
+                    line: f64_to_f32(line),
+                    rows,
+                    lines,
+                    // A field stands one band tall as it is read here, whatever room it was given.
+                    band: f64_to_f32(at[3]),
+                    document: false,
+                }));
+                field
+            }
+            /// The field in a band `band` tall: the room a single-line field of its size keeps.
+            fn in_band(mut field: InspectionNode, band: f64) -> InspectionNode {
+                if let Some(LayoutInfo::Text(text)) = &mut field.layout {
+                    text.band = f64_to_f32(band);
+                }
+                field
+            }
+            // A composer in a phone's window: the band grew to the target
+            // a finger needs, and its one line stands in the middle of it.
+            let centred = field("comment", [100.0, 20.0, 240.0, 48.0], 34.9, 18.2, 1, 0);
+            assert!(
+                found(Kind::LineOffCentre, &centred, (390, 844)).is_empty(),
+                "{:?}",
+                found(Kind::LineOffCentre, &centred, (390, 844))
+            );
+            // The same field with its line at the top: the words float over empty room, and the caret
+            // stands away from the middle of the box a finger pressed.
+            let pinned = field("comment", [100.0, 20.0, 240.0, 48.0], 28.0, 18.2, 1, 0);
+            let problems = found(Kind::LineOffCentre, &pinned, (390, 844));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            // Text that wrapped starts at its inset and grows down, as a document does.
+            let wrapped = field("comment", [100.0, 20.0, 240.0, 60.0], 28.0, 18.2, 2, 0);
+            assert!(found(Kind::LineOffCentre, &wrapped, (390, 844)).is_empty());
+            // A box given rows of its own (a note's six) starts at its inset, one line or not.
+            let note = in_band(
+                field("notes", [0.0, 0.0, 240.0, 126.0], 6.0, 18.2, 1, 6),
+                32.0,
+            );
+            assert!(found(Kind::LineOffCentre, &note, (1280, 800)).is_empty());
+            // A field stretched to fill a pane keeps its line at its inset: the room is the pane's.
+            let filled = in_band(
+                field("composer", [0.0, 0.0, 320.0, 200.0], 8.0, 18.2, 1, 0),
+                48.0,
+            );
+            assert!(found(Kind::LineOffCentre, &filled, (1280, 800)).is_empty());
+            // A document's own page starts at its inset however tall the page stands.
+            let mut page = field("body", [0.0, 0.0, 320.0, 400.0], 8.0, 18.2, 1, 0);
+            if let Some(LayoutInfo::Text(text)) = &mut page.layout {
+                text.document = true;
+            }
+            assert!(found(Kind::LineOffCentre, &page, (1280, 800)).is_empty());
+            let single = field("search", [0.0, 0.0, 240.0, 32.0], 6.9, 18.2, 1, 0);
+            assert!(found(Kind::LineOffCentre, &single, (1280, 800)).is_empty());
+        }
+
+        phase a_narrow_window_keeps_a_gutter;
+        // A window too narrow for a page's gutters keeps one at its edge: content eight pixels from
+        // the glass is caught, content a gutter in is not.
+        {
+            let narrow = |text_x: f64, content_right: f64| {
+                holding(
+                    "DescribedList",
+                    "list",
+                    Some(Role::List),
+                    vec![row("a", 0, text_x, content_right)],
+                )
+            };
+            assert!(found(Kind::CrampedGutter, &narrow(20.0, 370.0), (390, 844)).is_empty());
+            let problems = found(Kind::CrampedGutter, &narrow(8.0, 390.0), (390, 844));
+            assert_eq!(problems.len(), 2, "{problems:?}");
+            // A window with room for its own page keeps its content where the page puts it.
+            assert!(found(Kind::CrampedGutter, &narrow(8.0, 390.0), (1280, 800)).is_empty());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_screen_says_each_thing_once_in_the_persons_words;
+
+        phase one_choice_is_filled_once;
+        // One choice is filled once: a selected row inside a selected box draws the same choice twice,
+        // where a selected row in a plain box draws it once.
+        {
+            let shape = || {
+                holding(
+                    "Card",
+                    "card",
+                    None,
+                    vec![selected(
+                        "ListRow",
+                        "row",
+                        [0.0, 0.0, 400.0, 36.0],
+                        Role::ListItem,
+                    )],
+                )
+            };
+            let mut once = shape();
+            once.widget = "Stack".to_owned();
+            assert!(found(Kind::DoubleSelection, &once, (1280, 800)).is_empty());
+
+            let mut boxed = shape();
+            boxed.semantics = Some(
+                AccessNode::new(Role::List).with_state(ui::a11y::AccessState::new().selected(true)),
+            );
+            let problems = found(Kind::DoubleSelection, &boxed, (1280, 800));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert_eq!(problems[0].widget, "ListRow");
+        }
+
+        phase the_place_a_window_shows_stands_chosen;
+        // The place a window shows is lit in its sidebar: the header naming a
+        // place the sidebar offers while no place there stands chosen leaves
+        // the person unable to see where they are, and a chosen place says
+        // it.
+        {
+            let shell = |chosen: bool| {
+                let design = if chosen {
+                    lit("NavRow", "design", [0.0, 64.0, 200.0, 28.0], "design")
+                } else {
+                    named(
+                        "NavRow",
+                        "design",
+                        [0.0, 64.0, 200.0, 28.0],
+                        Role::TreeItem,
+                        "design",
+                    )
+                };
+                holding(
+                    "NavShell",
+                    "shell",
                     None,
                     vec![
                         holding(
-                            "SectionHeader",
-                            "head",
+                            "NavContent",
+                            "content",
                             None,
                             vec![named(
-                                "Text",
+                                "NavShellTitle",
                                 "title",
-                                [24.0, 0.0, 200.0, 20.0],
-                                Role::Heading { level: 2 },
-                                "History",
+                                [260.0, 0.0, 200.0, 24.0],
+                                Role::Heading { level: 1 },
+                                "design",
                             )],
                         ),
-                        holding("Stack", "entries", None, vec![row("a", 0, 24.0, 400.0)]),
+                        holding(
+                            "NavList",
+                            "places",
+                            Some(Role::Tree),
+                            vec![
+                                named(
+                                    "NavRow",
+                                    "general",
+                                    [0.0, 36.0, 200.0, 28.0],
+                                    Role::TreeItem,
+                                    "general",
+                                ),
+                                design,
+                            ],
+                        ),
+                        named(
+                            "NavShellTitle",
+                            "sidebar-title",
+                            [8.0, 0.0, 120.0, 24.0],
+                            Role::Heading { level: 2 },
+                            "Channels",
+                        ),
                     ],
-                )],
-            )],
-        );
-        // The drawer over it: a tree whose rows stand one step in, as a tree's do.
-        let drawer = holding(
-            "DescribedTreeView",
-            "tree",
-            Some(Role::Tree),
-            vec![
-                holding(
-                    "HoverToolbar",
-                    "first",
-                    None,
-                    vec![row("b", 1, 52.0, 400.0)],
-                ),
-                holding(
-                    "HoverToolbar",
-                    "second",
-                    None,
-                    vec![row("c", 1, 52.0, 400.0)],
-                ),
-            ],
-        );
-        let both = holding("Stack", "columns", None, vec![page, drawer]);
-        assert!(
-            found(Kind::FirstLevelIndent, &both, (390, 844)).is_empty(),
-            "the page's title names no row of the drawer"
-        );
-    }
+                )
+            };
+            let problems = found(Kind::UnchosenPlace, &shell(false), (1280, 800));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("design"), "{problems:?}");
+            assert!(
+                found(Kind::UnchosenPlace, &shell(true), (1280, 800)).is_empty(),
+                "a chosen place says where the person is"
+            );
+        }
 
-    /// One choice is filled once: a selected row inside a selected box draws the same choice twice,
-    /// where a selected row in a plain box draws it once.
-    #[test]
-    fn one_choice_is_filled_once() {
-        let shape = || {
-            holding(
-                "Card",
-                "card",
+        phase a_screen_offers_one_way_to_add;
+        // One screen offers one way to add: two add affordances in one list, or one label on two
+        // controls, makes a person choose between them.
+        {
+            let single = holding(
+                "Page",
+                "page",
                 None,
-                vec![selected(
-                    "ListRow",
-                    "row",
-                    [0.0, 0.0, 400.0, 36.0],
-                    Role::ListItem,
+                vec![named(
+                    "TextInput",
+                    "entry",
+                    [0.0, 0.0, 300.0, 32.0],
+                    Role::TextInput,
+                    "New task",
                 )],
-            )
-        };
-        let mut once = shape();
-        once.widget = "Stack".to_owned();
-        assert!(found(Kind::DoubleSelection, &once, (1280, 800)).is_empty());
+            );
+            assert!(found(Kind::SeveralAdds, &single, (1280, 800)).is_empty());
 
-        let mut boxed = shape();
-        boxed.semantics = Some(
-            AccessNode::new(Role::List).with_state(ui::a11y::AccessState::new().selected(true)),
-        );
-        let problems = found(Kind::DoubleSelection, &boxed, (1280, 800));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(problems[0].widget, "ListRow");
+            let twice_in_one_list = holding(
+                "DescribedList",
+                "list",
+                Some(Role::List),
+                vec![
+                    named(
+                        "TextInput",
+                        "entry",
+                        [0.0, 0.0, 300.0, 32.0],
+                        Role::TextInput,
+                        "New task",
+                    ),
+                    named(
+                        "Button",
+                        "add",
+                        [0.0, 40.0, 100.0, 32.0],
+                        Role::Button,
+                        "Add task",
+                    ),
+                ],
+            );
+            let problems = found(Kind::SeveralAdds, &twice_in_one_list, (1280, 800));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("one list"), "{problems:?}");
+
+            // The screen's chrome offers the actions of the screen,
+            // one per thing: a header with two of them is not a
+            // list.
+            let chrome = holding(
+                "NavShell",
+                "shell",
+                None,
+                vec![
+                    named(
+                        "Button",
+                        "new-task",
+                        [0.0, 0.0, 100.0, 32.0],
+                        Role::Button,
+                        "New task",
+                    ),
+                    named(
+                        "Button",
+                        "new-project",
+                        [110.0, 0.0, 100.0, 32.0],
+                        Role::Button,
+                        "New project",
+                    ),
+                ],
+            );
+            assert!(found(Kind::SeveralAdds, &chrome, (1280, 800)).is_empty());
+
+            // One add entry, at the end of each list: rows of a board each offer their own.
+            let lanes = holding(
+                "Board",
+                "board",
+                None,
+                (0..3)
+                    .map(|index| {
+                        holding(
+                            "BoardLane",
+                            &format!("lane{index}"),
+                            Some(Role::List),
+                            vec![named(
+                                "Button",
+                                "add",
+                                [0.0, 0.0, 100.0, 32.0],
+                                Role::Button,
+                                "New card",
+                            )],
+                        )
+                    })
+                    .collect(),
+            );
+            assert!(found(Kind::SeveralAdds, &lanes, (1280, 800)).is_empty());
+
+            let mut row_called_new = named(
+                "ListRow",
+                "row",
+                [0.0, 0.0, 300.0, 36.0],
+                Role::ListItem,
+                "New year",
+            );
+            row_called_new.children = vec![];
+            let content = holding(
+                "DescribedList",
+                "list",
+                Some(Role::List),
+                vec![row_called_new],
+            );
+            assert!(found(Kind::SeveralAdds, &content, (1280, 800)).is_empty());
+        }
+
+        phase a_name_is_not_a_code_identifier;
+        // A name is words a person says, not the identifier the code keeps it under.
+        {
+            let say = |name: &str| {
+                holding(
+                    "Page",
+                    "page",
+                    None,
+                    vec![named(
+                        "Button",
+                        "button",
+                        [0.0, 0.0, 100.0, 32.0],
+                        Role::Button,
+                        name,
+                    )],
+                )
+            };
+            assert!(found(Kind::CodedName, &say("Save draft"), (1280, 800)).is_empty());
+            // A brand wears the same shape (macOS), so capital letters inside a word say nothing on
+            // their own: what is caught is the punctuation an identifier is written with.
+            for code in ["save_draft", "notes.save()", "store::notes"] {
+                let problems = found(Kind::CodedName, &say(code), (1280, 800));
+                assert_eq!(problems.len(), 1, "{code}: {problems:?}");
+            }
+            // A name built from a view and a binding names the binding, which a screen reader reads out
+            // as one letter; a one-letter name of its own is a letter ("X" on an axis).
+            for code in ["Note editor for t", "Note editor for c"] {
+                let problems = found(Kind::CodedName, &say(code), (1280, 800));
+                assert_eq!(problems.len(), 1, "{code}: {problems:?}");
+                assert!(problems[0].detail.contains("code"), "{problems:?}");
+            }
+            assert!(found(Kind::CodedName, &say("X"), (1280, 800)).is_empty());
+            assert!(found(Kind::CodedName, &say("A note"), (1280, 800)).is_empty());
+            assert!(found(Kind::CodedName, &say("I pinned this"), (1280, 800)).is_empty());
+        }
+
+        phase a_destructive_control_says_delete;
+        // A control that destroys something says "Delete", as every screen does; one that clears a
+        // field's value declares no destruction and may say "Remove".
+        {
+            let say = |name: &str| {
+                holding(
+                    "Page",
+                    "page",
+                    None,
+                    vec![named(
+                        "Button",
+                        "button",
+                        [0.0, 0.0, 100.0, 32.0],
+                        Role::Button,
+                        name,
+                    )],
+                )
+            };
+            let destroys = declared_destructive("button");
+            assert!(
+                found_as(
+                    Kind::UnsharedVerb,
+                    &say("Delete project"),
+                    (1280, 800),
+                    &destroys
+                )
+                .is_empty()
+            );
+            let problems = found_as(
+                Kind::UnsharedVerb,
+                &say("Remove project"),
+                (1280, 800),
+                &destroys,
+            );
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].detail.contains("Delete"), "{problems:?}");
+
+            // One word is the whole label: a control that says only "Discard" destroys with as plain a
+            // verb as one that says "Discard view".
+            for bare in [
+                "Remove",
+                "Discard",
+                "Erase",
+                "Purge",
+                "Wipe",
+                "Drop",
+                "discard…",
+                "Clear",
+                "Clear done",
+                "clear…",
+            ] {
+                let problems = found_as(Kind::UnsharedVerb, &say(bare), (1280, 800), &destroys);
+                assert_eq!(problems.len(), 1, "{bare}: {problems:?}");
+            }
+            // A control that deletes the records it names says
+            // "Delete", whatever the noun it takes away is
+            // called.
+            let problems = found_as(
+                Kind::UnsharedVerb,
+                &say("Delete finished tasks"),
+                (1280, 800),
+                &destroys,
+            );
+            assert!(problems.is_empty(), "{problems:?}");
+            assert!(
+                found_as(
+                    Kind::UnsharedVerb,
+                    &say("Discarded"),
+                    (1280, 800),
+                    &destroys
+                )
+                .is_empty(),
+                "a word that only starts with a verb does not destroy with it"
+            );
+
+            // A field's own button clears the value the field holds: the
+            // view declares nothing of it, so the word it says is its
+            // own.
+            for cleared in ["Remove time", "Clear time"] {
+                assert!(
+                    found(Kind::UnsharedVerb, &say(cleared), (1280, 800)).is_empty(),
+                    "a control the view declares nothing of is nobody's destructive control: {cleared}"
+                );
+            }
+        }
+
+        phase a_card_is_not_drawn_on_a_card;
+        // A surface holds its content on the page: a card drawn on a card is one surface too many.
+        {
+            let card = |inner: Vec<InspectionNode>| {
+                holding(
+                    "Card",
+                    "card",
+                    None,
+                    vec![holding("Stack", "stack", None, inner)],
+                )
+            };
+            assert!(found(Kind::NestedCard, &card(vec![]), (1280, 800)).is_empty());
+            let problems = found(Kind::NestedCard, &card(vec![card(vec![])]), (1280, 800));
+            assert_eq!(problems.len(), 1, "{problems:?}");
+        }
     }
 
     fn lit(widget: &str, id: &str, rect: [f64; 4], name: &str) -> InspectionNode {
@@ -1547,412 +1961,6 @@ mod tests {
                 .with_state(ui::a11y::AccessState::new().selected(true)),
         );
         node
-    }
-
-    /// The place a window shows is lit in its sidebar: the header naming a
-    /// place the sidebar offers while no place there stands chosen leaves
-    /// the person unable to see where they are, and a chosen place says
-    /// it.
-    #[test]
-    fn the_place_a_window_shows_stands_chosen() {
-        let shell = |chosen: bool| {
-            let design = if chosen {
-                lit("NavRow", "design", [0.0, 64.0, 200.0, 28.0], "design")
-            } else {
-                named(
-                    "NavRow",
-                    "design",
-                    [0.0, 64.0, 200.0, 28.0],
-                    Role::TreeItem,
-                    "design",
-                )
-            };
-            holding(
-                "NavShell",
-                "shell",
-                None,
-                vec![
-                    holding(
-                        "NavContent",
-                        "content",
-                        None,
-                        vec![named(
-                            "NavShellTitle",
-                            "title",
-                            [260.0, 0.0, 200.0, 24.0],
-                            Role::Heading { level: 1 },
-                            "design",
-                        )],
-                    ),
-                    holding(
-                        "NavList",
-                        "places",
-                        Some(Role::Tree),
-                        vec![
-                            named(
-                                "NavRow",
-                                "general",
-                                [0.0, 36.0, 200.0, 28.0],
-                                Role::TreeItem,
-                                "general",
-                            ),
-                            design,
-                        ],
-                    ),
-                    named(
-                        "NavShellTitle",
-                        "sidebar-title",
-                        [8.0, 0.0, 120.0, 24.0],
-                        Role::Heading { level: 2 },
-                        "Channels",
-                    ),
-                ],
-            )
-        };
-        let problems = found(Kind::UnchosenPlace, &shell(false), (1280, 800));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("design"), "{problems:?}");
-        assert!(
-            found(Kind::UnchosenPlace, &shell(true), (1280, 800)).is_empty(),
-            "a chosen place says where the person is"
-        );
-    }
-
-    /// A field's one line stands in the middle of the band it is typed into: a band grown to a
-    /// finger's target centres it, a line left at the top does not, and wrapped text, a box given
-    /// rows and a document's page start at the inset.
-    #[test]
-    fn a_field_holding_one_line_stands_it_in_the_middle_of_the_band() {
-        fn field(
-            id: &str,
-            at: [f64; 4],
-            top: f64,
-            line: f64,
-            rows: u32,
-            lines: u32,
-        ) -> InspectionNode {
-            let mut field = node("TextInput", id, at, Some(Role::TextInput));
-            field.layout = Some(LayoutInfo::Text(ui::widget::TextLayout {
-                top: f64_to_f32(top),
-                line: f64_to_f32(line),
-                rows,
-                lines,
-                // A field stands one band tall as it is read here, whatever room it was given.
-                band: f64_to_f32(at[3]),
-                document: false,
-            }));
-            field
-        }
-        /// The field in a band `band` tall: the room a single-line field of its size keeps.
-        fn in_band(mut field: InspectionNode, band: f64) -> InspectionNode {
-            if let Some(LayoutInfo::Text(text)) = &mut field.layout {
-                text.band = f64_to_f32(band);
-            }
-            field
-        }
-        // A composer in a phone's window: the band grew to the target
-        // a finger needs, and its one line stands in the middle of it.
-        let centred = field("comment", [100.0, 20.0, 240.0, 48.0], 34.9, 18.2, 1, 0);
-        assert!(
-            found(Kind::LineOffCentre, &centred, (390, 844)).is_empty(),
-            "{:?}",
-            found(Kind::LineOffCentre, &centred, (390, 844))
-        );
-        // The same field with its line at the top: the words float over empty room, and the caret
-        // stands away from the middle of the box a finger pressed.
-        let pinned = field("comment", [100.0, 20.0, 240.0, 48.0], 28.0, 18.2, 1, 0);
-        let problems = found(Kind::LineOffCentre, &pinned, (390, 844));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        // Text that wrapped starts at its inset and grows down, as a document does.
-        let wrapped = field("comment", [100.0, 20.0, 240.0, 60.0], 28.0, 18.2, 2, 0);
-        assert!(found(Kind::LineOffCentre, &wrapped, (390, 844)).is_empty());
-        // A box given rows of its own (a note's six) starts at its inset, one line or not.
-        let note = in_band(
-            field("notes", [0.0, 0.0, 240.0, 126.0], 6.0, 18.2, 1, 6),
-            32.0,
-        );
-        assert!(found(Kind::LineOffCentre, &note, (1280, 800)).is_empty());
-        // A field stretched to fill a pane keeps its line at its inset: the room is the pane's.
-        let filled = in_band(
-            field("composer", [0.0, 0.0, 320.0, 200.0], 8.0, 18.2, 1, 0),
-            48.0,
-        );
-        assert!(found(Kind::LineOffCentre, &filled, (1280, 800)).is_empty());
-        // A document's own page starts at its inset however tall the page stands.
-        let mut page = field("body", [0.0, 0.0, 320.0, 400.0], 8.0, 18.2, 1, 0);
-        if let Some(LayoutInfo::Text(text)) = &mut page.layout {
-            text.document = true;
-        }
-        assert!(found(Kind::LineOffCentre, &page, (1280, 800)).is_empty());
-        let single = field("search", [0.0, 0.0, 240.0, 32.0], 6.9, 18.2, 1, 0);
-        assert!(found(Kind::LineOffCentre, &single, (1280, 800)).is_empty());
-    }
-
-    /// A window too narrow for a page's gutters keeps one at its edge: content eight pixels from
-    /// the glass is caught, content a gutter in is not.
-    #[test]
-    fn a_narrow_window_keeps_a_gutter() {
-        let narrow = |text_x: f64, content_right: f64| {
-            holding(
-                "DescribedList",
-                "list",
-                Some(Role::List),
-                vec![row("a", 0, text_x, content_right)],
-            )
-        };
-        assert!(found(Kind::CrampedGutter, &narrow(20.0, 370.0), (390, 844)).is_empty());
-        let problems = found(Kind::CrampedGutter, &narrow(8.0, 390.0), (390, 844));
-        assert_eq!(problems.len(), 2, "{problems:?}");
-        // A window with room for its own page keeps its content where the page puts it.
-        assert!(found(Kind::CrampedGutter, &narrow(8.0, 390.0), (1280, 800)).is_empty());
-    }
-
-    /// One screen offers one way to add: two add affordances in one list, or one label on two
-    /// controls, makes a person choose between them.
-    #[test]
-    fn a_screen_offers_one_way_to_add() {
-        let single = holding(
-            "Page",
-            "page",
-            None,
-            vec![named(
-                "TextInput",
-                "entry",
-                [0.0, 0.0, 300.0, 32.0],
-                Role::TextInput,
-                "New task",
-            )],
-        );
-        assert!(found(Kind::SeveralAdds, &single, (1280, 800)).is_empty());
-
-        let twice_in_one_list = holding(
-            "DescribedList",
-            "list",
-            Some(Role::List),
-            vec![
-                named(
-                    "TextInput",
-                    "entry",
-                    [0.0, 0.0, 300.0, 32.0],
-                    Role::TextInput,
-                    "New task",
-                ),
-                named(
-                    "Button",
-                    "add",
-                    [0.0, 40.0, 100.0, 32.0],
-                    Role::Button,
-                    "Add task",
-                ),
-            ],
-        );
-        let problems = found(Kind::SeveralAdds, &twice_in_one_list, (1280, 800));
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("one list"), "{problems:?}");
-
-        // The screen's chrome offers the actions of the screen,
-        // one per thing: a header with two of them is not a
-        // list.
-        let chrome = holding(
-            "NavShell",
-            "shell",
-            None,
-            vec![
-                named(
-                    "Button",
-                    "new-task",
-                    [0.0, 0.0, 100.0, 32.0],
-                    Role::Button,
-                    "New task",
-                ),
-                named(
-                    "Button",
-                    "new-project",
-                    [110.0, 0.0, 100.0, 32.0],
-                    Role::Button,
-                    "New project",
-                ),
-            ],
-        );
-        assert!(found(Kind::SeveralAdds, &chrome, (1280, 800)).is_empty());
-
-        // One add entry, at the end of each list: rows of a board each offer their own.
-        let lanes = holding(
-            "Board",
-            "board",
-            None,
-            (0..3)
-                .map(|index| {
-                    holding(
-                        "BoardLane",
-                        &format!("lane{index}"),
-                        Some(Role::List),
-                        vec![named(
-                            "Button",
-                            "add",
-                            [0.0, 0.0, 100.0, 32.0],
-                            Role::Button,
-                            "New card",
-                        )],
-                    )
-                })
-                .collect(),
-        );
-        assert!(found(Kind::SeveralAdds, &lanes, (1280, 800)).is_empty());
-
-        let mut row_called_new = named(
-            "ListRow",
-            "row",
-            [0.0, 0.0, 300.0, 36.0],
-            Role::ListItem,
-            "New year",
-        );
-        row_called_new.children = vec![];
-        let content = holding(
-            "DescribedList",
-            "list",
-            Some(Role::List),
-            vec![row_called_new],
-        );
-        assert!(found(Kind::SeveralAdds, &content, (1280, 800)).is_empty());
-    }
-
-    /// A name is words a person says, not the identifier the code keeps it under.
-    #[test]
-    fn a_name_is_not_a_code_identifier() {
-        let say = |name: &str| {
-            holding(
-                "Page",
-                "page",
-                None,
-                vec![named(
-                    "Button",
-                    "button",
-                    [0.0, 0.0, 100.0, 32.0],
-                    Role::Button,
-                    name,
-                )],
-            )
-        };
-        assert!(found(Kind::CodedName, &say("Save draft"), (1280, 800)).is_empty());
-        // A brand wears the same shape (macOS), so capital letters inside a word say nothing on
-        // their own: what is caught is the punctuation an identifier is written with.
-        for code in ["save_draft", "notes.save()", "store::notes"] {
-            let problems = found(Kind::CodedName, &say(code), (1280, 800));
-            assert_eq!(problems.len(), 1, "{code}: {problems:?}");
-        }
-        // A name built from a view and a binding names the binding, which a screen reader reads out
-        // as one letter; a one-letter name of its own is a letter ("X" on an axis).
-        for code in ["Note editor for t", "Note editor for c"] {
-            let problems = found(Kind::CodedName, &say(code), (1280, 800));
-            assert_eq!(problems.len(), 1, "{code}: {problems:?}");
-            assert!(problems[0].detail.contains("code"), "{problems:?}");
-        }
-        assert!(found(Kind::CodedName, &say("X"), (1280, 800)).is_empty());
-        assert!(found(Kind::CodedName, &say("A note"), (1280, 800)).is_empty());
-        assert!(found(Kind::CodedName, &say("I pinned this"), (1280, 800)).is_empty());
-    }
-
-    /// A control that destroys something says "Delete", as every screen does; one that clears a
-    /// field's value declares no destruction and may say "Remove".
-    #[test]
-    fn a_destructive_control_says_delete() {
-        let say = |name: &str| {
-            holding(
-                "Page",
-                "page",
-                None,
-                vec![named(
-                    "Button",
-                    "button",
-                    [0.0, 0.0, 100.0, 32.0],
-                    Role::Button,
-                    name,
-                )],
-            )
-        };
-        let destroys = declared_destructive("button");
-        assert!(
-            found_as(
-                Kind::UnsharedVerb,
-                &say("Delete project"),
-                (1280, 800),
-                &destroys
-            )
-            .is_empty()
-        );
-        let problems = found_as(
-            Kind::UnsharedVerb,
-            &say("Remove project"),
-            (1280, 800),
-            &destroys,
-        );
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].detail.contains("Delete"), "{problems:?}");
-
-        // One word is the whole label: a control that says only "Discard" destroys with as plain a
-        // verb as one that says "Discard view".
-        for bare in [
-            "Remove",
-            "Discard",
-            "Erase",
-            "Purge",
-            "Wipe",
-            "Drop",
-            "discard…",
-            "Clear",
-            "Clear done",
-            "clear…",
-        ] {
-            let problems = found_as(Kind::UnsharedVerb, &say(bare), (1280, 800), &destroys);
-            assert_eq!(problems.len(), 1, "{bare}: {problems:?}");
-        }
-        // A control that deletes the records it names says
-        // "Delete", whatever the noun it takes away is
-        // called.
-        let problems = found_as(
-            Kind::UnsharedVerb,
-            &say("Delete finished tasks"),
-            (1280, 800),
-            &destroys,
-        );
-        assert!(problems.is_empty(), "{problems:?}");
-        assert!(
-            found_as(
-                Kind::UnsharedVerb,
-                &say("Discarded"),
-                (1280, 800),
-                &destroys
-            )
-            .is_empty(),
-            "a word that only starts with a verb does not destroy with it"
-        );
-
-        // A field's own button clears the value the field holds: the
-        // view declares nothing of it, so the word it says is its
-        // own.
-        for cleared in ["Remove time", "Clear time"] {
-            assert!(
-                found(Kind::UnsharedVerb, &say(cleared), (1280, 800)).is_empty(),
-                "a control the view declares nothing of is nobody's destructive control: {cleared}"
-            );
-        }
-    }
-
-    /// A surface holds its content on the page: a card drawn on a card is one surface too many.
-    #[test]
-    fn a_card_is_not_drawn_on_a_card() {
-        let card = |inner: Vec<InspectionNode>| {
-            holding(
-                "Card",
-                "card",
-                None,
-                vec![holding("Stack", "stack", None, inner)],
-            )
-        };
-        assert!(found(Kind::NestedCard, &card(vec![]), (1280, 800)).is_empty());
-        let problems = found(Kind::NestedCard, &card(vec![card(vec![])]), (1280, 800));
-        assert_eq!(problems.len(), 1, "{problems:?}");
     }
 
     /// An item standing open where it stands: the row of the list, below its top edge.
@@ -1969,280 +1977,284 @@ mod tests {
         list
     }
 
-    #[test]
-    fn an_open_item_is_a_row_of_the_list_the_person_sees() {
-        let inside = list_of(vec![opened(
-            "row",
-            [16.0, 120.0, 584.0, 420.0],
-            Role::ListItem,
-        )]);
-        assert!(found(Kind::OpenOutsideList, &inside, (1280, 800)).is_empty());
+    tilo_test_env::scenario! {
+        fn an_open_item_stands_in_its_list;
 
-        // A document longer than the list is read by scrolling: its row may reach below it.
-        let long = list_of(vec![opened(
-            "row",
-            [16.0, 120.0, 584.0, 2400.0],
-            Role::ListItem,
-        )]);
-        assert!(found(Kind::OpenOutsideList, &long, (1280, 800)).is_empty());
+        phase an_open_item_is_a_row_of_the_list_the_person_sees;
+        {
+            let inside = list_of(vec![opened(
+                "row",
+                [16.0, 120.0, 584.0, 420.0],
+                Role::ListItem,
+            )]);
+            assert!(found(Kind::OpenOutsideList, &inside, (1280, 800)).is_empty());
 
-        // An item standing open beside the list is not the item where it stands in it.
-        let beside = holding(
-            "Stack",
-            "window",
-            None,
-            vec![
-                list_of(vec![named(
-                    "ListRow",
-                    "row",
-                    [16.0, 120.0, 584.0, 156.0],
-                    Role::ListItem,
-                    "A task",
-                )]),
-                opened("page", [620.0, 120.0, 1200.0, 420.0], Role::ListItem),
-            ],
-        );
-        assert_eq!(
-            found(Kind::OpenOutsideList, &beside, (1280, 800)).len(),
-            1,
-            "an item shown beside its list"
-        );
+            // A document longer than the list is read by scrolling: its row may reach below it.
+            let long = list_of(vec![opened(
+                "row",
+                [16.0, 120.0, 584.0, 2400.0],
+                Role::ListItem,
+            )]);
+            assert!(found(Kind::OpenOutsideList, &long, (1280, 800)).is_empty());
 
-        // An item open with no list at all, and two open rows of one list.
-        let alone = opened("page", [0.0, 0.0, 600.0, 300.0], Role::ListItem);
-        assert_eq!(found(Kind::OpenOutsideList, &alone, (1280, 800)).len(), 1);
-        let twice = list_of(vec![
-            opened("one", [16.0, 120.0, 584.0, 420.0], Role::ListItem),
-            opened("two", [16.0, 430.0, 584.0, 700.0], Role::ListItem),
-        ]);
-        assert_eq!(found(Kind::OpenOutsideList, &twice, (1280, 800)).len(), 1);
-
-        // A tree's branches open and fold their items,
-        // which is not an item showing where it stands.
-        let folded = list_of(vec![opened(
-            "branch",
-            [16.0, 120.0, 584.0, 156.0],
-            Role::TreeItem,
-        )]);
-        assert!(found(Kind::OpenOutsideList, &folded, (1280, 800)).is_empty());
-    }
-
-    /// A list's rows are the nodes the list publishes under its own, not widgets of their own: a
-    /// row open where it stands is read from the box its node reports.
-    #[test]
-    fn a_row_a_list_publishes_says_where_it_stands_in_it() {
-        fn published(rows: Vec<ui::a11y::AccessNode>) -> InspectionNode {
-            let mut list = list_of(vec![]);
-            list.semantics = Some(AccessNode::new(Role::List).with_children(rows));
-            list
-        }
-        fn row(role: Role, rect: [f64; 4]) -> ui::a11y::AccessNode {
-            AccessNode::new(role)
-                .with_state(ui::a11y::AccessState::new().expanded(true))
-                .with_bounds(Rect::new(
-                    rect[0],
-                    rect[1],
-                    rect[0] + rect[2],
-                    rect[1] + rect[3],
-                ))
-        }
-
-        let inside = published(vec![row(Role::ListItem, [16.0, 120.0, 584.0, 2400.0])]);
-        assert!(found(Kind::OpenOutsideList, &inside, (1280, 800)).is_empty());
-
-        // Scrolled part way out of the list's top, the row still reaches into it.
-        let scrolled = published(vec![row(Role::ListItem, [16.0, 60.0, 584.0, 300.0])]);
-        assert!(found(Kind::OpenOutsideList, &scrolled, (1280, 800)).is_empty());
-
-        // Lying wholly above the list's top, the row stands beside what the person reads.
-        let above = published(vec![row(Role::ListItem, [16.0, 20.0, 584.0, 60.0])]);
-        assert_eq!(
-            found(Kind::OpenOutsideList, &above, (1280, 800)).len(),
-            1,
-            "an item the list publishes over the top of its own box"
-        );
-
-        let beside = published(vec![row(Role::ListItem, [620.0, 120.0, 580.0, 300.0])]);
-        assert_eq!(
-            found(Kind::OpenOutsideList, &beside, (1280, 800)).len(),
-            1,
-            "an item the list publishes beside its own box"
-        );
-
-        let twice = published(vec![
-            row(Role::ListItem, [16.0, 120.0, 584.0, 300.0]),
-            row(Role::ListItem, [16.0, 430.0, 584.0, 270.0]),
-        ]);
-        assert_eq!(
-            found(Kind::OpenOutsideList, &twice, (1280, 800)).len(),
-            1,
-            "two rows of one list standing open"
-        );
-
-        // A tree's branch says it is expanded while its subtasks
-        // show, which is not an item standing open where it
-        // stands.
-        let branch = published(vec![
-            row(Role::TreeItem, [16.0, 120.0, 584.0, 36.0]),
-            row(Role::TreeItem, [16.0, 160.0, 584.0, 36.0]),
-        ]);
-        assert!(found(Kind::OpenOutsideList, &branch, (1280, 800)).is_empty());
-    }
-
-    /// The row a list highlights is the one the page beside it shows: a tree that says "Q3 plan"
-    /// while the page reads "Groceries" puts the person somewhere else than where they are, and one
-    /// that highlights nothing leaves the page beside it unattached to its rows.
-    #[test]
-    fn a_list_beside_its_page_highlights_the_row_the_page_shows() {
-        fn title(words: &str) -> InspectionNode {
-            named(
-                "Text",
-                "title",
-                [320.0, 12.0, 300.0, 24.0],
-                Role::Heading { level: 2 },
-                words,
-            )
-        }
-        fn tree(rows: Vec<(&str, bool)>) -> InspectionNode {
-            let mut list = holding(
-                "VirtualList",
-                "tree",
-                Some(Role::Tree),
-                vec![title("Groceries")],
+            // An item standing open beside the list is not the item where it stands in it.
+            let beside = holding(
+                "Stack",
+                "window",
+                None,
+                vec![
+                    list_of(vec![named(
+                        "ListRow",
+                        "row",
+                        [16.0, 120.0, 584.0, 156.0],
+                        Role::ListItem,
+                        "A task",
+                    )]),
+                    opened("page", [620.0, 120.0, 1200.0, 420.0], Role::ListItem),
+                ],
             );
-            list.rect = [0.0, 100.0, 280.0, 600.0];
-            list.semantics = Some(
-                AccessNode::new(Role::Tree).with_children(
-                    rows.into_iter()
-                        .enumerate()
-                        .map(|(at, (name, chosen))| {
-                            let y = 110.0 + 36.0 * f64::from(u32::try_from(at).unwrap());
-                            AccessNode::new(Role::TreeItem)
-                                .with_name(name)
-                                .with_state(ui::a11y::AccessState::new().selected(chosen))
-                                .with_bounds(Rect::new(16.0, y, 264.0, y + 28.0))
-                        })
-                        .collect(),
-                ),
+            assert_eq!(
+                found(Kind::OpenOutsideList, &beside, (1280, 800)).len(),
+                1,
+                "an item shown beside its list"
             );
-            list
-        }
-        let wrong = found(
-            Kind::DetailRowNotChosen,
-            &tree(vec![("Q3 plan", true), ("Groceries", false)]),
-            (1280, 800),
-        );
-        assert_eq!(wrong.len(), 1, "{wrong:?}");
-        assert!(
-            wrong[0].detail.contains("Groceries") && wrong[0].detail.contains("Q3 plan"),
-            "{wrong:?}"
-        );
-        assert!(
-            found(
-                Kind::DetailRowNotChosen,
-                &tree(vec![("Q3 plan", false), ("Groceries", true)]),
-                (1280, 800)
-            )
-            .is_empty(),
-            "the page's own row stands chosen"
-        );
-        assert!(
-            found(
-                Kind::DetailRowNotChosen,
-                &tree(vec![("Q3 plan", false), ("Groceries", false)]),
-                (1280, 800)
-            )
-            .is_empty(),
-            "a list that highlights nothing says nothing of where the person is"
-        );
-        assert!(
-            found(
-                Kind::DetailRowNotChosen,
-                &tree(vec![("Q3 plan", true), ("Groceries", true)]),
-                (1280, 800)
-            )
-            .is_empty(),
-            "a list of several chosen rows says a choice of its own"
-        );
-        // A window bar paints its own title: it names the page where no heading does.
-        let untitled = {
-            let mut list = tree(vec![("Q3 plan", true), ("Groceries", false)]);
-            list.children.clear();
-            list
-        };
-        let problems = found_beside(
-            Kind::DetailRowNotChosen,
-            &untitled,
-            (1280, 800),
-            "Groceries",
-        );
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(
-            found_beside(Kind::DetailRowNotChosen, &untitled, (1280, 800), "Q3 plan").is_empty(),
-            "the bar names the row the tree highlights"
-        );
-    }
 
-    /// A row that opened into its item writes its title once: in the field that edits it, not again
-    /// over the document the row became.
-    #[test]
-    fn an_open_item_writes_its_title_once() {
-        fn field() -> InspectionNode {
-            let at = [16.0, 130.0, 300.0, 32.0];
-            let mut field = node("TextInput", "title", at, Some(Role::MultilineTextInput));
-            field.semantics = Some(
-                AccessNode::new(Role::MultilineTextInput)
-                    .with_name("Title")
-                    .with_value("Call the landlord about the boiler"),
-            );
-            field
+            // An item open with no list at all, and two open rows of one list.
+            let alone = opened("page", [0.0, 0.0, 600.0, 300.0], Role::ListItem);
+            assert_eq!(found(Kind::OpenOutsideList, &alone, (1280, 800)).len(), 1);
+            let twice = list_of(vec![
+                opened("one", [16.0, 120.0, 584.0, 420.0], Role::ListItem),
+                opened("two", [16.0, 430.0, 584.0, 700.0], Role::ListItem),
+            ]);
+            assert_eq!(found(Kind::OpenOutsideList, &twice, (1280, 800)).len(), 1);
+
+            // A tree's branches open and fold their items,
+            // which is not an item showing where it stands.
+            let folded = list_of(vec![opened(
+                "branch",
+                [16.0, 120.0, 584.0, 156.0],
+                Role::TreeItem,
+            )]);
+            assert!(found(Kind::OpenOutsideList, &folded, (1280, 800)).is_empty());
         }
-        fn list(title_nodes: Vec<InspectionNode>) -> InspectionNode {
-            let mut list = list_of(title_nodes);
-            list.semantics = Some(AccessNode::new(Role::List).with_children(vec![
+
+        phase a_row_a_list_publishes_says_where_it_stands_in_it;
+        // A list's rows are the nodes the list publishes under its own, not widgets of their own: a
+        // row open where it stands is read from the box its node reports.
+        {
+            fn published(rows: Vec<ui::a11y::AccessNode>) -> InspectionNode {
+                let mut list = list_of(vec![]);
+                list.semantics = Some(AccessNode::new(Role::List).with_children(rows));
+                list
+            }
+            fn row(role: Role, rect: [f64; 4]) -> ui::a11y::AccessNode {
+                AccessNode::new(role)
+                    .with_state(ui::a11y::AccessState::new().expanded(true))
+                    .with_bounds(Rect::new(
+                        rect[0],
+                        rect[1],
+                        rect[0] + rect[2],
+                        rect[1] + rect[3],
+                    ))
+            }
+
+            let inside = published(vec![row(Role::ListItem, [16.0, 120.0, 584.0, 2400.0])]);
+            assert!(found(Kind::OpenOutsideList, &inside, (1280, 800)).is_empty());
+
+            // Scrolled part way out of the list's top, the row still reaches into it.
+            let scrolled = published(vec![row(Role::ListItem, [16.0, 60.0, 584.0, 300.0])]);
+            assert!(found(Kind::OpenOutsideList, &scrolled, (1280, 800)).is_empty());
+
+            // Lying wholly above the list's top, the row stands beside what the person reads.
+            let above = published(vec![row(Role::ListItem, [16.0, 20.0, 584.0, 60.0])]);
+            assert_eq!(
+                found(Kind::OpenOutsideList, &above, (1280, 800)).len(),
+                1,
+                "an item the list publishes over the top of its own box"
+            );
+
+            let beside = published(vec![row(Role::ListItem, [620.0, 120.0, 580.0, 300.0])]);
+            assert_eq!(
+                found(Kind::OpenOutsideList, &beside, (1280, 800)).len(),
+                1,
+                "an item the list publishes beside its own box"
+            );
+
+            let twice = published(vec![
+                row(Role::ListItem, [16.0, 120.0, 584.0, 300.0]),
+                row(Role::ListItem, [16.0, 430.0, 584.0, 270.0]),
+            ]);
+            assert_eq!(
+                found(Kind::OpenOutsideList, &twice, (1280, 800)).len(),
+                1,
+                "two rows of one list standing open"
+            );
+
+            // A tree's branch says it is expanded while its subtasks
+            // show, which is not an item standing open where it
+            // stands.
+            let branch = published(vec![
+                row(Role::TreeItem, [16.0, 120.0, 584.0, 36.0]),
+                row(Role::TreeItem, [16.0, 160.0, 584.0, 36.0]),
+            ]);
+            assert!(found(Kind::OpenOutsideList, &branch, (1280, 800)).is_empty());
+        }
+
+        phase a_list_beside_its_page_highlights_the_row_the_page_shows;
+        // The row a list highlights is the one the page beside it shows: a tree that says "Q3 plan"
+        // while the page reads "Groceries" puts the person somewhere else than where they are, and one
+        // that highlights nothing leaves the page beside it unattached to its rows.
+        {
+            fn title(words: &str) -> InspectionNode {
+                named(
+                    "Text",
+                    "title",
+                    [320.0, 12.0, 300.0, 24.0],
+                    Role::Heading { level: 2 },
+                    words,
+                )
+            }
+            fn tree(rows: Vec<(&str, bool)>) -> InspectionNode {
+                let mut list = holding(
+                    "VirtualList",
+                    "tree",
+                    Some(Role::Tree),
+                    vec![title("Groceries")],
+                );
+                list.rect = [0.0, 100.0, 280.0, 600.0];
+                list.semantics = Some(
+                    AccessNode::new(Role::Tree).with_children(
+                        rows.into_iter()
+                            .enumerate()
+                            .map(|(at, (name, chosen))| {
+                                let y = 110.0 + 36.0 * f64::from(u32::try_from(at).unwrap());
+                                AccessNode::new(Role::TreeItem)
+                                    .with_name(name)
+                                    .with_state(ui::a11y::AccessState::new().selected(chosen))
+                                    .with_bounds(Rect::new(16.0, y, 264.0, y + 28.0))
+                            })
+                            .collect(),
+                    ),
+                );
+                list
+            }
+            let wrong = found(
+                Kind::DetailRowNotChosen,
+                &tree(vec![("Q3 plan", true), ("Groceries", false)]),
+                (1280, 800),
+            );
+            assert_eq!(wrong.len(), 1, "{wrong:?}");
+            assert!(
+                wrong[0].detail.contains("Groceries") && wrong[0].detail.contains("Q3 plan"),
+                "{wrong:?}"
+            );
+            assert!(
+                found(
+                    Kind::DetailRowNotChosen,
+                    &tree(vec![("Q3 plan", false), ("Groceries", true)]),
+                    (1280, 800)
+                )
+                .is_empty(),
+                "the page's own row stands chosen"
+            );
+            assert!(
+                found(
+                    Kind::DetailRowNotChosen,
+                    &tree(vec![("Q3 plan", false), ("Groceries", false)]),
+                    (1280, 800)
+                )
+                .is_empty(),
+                "a list that highlights nothing says nothing of where the person is"
+            );
+            assert!(
+                found(
+                    Kind::DetailRowNotChosen,
+                    &tree(vec![("Q3 plan", true), ("Groceries", true)]),
+                    (1280, 800)
+                )
+                .is_empty(),
+                "a list of several chosen rows says a choice of its own"
+            );
+            // A window bar paints its own title: it names the page where no heading does.
+            let untitled = {
+                let mut list = tree(vec![("Q3 plan", true), ("Groceries", false)]);
+                list.children.clear();
+                list
+            };
+            let problems = found_beside(
+                Kind::DetailRowNotChosen,
+                &untitled,
+                (1280, 800),
+                "Groceries",
+            );
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(
+                found_beside(Kind::DetailRowNotChosen, &untitled, (1280, 800), "Q3 plan").is_empty(),
+                "the bar names the row the tree highlights"
+            );
+        }
+
+        phase an_open_item_writes_its_title_once;
+        // A row that opened into its item writes its title once: in the field that edits it, not again
+        // over the document the row became.
+        {
+            fn field() -> InspectionNode {
+                let at = [16.0, 130.0, 300.0, 32.0];
+                let mut field = node("TextInput", "title", at, Some(Role::MultilineTextInput));
+                field.semantics = Some(
+                    AccessNode::new(Role::MultilineTextInput)
+                        .with_name("Title")
+                        .with_value("Call the landlord about the boiler"),
+                );
+                field
+            }
+            fn list(title_nodes: Vec<InspectionNode>) -> InspectionNode {
+                let mut list = list_of(title_nodes);
+                list.semantics = Some(AccessNode::new(Role::List).with_children(vec![
+                    AccessNode::new(Role::ListItem)
+                        .with_name("Call the landlord about the boiler")
+                        .with_state(ui::a11y::AccessState::new().expanded(true))
+                        .with_bounds(Rect::new(0.0, 100.0, 400.0, 500.0)),
+                ]));
+                list
+            }
+
+            assert!(
+                found(Kind::RepeatedRowTitle, &list(vec![field()]), (1280, 800)).is_empty(),
+                "the item's own title, in the field that edits it"
+            );
+
+            // The item is its own row: the box the row opened into is announced by the title the
+            // document states, and says nothing of its own on screen.
+            let mut row = holding("RowOpen", "row", Some(Role::ListItem), vec![field()]);
+            row.rect = [0.0, 100.0, 400.0, 400.0];
+            row.semantics = Some(
                 AccessNode::new(Role::ListItem)
                     .with_name("Call the landlord about the boiler")
-                    .with_state(ui::a11y::AccessState::new().expanded(true))
-                    .with_bounds(Rect::new(0.0, 100.0, 400.0, 500.0)),
-            ]));
-            list
+                    .with_state(ui::a11y::AccessState::new().expanded(true)),
+            );
+            assert!(
+                found(Kind::RepeatedRowTitle, &list(vec![row]), (1280, 800)).is_empty(),
+                "the row's name is the item's title, written once in the field that edits it"
+            );
+
+            let label = named(
+                "Text",
+                "label",
+                [16.0, 100.0, 300.0, 36.0],
+                Role::StaticText,
+                "Call the landlord about the boiler",
+            );
+            let problems = found(
+                Kind::RepeatedRowTitle,
+                &list(vec![label, field()]),
+                (1280, 800),
+            );
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(
+                problems[0].detail.contains("stands 2 times"),
+                "{problems:?}"
+            );
         }
-
-        assert!(
-            found(Kind::RepeatedRowTitle, &list(vec![field()]), (1280, 800)).is_empty(),
-            "the item's own title, in the field that edits it"
-        );
-
-        // The item is its own row: the box the row opened into is announced by the title the
-        // document states, and says nothing of its own on screen.
-        let mut row = holding("RowOpen", "row", Some(Role::ListItem), vec![field()]);
-        row.rect = [0.0, 100.0, 400.0, 400.0];
-        row.semantics = Some(
-            AccessNode::new(Role::ListItem)
-                .with_name("Call the landlord about the boiler")
-                .with_state(ui::a11y::AccessState::new().expanded(true)),
-        );
-        assert!(
-            found(Kind::RepeatedRowTitle, &list(vec![row]), (1280, 800)).is_empty(),
-            "the row's name is the item's title, written once in the field that edits it"
-        );
-
-        let label = named(
-            "Text",
-            "label",
-            [16.0, 100.0, 300.0, 36.0],
-            Role::StaticText,
-            "Call the landlord about the boiler",
-        );
-        let problems = found(
-            Kind::RepeatedRowTitle,
-            &list(vec![label, field()]),
-            (1280, 800),
-        );
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(
-            problems[0].detail.contains("stands 2 times"),
-            "{problems:?}"
-        );
     }
 }

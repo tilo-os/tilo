@@ -455,53 +455,57 @@ fn open_brackets(text: &str) -> i64 {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_entry_is_a_command_a_confirm_or_a_program() {
-        assert_eq!(parse_entry("  "), Entry::Nothing);
-        assert_eq!(
-            parse_entry(":apps now"),
-            Entry::Command("apps".into(), "now".into())
-        );
-        assert_eq!(parse_entry("confirm"), Entry::Confirm);
-        assert_eq!(parse_entry("ls"), Entry::Tool("tilo_ls", json!({})));
-        assert_eq!(
-            parse_entry("ls notes/"),
-            Entry::Tool("tilo_ls", json!({"path": "notes/"}))
-        );
-        assert_eq!(
-            parse_entry("find groceries"),
-            Entry::Tool("tilo_find", json!({"query": "groceries"}))
-        );
-        assert_eq!(
-            parse_entry("find (\"x\")"),
-            Entry::Program("find (\"x\")".into())
-        );
-        assert_eq!(
-            parse_entry(" undo task "),
-            Entry::Program("undo task".into())
-        );
-    }
+    tilo_test_env::scenario! {
+        fn an_entry_reads_as_what_the_person_meant;
 
-    #[test]
-    fn a_let_line_names_what_it_binds() {
-        assert_eq!(
-            bound_name("let pinned: List<notes.Note> = notes.notebook.notes.filter(.pinned)"),
-            Some("pinned")
-        );
-        assert_eq!(bound_name("a == b"), None);
-    }
+        phase an_entry_is_a_command_a_confirm_or_a_program;
+        {
+            assert_eq!(parse_entry("  "), Entry::Nothing);
+            assert_eq!(
+                parse_entry(":apps now"),
+                Entry::Command("apps".into(), "now".into())
+            );
+            assert_eq!(parse_entry("confirm"), Entry::Confirm);
+            assert_eq!(parse_entry("ls"), Entry::Tool("tilo_ls", json!({})));
+            assert_eq!(
+                parse_entry("ls notes/"),
+                Entry::Tool("tilo_ls", json!({"path": "notes/"}))
+            );
+            assert_eq!(
+                parse_entry("find groceries"),
+                Entry::Tool("tilo_find", json!({"query": "groceries"}))
+            );
+            assert_eq!(
+                parse_entry("find (\"x\")"),
+                Entry::Program("find (\"x\")".into())
+            );
+            assert_eq!(
+                parse_entry(" undo task "),
+                Entry::Program("undo task".into())
+            );
+        }
 
-    #[test]
-    fn an_entry_continues_while_a_bracket_is_open() {
-        assert_eq!(open_brackets("notes.notebook.notes.filter(n -> {"), 2);
-        assert_eq!(open_brackets("\"(\""), 0);
-    }
+        phase a_let_line_names_what_it_binds;
+        {
+            assert_eq!(
+                bound_name("let pinned: List<notes.Note> = notes.notebook.notes.filter(.pinned)"),
+                Some("pinned")
+            );
+            assert_eq!(bound_name("a == b"), None);
+        }
 
-    #[test]
-    fn a_types_fields_are_read_from_its_signature() {
-        assert_eq!(
-            fields_of("type Note {\n    title: Text\n    pinned: Bool = false\n}"),
-            vec!["title", "pinned"]
-        );
+        phase an_entry_continues_while_a_bracket_is_open;
+        {
+            assert_eq!(open_brackets("notes.notebook.notes.filter(n -> {"), 2);
+            assert_eq!(open_brackets("\"(\""), 0);
+        }
+
+        phase a_types_fields_are_read_from_its_signature;
+        {
+            assert_eq!(
+                fields_of("type Note {\n    title: Text\n    pinned: Bool = false\n}"),
+                vec!["title", "pinned"]
+            );
+        }
     }
 }
