@@ -90,10 +90,11 @@ wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
 # A run that asks less than the whole family (`t test test/settings-store` after an edit) builds
 # just the packages it asks for, and this one beside them: its manifest declares every member's
-# features as the family's whole build resolves them (tools/ci/workspace_unify.py generates it
-# over the family's members, the test features included), so the narrowed selection's units are
-# the units the whole build makes and its tests are the family's tests, not a feature-starved
-# subset. t selects this package itself for such a run; a whole-family run has no use for it.
+# features as the whole builds of the families that declare it resolve them
+# (tools/ci/workspace_unify.py generates it over all of them, the test features included), so the
+# narrowed selection's units are the units those builds make and its tests are the family's tests,
+# not a feature-starved subset. t selects this package itself for such a run; a whole-family run
+# has no use for it.
 unify = "workspace-unify"
 # What does not run here: the per-arch packages (their own families), `workspace-unify` (a
 # generated crate, checked by `workspace-unify-<arch>`), the idle packages (their own family) and
@@ -127,6 +128,8 @@ env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "
 starts = { tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings", "chat:chat", "launcher:tilo-launcher", "tilo-runtime:tilo-runtime", "tasks:tasks", "passwords:passwords", "model-providers:model-providers"], tilo-quick-settings = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "tilo-quick-settings:tilo-quick-settings"], app-host = ["install:tilo-install"], settings = ["tilo-test-env:tilo-capability-probe"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
+# It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
+# every family that declares it resolve them, so all of them build the same units of them.
 [[cargo]]
 name = "test-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -134,6 +137,7 @@ tool = "nextest"
 requires = ["arch={arch}"]
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
+unify = "workspace-unify"
 packages = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "install",
     "launcher", "launcher-macos", "local-model-service", "runtime-bundle", "store",
@@ -158,9 +162,10 @@ name = "test-idle"
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
-# tilo-ui's tests build with its test fixtures (tools/ci/package_features.py): this family declares
-# no `unify` package to bring them, so its args name them, and t resolves the graph it builds.
-args = ["--locked", "--profile", "ci", "--tests", "--features", "tilo-ui/test-support"]
+# tilo-ui's tests build with its test fixtures (tools/ci/package_features.py), which reach this
+# family's build through `unify` like every other family's, so its args name none.
+args = ["--locked", "--profile", "ci", "--tests"]
+unify = "workspace-unify"
 packages = ["canvas", "music", "pdf-viewer", "tilo-ui"]
 env = { TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
@@ -174,13 +179,16 @@ egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
+unify = "workspace-unify"
 packages = ["tilo-doc-codecs", "tilo-reference", "tilo-render-protocol"]
 env = { PROPTEST_CASES = "256", TILO_REQUIRE_MEDIA = "1", TILO_REQUIRE_AUDIO = "1", TILO_REQUIRE_GPU = "1" }
 heavy = true
 on = ["dispatch"]
 
 # Every package's examples build and run (`cargo test --examples`), with the test environment's
-# asset and NTFS caches in the build directory. Dozens of programs nothing else compiles.
+# asset and NTFS caches in the build directory. Dozens of programs nothing else compiles. It
+# declares `unify` too, so the libraries these examples share with the other families are built
+# as those families build them, once.
 [[cargo]]
 name = "examples"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -188,6 +196,7 @@ tool = "test"
 requires = ["arch=x86_64"]
 wrapper = ["bash", "-c", "export TILO_TEST_ASSET_CACHE=\"$CARGO_TARGET_DIR/test-assets\" TILO_NTFS_SOURCE_CACHE=\"$CARGO_TARGET_DIR/ntfs-source\"; exec bash tools/with-test-environment.sh \"$@\"", "examples"]
 args = ["--locked", "--examples"]
+unify = "workspace-unify"
 packages = [
     "accounts", "agent", "app-cli", "browser", "calculator", "key-group", "code-editor",
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
@@ -205,7 +214,9 @@ heavy = true
 on = ["dispatch"]
 
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
-# compiler cache keys a unit by what it was given, whichever family asked for it).
+# compiler cache keys a unit by what it was given, whichever family asked for it). Its selection
+# is `check`'s: a member either family leaves out is `clippy-idle`'s or a per-architecture
+# family's, so the shared libraries resolve to the same units in both.
 [[cargo]]
 name = "clippy"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -248,6 +259,8 @@ packages = [
 matrix = { arch = ["x86_64", "aarch64"] }
 
 # `cargo check` alone, when someone wants a package's errors without clippy's lints or a build.
+# Its members are `clippy`'s: `clippy-idle` and the per-architecture families cover what both
+# leave out, and the shared libraries keep one unit per crate across the two selections.
 [[cargo]]
 name = "check"
 egress = { to = ["code.tilo.so:443"], pinned = true }
@@ -255,10 +268,11 @@ tool = "check"
 args = ["--locked", "--all-targets"]
 exclude = [
     "app-catalogue", "app-cli", "browser", "compat-service", "env-tools", "fs-native", "imager",
-    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
+    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service", "music",
     "runtime-bundle", "store", "tilo-agent-participant", "tilo-app-cli",
-    "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
-    "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm", "workspace-unify",
+    "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
+    "tilo-sandbox", "tilo-sandbox-core", "tilo-vmd", "tilolang-cli", "tilolang-tilo", "ush",
+    "windows-vm", "workspace-unify",
 ]
 default = false
 

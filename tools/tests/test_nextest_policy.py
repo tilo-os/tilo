@@ -207,24 +207,29 @@ class NextestPolicyTests(unittest.TestCase):
             with self.subTest(consumer=path.name):
                 self.assertNotRegex(path.read_text(encoding="utf-8"), r"not\s*\(\s*\)")
 
-    def test_a_whole_family_names_its_packages_test_features_in_its_args(self) -> None:
-        # The wrapper adds no features to a run that names no `-p`: a family that declares no
-        # `unify` package is built whole, and t resolves its unit graph from its own args, so
-        # those args carry its packages' test features or the tests build without them.
+    def test_a_family_gets_its_test_features_from_unify_or_names_them_in_its_args(self) -> None:
+        # t resolves a cargo family's unit graph from the family's own command, and a `--features`
+        # there is a demand workspace-unify's manifest does not make: a family with `unify` gets
+        # its packages' test features through that manifest alone. A family without one is built
+        # whole, so its args carry its packages' test features or the tests build without them.
         families = tomllib.loads(T_TOML.read_text(encoding="utf-8"))["cargo"]
-        checked = 0
+        unified = 0
         for family in families:
-            if "tools/ci/nextest.sh" not in family.get("wrapper", []) or "unify" in family:
+            if "tools/ci/nextest.sh" not in family.get("wrapper", []):
                 continue
-            checked += 1
+            args = family["args"]
+            given = [args[i + 1] for i, arg in enumerate(args) if arg in ("--features", "-F")]
+            if "unify" in family:
+                unified += 1
+                with self.subTest(family=family["name"]):
+                    self.assertEqual(given, [], "a unified family's features come through the manifest")
+                continue
             with self.subTest(family=family["name"]):
                 self.assertIn("packages", family, "a family without `unify` names its packages")
-                args = family["args"]
-                given = [args[i + 1] for i, arg in enumerate(args) if arg in ("--features", "-F")]
                 expected = package_features.arguments(family["packages"])
                 self.assertEqual(sorted(",".join(given).split(",")) if given else [],
                                  sorted(expected[1].split(",")) if expected else [])
-        self.assertGreater(checked, 0)
+        self.assertGreater(unified, 0, "the unified families this holds are read")
 
 if __name__ == "__main__":
     unittest.main()

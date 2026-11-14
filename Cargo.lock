@@ -5684,7 +5684,6 @@ version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "337d46834ee672ab3e48caca2cb0c78cc174fb12b3a68d0d88f99a0519a5e36e"
 dependencies = [
- "generic-array 0.14.7",
  "rustversion",
  "typenum",
 ]
@@ -27522,6 +27521,7 @@ dependencies = [
  "bounded-zip",
  "brotli",
  "brotli-decompressor",
+ "browser",
  "browser-continuity",
  "browser-continuity-core",
  "brush-parser",
@@ -27782,6 +27782,7 @@ dependencies = [
  "feeds",
  "ff 0.13.1",
  "ff 0.14.0",
+ "ffi-opaque",
  "file-explorer",
  "filedescriptor",
  "filetime",
@@ -27969,6 +27970,8 @@ dependencies = [
  "igd-next",
  "image",
  "image-webp",
+ "imager",
+ "imager-backend",
  "imagesize",
  "imap-proto",
  "indenter",
@@ -28032,6 +28035,7 @@ dependencies = [
  "landlock",
  "launcher",
  "launcher-app",
+ "launcher-macos",
  "lazy_static",
  "leb128",
  "leb128fmt",
@@ -28039,6 +28043,7 @@ dependencies = [
  "legacy-agent-protocol",
  "legacy-vm",
  "lettre",
+ "leveldb-sys",
  "levenshtein_automata",
  "libbz2-rs-sys",
  "libc",
@@ -28864,6 +28869,7 @@ dependencies = [
  "tilo-vision",
  "tilo-vm",
  "tilo-vm-protocol",
+ "tilo-vmd",
  "tilo-wake",
  "tilo-wallpapers",
  "tilo-wayland-ext",

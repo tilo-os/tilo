@@ -121,6 +121,22 @@ class WorkspaceUnifyTests(unittest.TestCase):
         self.assertIn(SERDE, arm, "a crate the lock resolves at several versions resolves apart")
         self.assertNotIn(GONE, arm, "a package the workspace no longer has keeps cargo from loading it")
 
+    def test_the_plan_is_every_package_a_family_that_declares_it_tests(self) -> None:
+        # The families declaring this package are resolved together, so each contributes what its
+        # whole build selects: its `packages`, or every member its `exclude` leaves. A family that
+        # does not declare it contributes nothing, its units being its own.
+        t_toml = self.root / "t.toml"
+        members = {"a", "b", "c", "d", "e"}
+        t_toml.write_text(
+            '[[cargo]]\nname = "one"\nunify = "workspace-unify"\npackages = ["a", "b"]\n'
+            '[[cargo]]\nname = "two"\nunify = "workspace-unify"\nexclude = ["c", "d"]\n'
+            '[[cargo]]\nname = "three"\npackages = ["e"]\n')
+        with mock.patch.object(unify, "T_TOML", t_toml):
+            self.assertEqual(unify.unified(members), {"a", "b", "e"})
+            # A family naming neither selects the whole workspace, as t builds it.
+            t_toml.write_text('[[cargo]]\nname = "all"\nunify = "workspace-unify"\n')
+            self.assertEqual(unify.unified(members), members)
+
     def test_check_names_the_architecture_whose_table_the_lock_moved(self) -> None:
         problems = unify.stale(self.root, self.tables(MEMBER + PATCHED + HICKORY + GONE + ARM_ONLY + SERDE))
         self.assertEqual(problems, [
