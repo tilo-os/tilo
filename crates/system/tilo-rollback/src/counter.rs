@@ -703,129 +703,138 @@ mod tests {
         }
     }
 
-    #[test]
-    fn floors_map_counters_through_the_base_without_wrapping() {
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn the_floor_counter_maps_and_counts_forward_without_wrapping;
+
+        phase floors_map_counters_through_the_base_without_wrapping;
         {
-            let s = FloorState {
-                counter: 105,
-                base: 100,
-            };
-            assert_eq!(s.floor_generation(), 5);
+            {
+                let s = FloorState {
+                    counter: 105,
+                    base: 100,
+                };
+                assert_eq!(s.floor_generation(), 5);
+            }
+            {
+                // Enrolling generation 500 on a TPM whose counter reads 1.
+                let s = FloorState {
+                    counter: 1,
+                    base: 1 - 498,
+                };
+                assert_eq!(s.floor_generation(), 498);
+                assert_eq!(s.operand_for(500).unwrap(), 3);
+                assert_eq!(s.operand_for(498).unwrap(), 1);
+            }
+            {
+                let s = FloorState {
+                    counter: 3,
+                    base: 100,
+                };
+                assert_eq!(s.floor_generation(), 0);
+            }
+            {
+                let s = FloorState {
+                    counter: 105,
+                    base: 100,
+                };
+                assert_eq!(s.operand_for(7).unwrap(), 107);
+                assert_eq!(s.operand_for(0).unwrap(), 100);
+            }
+            {
+                let s = FloorState {
+                    counter: 1,
+                    base: -400,
+                };
+                let e = s.operand_for(399).unwrap_err().to_string();
+                assert!(e.contains("below zero"), "{e}");
+            }
+            {
+                assert_eq!(decode(&[0, 0, 0, 0, 0, 0, 0, 7]).unwrap(), Some(7));
+                assert_eq!(decode(&[1, 0, 0, 0, 0, 0, 0, 0]).unwrap(), Some(1 << 56));
+                assert!(decode(&[0, 0]).is_err());
+                assert!(decode(&[]).is_err());
+            }
+            {
+                // A floor past the top of the generation space saturates; it does not wrap to a low one.
+                let s = FloorState {
+                    counter: u64::MAX,
+                    base: i64::MIN,
+                };
+                assert_eq!(s.floor_generation(), u64::MAX);
+            }
         }
-        {
-            // Enrolling generation 500 on a TPM whose counter reads 1.
-            let s = FloorState {
-                counter: 1,
-                base: 1 - 498,
-            };
-            assert_eq!(s.floor_generation(), 498);
-            assert_eq!(s.operand_for(500).unwrap(), 3);
-            assert_eq!(s.operand_for(498).unwrap(), 1);
-        }
-        {
-            let s = FloorState {
-                counter: 3,
-                base: 100,
-            };
-            assert_eq!(s.floor_generation(), 0);
-        }
-        {
-            let s = FloorState {
-                counter: 105,
-                base: 100,
-            };
-            assert_eq!(s.operand_for(7).unwrap(), 107);
-            assert_eq!(s.operand_for(0).unwrap(), 100);
-        }
-        {
-            let s = FloorState {
-                counter: 1,
-                base: -400,
-            };
-            let e = s.operand_for(399).unwrap_err().to_string();
-            assert!(e.contains("below zero"), "{e}");
-        }
-        {
-            assert_eq!(decode(&[0, 0, 0, 0, 0, 0, 0, 7]).unwrap(), Some(7));
-            assert_eq!(decode(&[1, 0, 0, 0, 0, 0, 0, 0]).unwrap(), Some(1 << 56));
-            assert!(decode(&[0, 0]).is_err());
-            assert!(decode(&[]).is_err());
-        }
-        {
-            // A floor past the top of the generation space saturates; it does not wrap to a low one.
-            let s = FloorState {
-                counter: u64::MAX,
-                base: i64::MIN,
-            };
-            assert_eq!(s.floor_generation(), u64::MAX);
-        }
-        // Phase `index_is_formatted_the_way_tpm2_tools_expects`.
+
+        phase index_is_formatted_the_way_tpm2_tools_expects;
         {
             assert_eq!(idx(DEFAULT_NV_INDEX), "0x01D91100");
         }
-    }
 
-    #[test]
-    fn increments_count_the_gap_forward_only_and_never_overflow() {
+        phase increments_count_the_gap_forward_only_and_never_overflow;
         {
-            let s = FloorState {
-                counter: 105,
-                base: 100,
-            };
-            assert_eq!(s.increments_to(5).unwrap(), 0);
-            assert_eq!(s.increments_to(8).unwrap(), 3);
-        }
-        {
-            let s = FloorState {
-                counter: 1,
-                base: -497,
-            };
-            assert_eq!(s.floor_generation(), 498);
-            assert_eq!(s.increments_to(498).unwrap(), 0);
-            assert_eq!(s.increments_to(500).unwrap(), 2);
-        }
-        {
-            let s = FloorState {
-                counter: 105,
-                base: 100,
-            };
-            let e = s.increments_to(4).unwrap_err().to_string();
-            assert!(e.contains("do not decrement"), "{e}");
-        }
-        {
-            let s = FloorState {
-                counter: u64::MAX,
-                base: i64::MAX,
-            };
-            assert!(s.operand_for(u64::MAX).is_err());
-        }
-        {
-            // One advance moves the floor at most 64 steps. A 65th means the base is wrong, and
-            // is refused before any tool runs; 64 is admitted, and with no approval to spend
-            // every step is reported and the counter left where it was.
-            let d = tempfile::tempdir().unwrap();
-            let ws = Workspace::new(d.path());
-            let s = FloorState {
-                counter: 105,
-                base: 100,
-            };
-            let none = FloorApprovals {
-                authority_public_key: Path::new("authority.pem"),
-                authority_key_name: b"name",
-                approvals: &[],
-                dir: None,
-            };
-            let e = advance(&NoTools, &ws, DEFAULT_NV_INDEX, d.path(), s, 70, &none)
-                .unwrap_err()
-                .to_string();
-            assert!(
-                e.contains("needs 65 increments, more than the 64 allowed in one step"),
-                "{e}"
-            );
-            let o = advance(&NoTools, &ws, DEFAULT_NV_INDEX, d.path(), s, 69, &none).unwrap();
-            assert_eq!(o.steps, 0);
-            assert_eq!(o.floor, s);
-            assert_eq!(o.unapproved, (106..=169).collect::<Vec<u64>>());
+            {
+                let s = FloorState {
+                    counter: 105,
+                    base: 100,
+                };
+                assert_eq!(s.increments_to(5).unwrap(), 0);
+                assert_eq!(s.increments_to(8).unwrap(), 3);
+            }
+            {
+                let s = FloorState {
+                    counter: 1,
+                    base: -497,
+                };
+                assert_eq!(s.floor_generation(), 498);
+                assert_eq!(s.increments_to(498).unwrap(), 0);
+                assert_eq!(s.increments_to(500).unwrap(), 2);
+            }
+            {
+                let s = FloorState {
+                    counter: 105,
+                    base: 100,
+                };
+                let e = s.increments_to(4).unwrap_err().to_string();
+                assert!(e.contains("do not decrement"), "{e}");
+            }
+            {
+                let s = FloorState {
+                    counter: u64::MAX,
+                    base: i64::MAX,
+                };
+                assert!(s.operand_for(u64::MAX).is_err());
+            }
+            {
+                // One advance moves the floor at most 64 steps. A 65th means the base is wrong, and
+                // is refused before any tool runs; 64 is admitted, and with no approval to spend
+                // every step is reported and the counter left where it was.
+                let d = tempfile::tempdir().unwrap();
+                let ws = Workspace::new(d.path());
+                let s = FloorState {
+                    counter: 105,
+                    base: 100,
+                };
+                let none = FloorApprovals {
+                    authority_public_key: Path::new("authority.pem"),
+                    authority_key_name: b"name",
+                    approvals: &[],
+                    dir: None,
+                };
+                let e = advance(&NoTools, &ws, DEFAULT_NV_INDEX, d.path(), s, 70, &none)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    e.contains("needs 65 increments, more than the 64 allowed in one step"),
+                    "{e}"
+                );
+                let o = advance(&NoTools, &ws, DEFAULT_NV_INDEX, d.path(), s, 69, &none).unwrap();
+                assert_eq!(o.steps, 0);
+                assert_eq!(o.floor, s);
+                assert_eq!(o.unapproved, (106..=169).collect::<Vec<u64>>());
+            }
         }
     }
 }

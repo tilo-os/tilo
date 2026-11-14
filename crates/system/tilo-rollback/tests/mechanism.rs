@@ -1876,49 +1876,148 @@ fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     assert_approval_policy_matches(&f, &sess_s, &idx, &nv_name, &operand, target);
 }
 
-#[test]
-fn an_increment_without_an_approval_is_refused() {
-    let f = fixture!();
-    let floor = f.floor(3);
-    let idx = format!("0x{:08X}", f.cfg.nv_index);
+tilo_test_env::scenario! {
+    fn the_floor_moves_only_by_a_bounded_approval_from_its_authority_for_this_index;
 
-    let out = f.raw("tpm2_nvincrement", &[&idx, "-C", &idx]);
-    assert!(
-        !out.ok(),
-        "an unauthorised increment must be refused — otherwise anything running as root can push \
+    phase an_increment_without_an_approval_is_refused;
+    {
+        let f = fixture!();
+        let floor = f.floor(3);
+        let idx = format!("0x{:08X}", f.cfg.nv_index);
+
+        let out = f.raw("tpm2_nvincrement", &[&idx, "-C", &idx]);
+        assert!(
+            !out.ok(),
+            "an unauthorised increment must be refused — otherwise anything running as root can push \
          the floor above the running generation and force the machine onto its recovery key"
-    );
-    let out = f.raw("tpm2_nvincrement", &[&idx, "-C", "o"]);
-    assert!(
-        !out.ok(),
-        "owner authorisation must not increment the floor"
-    );
-    assert_eq!(
-        f.counter_now(),
-        floor.counter,
-        "the counter must not have moved"
-    );
-}
+        );
+        let out = f.raw("tpm2_nvincrement", &[&idx, "-C", "o"]);
+        assert!(
+            !out.ok(),
+            "owner authorisation must not increment the floor"
+        );
+        assert_eq!(
+            f.counter_now(),
+            floor.counter,
+            "the counter must not have moved"
+        );
+    }
 
-#[test]
-fn the_materialise_escape_works_exactly_once() {
-    let f = fixture!();
-    let floor = f.floor(3); // this performs the one permitted unapproved increment
-    assert_eq!(f.counter_now(), floor.counter);
+    phase the_materialise_escape_works_exactly_once;
+    {
+        let f = fixture!();
+        let floor = f.floor(3); // this performs the one permitted unapproved increment
+        assert_eq!(f.counter_now(), floor.counter);
 
-    // The written flag is now set, so PolicyNvWritten(clear) can never be satisfied again.
-    let err = counter::increment_first(&f.runner, &f.ws(), f.cfg.nv_index, &f.authority_name)
-        .expect_err("the materialise branch must not work a second time");
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("never been written") || msg.contains("materialising"),
-        "{msg}"
-    );
-    assert_eq!(
-        f.counter_now(),
-        floor.counter,
-        "the counter must not have moved"
-    );
+        // The written flag is now set, so PolicyNvWritten(clear) can never be satisfied again.
+        let err = counter::increment_first(&f.runner, &f.ws(), f.cfg.nv_index, &f.authority_name)
+            .expect_err("the materialise branch must not work a second time");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("never been written") || msg.contains("materialising"),
+            "{msg}"
+        );
+        assert_eq!(
+            f.counter_now(),
+            floor.counter,
+            "the counter must not have moved"
+        );
+    }
+
+    phase an_approval_signed_by_another_key_is_refused;
+    {
+        let f = fixture!();
+        let ws = f.ws();
+        let floor = f.floor(3);
+        let nv_name = f.nv_name();
+        let target = floor.counter + 1;
+
+        // Same policy, same target, wrong signer.
+        let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[], 3).unwrap();
+        let forged = approval::issue(&f.runner, &ws, &req, &f.evil_priv(), 4, true)
+            .expect("the forger can produce a well-formed approval");
+        assert_eq!(forged.len(), 1);
+        assert_eq!(forged[0].target_counter, target);
+
+        let err = counter::increment_approved(
+            &f.runner,
+            &ws,
+            f.cfg.nv_index,
+            Path::new(&f.cfg.pcr_public_key),
+            &f.authority_name,
+            &forged[0],
+        )
+        .expect_err("an approval from the wrong key must be refused");
+        assert!(
+            format!("{err:#}").contains("not signed by the configured authority"),
+            "{err:#}"
+        );
+        assert_eq!(
+            f.counter_now(),
+            floor.counter,
+            "the counter must not have moved"
+        );
+    }
+
+    phase issuance_refuses_to_approve_past_the_newest_enrolled_generation;
+    // Issuance refuses to hand out approvals that could strand a device — keeping a stash of
+    // approvals from becoming a denial-of-service after a later compromise.
+    {
+        let f = fixture!();
+        let ws = f.ws();
+        let floor = f.floor(3);
+        let nv_name = f.nv_name();
+
+        // Generations 5 and 6 have keyslots; 6 is the highest floor that still leaves something to unseal.
+        let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[5, 6], 3).unwrap();
+        assert_eq!(req.safe_target_floor, 6);
+
+        let err = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, false)
+            .expect_err("approving past the newest enrolled generation must be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("newest generation with a sealed keyslot"),
+            "{msg}"
+        );
+
+        let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
+        assert_eq!(ok.len(), 3, "floor 3 -> 6 is three single-use steps");
+        assert_eq!(ok[0].target_floor, 4);
+        assert_eq!(ok[2].target_floor, 6);
+
+        // And the override exists, but has to be asked for.
+        let forced = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, true)
+            .expect("the override should work when explicitly requested");
+        assert_eq!(forced.len(), 4);
+    }
+
+    phase an_approval_for_another_machines_index_is_refused;
+    {
+        let f = fixture!();
+        let ws = f.ws();
+        let floor = f.floor(3);
+
+        // Same authority, same target, but issued against a different NV Name.
+        let mut other_name = f.nv_name();
+        other_name[10] ^= 0xFF;
+        let req = approval::build_request(f.cfg.nv_index, &other_name, floor, &[], 3).unwrap();
+        let foreign = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 4, true).expect("issue");
+
+        let err = counter::increment_approved(
+            &f.runner,
+            &ws,
+            f.cfg.nv_index,
+            Path::new(&f.cfg.pcr_public_key),
+            &f.authority_name,
+            &foreign[0],
+        )
+        .expect_err("an approval bound to another index must be refused");
+        assert!(
+            format!("{err:#}").contains("different NV index Name"),
+            "{err:#}"
+        );
+        assert_eq!(f.counter_now(), floor.counter);
+    }
 }
 
 #[test]
@@ -1998,41 +2097,6 @@ fn an_approval_is_bound_to_one_target_and_cannot_reach_another() {
         .expect("in-order approvals should work");
     }
     assert_eq!(f.counter_now(), floor.counter + 2);
-}
-
-#[test]
-fn an_approval_signed_by_another_key_is_refused() {
-    let f = fixture!();
-    let ws = f.ws();
-    let floor = f.floor(3);
-    let nv_name = f.nv_name();
-    let target = floor.counter + 1;
-
-    // Same policy, same target, wrong signer.
-    let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[], 3).unwrap();
-    let forged = approval::issue(&f.runner, &ws, &req, &f.evil_priv(), 4, true)
-        .expect("the forger can produce a well-formed approval");
-    assert_eq!(forged.len(), 1);
-    assert_eq!(forged[0].target_counter, target);
-
-    let err = counter::increment_approved(
-        &f.runner,
-        &ws,
-        f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key),
-        &f.authority_name,
-        &forged[0],
-    )
-    .expect_err("an approval from the wrong key must be refused");
-    assert!(
-        format!("{err:#}").contains("not signed by the configured authority"),
-        "{err:#}"
-    );
-    assert_eq!(
-        f.counter_now(),
-        floor.counter,
-        "the counter must not have moved"
-    );
 }
 
 /// Enroll generations 5-8 (predictions + keyslots) into a fresh image and seed `state.json`
@@ -2164,64 +2228,4 @@ fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
     .expect("confirmation with approvals");
     assert_eq!(o2.floor.floor_generation(), 6);
     assert!(o2.unapproved_steps.is_empty(), "{:?}", o2.unapproved_steps);
-}
-
-/// Issuance refuses to hand out approvals that could strand a device — keeping a stash of
-/// approvals from becoming a denial-of-service after a later compromise.
-#[test]
-fn issuance_refuses_to_approve_past_the_newest_enrolled_generation() {
-    let f = fixture!();
-    let ws = f.ws();
-    let floor = f.floor(3);
-    let nv_name = f.nv_name();
-
-    // Generations 5 and 6 have keyslots; 6 is the highest floor that still leaves something to unseal.
-    let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[5, 6], 3).unwrap();
-    assert_eq!(req.safe_target_floor, 6);
-
-    let err = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, false)
-        .expect_err("approving past the newest enrolled generation must be refused");
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("newest generation with a sealed keyslot"),
-        "{msg}"
-    );
-
-    let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
-    assert_eq!(ok.len(), 3, "floor 3 -> 6 is three single-use steps");
-    assert_eq!(ok[0].target_floor, 4);
-    assert_eq!(ok[2].target_floor, 6);
-
-    // And the override exists, but has to be asked for.
-    let forced = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, true)
-        .expect("the override should work when explicitly requested");
-    assert_eq!(forced.len(), 4);
-}
-
-#[test]
-fn an_approval_for_another_machines_index_is_refused() {
-    let f = fixture!();
-    let ws = f.ws();
-    let floor = f.floor(3);
-
-    // Same authority, same target, but issued against a different NV Name.
-    let mut other_name = f.nv_name();
-    other_name[10] ^= 0xFF;
-    let req = approval::build_request(f.cfg.nv_index, &other_name, floor, &[], 3).unwrap();
-    let foreign = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 4, true).expect("issue");
-
-    let err = counter::increment_approved(
-        &f.runner,
-        &ws,
-        f.cfg.nv_index,
-        Path::new(&f.cfg.pcr_public_key),
-        &f.authority_name,
-        &foreign[0],
-    )
-    .expect_err("an approval bound to another index must be refused");
-    assert!(
-        format!("{err:#}").contains("different NV index Name"),
-        "{err:#}"
-    );
-    assert_eq!(f.counter_now(), floor.counter);
 }

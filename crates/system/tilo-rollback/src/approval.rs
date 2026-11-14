@@ -395,148 +395,156 @@ mod tests {
         }
     }
 
-    #[test]
-    fn approvals_bind_one_target_index_and_machine() {
-        {
-            let a = approved_policy(&name(), 5).unwrap();
-            let b = approved_policy(&name(), 6).unwrap();
-            assert_ne!(a, b, "each step must need its own approval");
-        }
-        {
-            let other = {
-                let mut v = vec![0x00, 0x0B];
-                v.extend_from_slice(&[9u8; 32]);
-                v
-            };
-            assert_ne!(
-                approved_policy(&name(), 5).unwrap(),
-                approved_policy(&other, 5).unwrap()
-            );
-        }
-        {
-            assert!(approved_policy(&name(), 0).is_err());
-        }
-        {
-            let a = approval_for(5);
-            assert!(a.validate_for(0x01D9_1100, &name()).is_ok());
-            let other = {
-                let mut v = vec![0x00, 0x0B];
-                v.extend_from_slice(&[9u8; 32]);
-                v
-            };
-            let e = a.validate_for(0x01D9_1100, &other).unwrap_err().to_string();
-            assert!(e.contains("different NV index Name"), "{e}");
-            let e = a
-                .validate_for(0x01D9_1200, &name())
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("NV index"), "{e}");
-        }
-        {
-            let mut a = approval_for(5);
-            a.target_counter = 9;
-            let e = a
-                .validate_for(0x01D9_1100, &name())
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("does not match its stated target"), "{e}");
-        }
-        {
-            let mut a = approval_for(5);
-            a.version = SCHEMA_VERSION + 1;
-            let e = a
-                .validate_for(0x01D9_1100, &name())
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("approval schema version 2 is not the 1"), "{e}");
-            // Counter 0 is where an index starts, never where an increment lands.
-            let mut a = approval_for(5);
-            a.target_counter = 0;
-            let e = a
-                .validate_for(0x01D9_1100, &name())
-                .unwrap_err()
-                .to_string();
-            assert!(e.contains("approval targets counter 0"), "{e}");
-        }
-    }
+    tilo_test_env::scenario! {
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "test arithmetic: the lint exempts the body of a test function, not the closure a phase is"
+        )]
+        fn approvals_bind_their_target_and_follow_the_enrolled_generations;
 
-    #[test]
-    fn approval_bounds_and_directories_follow_enrolled_generations() {
+        phase approvals_bind_one_target_index_and_machine;
         {
-            let floor = counter::FloorState {
-                counter: 10,
-                base: 5,
-            };
-            let r = build_request(1, &name(), floor, &[8, 7, 6], 3).unwrap();
-            assert_eq!(r.floor_generation, 5);
-            assert_eq!(r.safe_target_floor, 8);
+            {
+                let a = approved_policy(&name(), 5).unwrap();
+                let b = approved_policy(&name(), 6).unwrap();
+                assert_ne!(a, b, "each step must need its own approval");
+            }
+            {
+                let other = {
+                    let mut v = vec![0x00, 0x0B];
+                    v.extend_from_slice(&[9u8; 32]);
+                    v
+                };
+                assert_ne!(
+                    approved_policy(&name(), 5).unwrap(),
+                    approved_policy(&other, 5).unwrap()
+                );
+            }
+            {
+                assert!(approved_policy(&name(), 0).is_err());
+            }
+            {
+                let a = approval_for(5);
+                assert!(a.validate_for(0x01D9_1100, &name()).is_ok());
+                let other = {
+                    let mut v = vec![0x00, 0x0B];
+                    v.extend_from_slice(&[9u8; 32]);
+                    v
+                };
+                let e = a.validate_for(0x01D9_1100, &other).unwrap_err().to_string();
+                assert!(e.contains("different NV index Name"), "{e}");
+                let e = a
+                    .validate_for(0x01D9_1200, &name())
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains("NV index"), "{e}");
+            }
+            {
+                let mut a = approval_for(5);
+                a.target_counter = 9;
+                let e = a
+                    .validate_for(0x01D9_1100, &name())
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains("does not match its stated target"), "{e}");
+            }
+            {
+                let mut a = approval_for(5);
+                a.version = SCHEMA_VERSION + 1;
+                let e = a
+                    .validate_for(0x01D9_1100, &name())
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains("approval schema version 2 is not the 1"), "{e}");
+                // Counter 0 is where an index starts, never where an increment lands.
+                let mut a = approval_for(5);
+                a.target_counter = 0;
+                let e = a
+                    .validate_for(0x01D9_1100, &name())
+                    .unwrap_err()
+                    .to_string();
+                assert!(e.contains("approval targets counter 0"), "{e}");
+            }
         }
+
+        phase approval_bounds_and_directories_follow_enrolled_generations;
         {
-            let floor = counter::FloorState {
-                counter: 10,
-                base: 5,
-            };
-            let r = build_request(1, &name(), floor, &[], 3).unwrap();
-            assert_eq!(r.safe_target_floor, 5);
-        }
-        {
-            let list = vec![approval_for(3), approval_for(4)];
-            assert_eq!(find(&list, 4).unwrap().target_counter, 4);
-            assert!(find(&list, 9).is_none());
-        }
-        {
-            let d = tempfile::tempdir().unwrap();
-            let list = vec![approval_for(4), approval_for(3)];
-            store(d.path(), &list).unwrap();
-            let back = load_all(d.path()).unwrap();
-            assert_eq!(back.len(), 2);
-            assert_eq!(back[0].target_counter, 3, "loaded oldest target first");
-            discard(d.path(), &back[0]);
-            assert_eq!(load_all(d.path()).unwrap().len(), 1);
-        }
-        {
-            let d = tempfile::tempdir().unwrap();
-            assert!(load_all(&d.path().join("nope")).unwrap().is_empty());
-        }
-        {
-            let d = tempfile::tempdir().unwrap();
-            store(d.path(), &[approval_for(3)]).unwrap();
-            std::fs::write(d.path().join("floor-9.json"), b"not json").unwrap();
-            let back = load_all(d.path()).unwrap();
-            assert_eq!(back.len(), 1);
-            assert_eq!(back[0].target_counter, 3);
-        }
-        {
-            // What issuance decides before it reads the authority's key: there is none here.
-            let d = tempfile::tempdir().unwrap();
-            let no_key = d.path().join("authority.pem");
-            let ws = Workspace::new(d.path());
-            let floor = counter::FloorState {
-                counter: 10,
-                base: 5,
-            };
-            let request = build_request(1, &name(), floor, &[8], 3).unwrap();
-            let issue_to = |request: &Request, up_to_floor: u64| {
-                let runner = crate::exec::Real::new();
-                issue(&runner, &ws, request, &no_key, up_to_floor, true)
-            };
-            assert!(
-                issue_to(&request, 5).unwrap().is_empty(),
-                "a floor already reached needs no approval"
-            );
-            // One batch holds at most 64 steps. A 65th means the request's base is wrong; 64 is
-            // let through, as far as the key.
-            let e = issue_to(&request, 70).unwrap_err().to_string();
-            assert!(
-                e.contains("that would be 65 approvals; more than 64 in one batch"),
-                "{e}"
-            );
-            let e = issue_to(&request, 69).unwrap_err().to_string();
-            assert!(e.contains(&format!("reading {}", no_key.display())), "{e}");
-            let mut newer = request;
-            newer.version = SCHEMA_VERSION + 1;
-            let e = issue_to(&newer, 6).unwrap_err().to_string();
-            assert!(e.contains("request schema version 2 is not the 1"), "{e}");
+            {
+                let floor = counter::FloorState {
+                    counter: 10,
+                    base: 5,
+                };
+                let r = build_request(1, &name(), floor, &[8, 7, 6], 3).unwrap();
+                assert_eq!(r.floor_generation, 5);
+                assert_eq!(r.safe_target_floor, 8);
+            }
+            {
+                let floor = counter::FloorState {
+                    counter: 10,
+                    base: 5,
+                };
+                let r = build_request(1, &name(), floor, &[], 3).unwrap();
+                assert_eq!(r.safe_target_floor, 5);
+            }
+            {
+                let list = vec![approval_for(3), approval_for(4)];
+                assert_eq!(find(&list, 4).unwrap().target_counter, 4);
+                assert!(find(&list, 9).is_none());
+            }
+            {
+                let d = tempfile::tempdir().unwrap();
+                let list = vec![approval_for(4), approval_for(3)];
+                store(d.path(), &list).unwrap();
+                let back = load_all(d.path()).unwrap();
+                assert_eq!(back.len(), 2);
+                assert_eq!(back[0].target_counter, 3, "loaded oldest target first");
+                discard(d.path(), &back[0]);
+                assert_eq!(load_all(d.path()).unwrap().len(), 1);
+            }
+            {
+                let d = tempfile::tempdir().unwrap();
+                assert!(load_all(&d.path().join("nope")).unwrap().is_empty());
+            }
+            {
+                let d = tempfile::tempdir().unwrap();
+                store(d.path(), &[approval_for(3)]).unwrap();
+                std::fs::write(d.path().join("floor-9.json"), b"not json").unwrap();
+                let back = load_all(d.path()).unwrap();
+                assert_eq!(back.len(), 1);
+                assert_eq!(back[0].target_counter, 3);
+            }
+            {
+                // What issuance decides before it reads the authority's key: there is none here.
+                let d = tempfile::tempdir().unwrap();
+                let no_key = d.path().join("authority.pem");
+                let ws = Workspace::new(d.path());
+                let floor = counter::FloorState {
+                    counter: 10,
+                    base: 5,
+                };
+                let request = build_request(1, &name(), floor, &[8], 3).unwrap();
+                let issue_to = |request: &Request, up_to_floor: u64| {
+                    let runner = crate::exec::Real::new();
+                    issue(&runner, &ws, request, &no_key, up_to_floor, true)
+                };
+                assert!(
+                    issue_to(&request, 5).unwrap().is_empty(),
+                    "a floor already reached needs no approval"
+                );
+                // One batch holds at most 64 steps. A 65th means the request's base is wrong; 64 is
+                // let through, as far as the key.
+                let e = issue_to(&request, 70).unwrap_err().to_string();
+                assert!(
+                    e.contains("that would be 65 approvals; more than 64 in one batch"),
+                    "{e}"
+                );
+                let e = issue_to(&request, 69).unwrap_err().to_string();
+                assert!(e.contains(&format!("reading {}", no_key.display())), "{e}");
+                let mut newer = request;
+                newer.version = SCHEMA_VERSION + 1;
+                let e = issue_to(&newer, 6).unwrap_err().to_string();
+                assert!(e.contains("request schema version 2 is not the 1"), "{e}");
+            }
         }
     }
 }

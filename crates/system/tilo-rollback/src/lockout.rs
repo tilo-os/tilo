@@ -389,57 +389,158 @@ mod tests {
         }
     }
 
-    #[test]
-    fn lockout_authorisations_reach_the_tools_by_file_never_by_argv() {
-        let scratch = tempfile::tempdir().unwrap();
-        let runner = Recorder {
-            calls: Mutex::new(Vec::new()),
-            missing_files: Mutex::new(Vec::new()),
-        };
-        let secret = b"0123456789abcdef0123456789abcdef";
-        let old = b"previous-authorisation";
-        set_reset_auth(&runner, secret, Some(old), scratch.path()).unwrap();
-        tighten(&runner, Target::default(), Some(secret), scratch.path()).unwrap();
+    tilo_test_env::scenario! {
+        fn lockout_parameters_are_classified_and_their_authorisations_stay_off_argv;
 
-        let calls = runner.calls.lock().unwrap().clone();
-        let missing = runner.missing_files.lock().unwrap().clone();
-        assert!(
-            missing.is_empty(),
-            "every authorisation file must exist while its tool runs: {missing:?}"
-        );
-        let command_lines: Vec<String> = calls.iter().flat_map(|(_, args)| args.clone()).collect();
-        for leaked in [secret.as_slice(), old.as_slice()] {
-            let leaked = String::from_utf8_lossy(leaked);
+        phase lockout_authorisations_reach_the_tools_by_file_never_by_argv;
+        {
+            let scratch = tempfile::tempdir().unwrap();
+            let runner = Recorder {
+                calls: Mutex::new(Vec::new()),
+                missing_files: Mutex::new(Vec::new()),
+            };
+            let secret = b"0123456789abcdef0123456789abcdef";
+            let old = b"previous-authorisation";
+            set_reset_auth(&runner, secret, Some(old), scratch.path()).unwrap();
+            tighten(&runner, Target::default(), Some(secret), scratch.path()).unwrap();
+
+            let calls = runner.calls.lock().unwrap().clone();
+            let missing = runner.missing_files.lock().unwrap().clone();
             assert!(
-                command_lines
-                    .iter()
-                    .all(|arg| !arg.contains(leaked.as_ref())),
-                "the authorisation must never appear on a command line: {command_lines:?}"
+                missing.is_empty(),
+                "every authorisation file must exist while its tool runs: {missing:?}"
+            );
+            let command_lines: Vec<String> = calls.iter().flat_map(|(_, args)| args.clone()).collect();
+            for leaked in [secret.as_slice(), old.as_slice()] {
+                let leaked = String::from_utf8_lossy(leaked);
+                assert!(
+                    command_lines
+                        .iter()
+                        .all(|arg| !arg.contains(leaked.as_ref())),
+                    "the authorisation must never appear on a command line: {command_lines:?}"
+                );
+            }
+            assert!(
+                command_lines.iter().all(|arg| !arg.starts_with("str:")),
+                "no `str:` form may remain: {command_lines:?}"
+            );
+            let (tool, tool_args) = calls.first().expect("tpm2_changeauth ran");
+            assert_eq!(tool, "tpm2_changeauth");
+            assert_eq!(
+                tool_args.iter().filter(|a| a.starts_with("file:")).count(),
+                2,
+                "both the new and the old authorisation go by file"
+            );
+            let (tool, tool_args) = calls.get(1).expect("tpm2_dictionarylockout ran");
+            assert_eq!(tool, "tpm2_dictionarylockout");
+            assert!(
+                tool_args
+                    .windows(2)
+                    .any(|w| w[0] == "--auth" && w[1].starts_with("file:"))
+            );
+            // The scratch files do not outlive the call.
+            assert!(
+                std::fs::read_dir(scratch.path()).unwrap().next().is_none(),
+                "scratch authorisation files must be removed"
             );
         }
-        assert!(
-            command_lines.iter().all(|arg| !arg.starts_with("str:")),
-            "no `str:` form may remain: {command_lines:?}"
-        );
-        let (tool, tool_args) = calls.first().expect("tpm2_changeauth ran");
-        assert_eq!(tool, "tpm2_changeauth");
-        assert_eq!(
-            tool_args.iter().filter(|a| a.starts_with("file:")).count(),
-            2,
-            "both the new and the old authorisation go by file"
-        );
-        let (tool, tool_args) = calls.get(1).expect("tpm2_dictionarylockout ran");
-        assert_eq!(tool, "tpm2_dictionarylockout");
-        assert!(
-            tool_args
-                .windows(2)
-                .any(|w| w[0] == "--auth" && w[1].starts_with("file:"))
-        );
-        // The scratch files do not outlive the call.
-        assert!(
-            std::fs::read_dir(scratch.path()).unwrap().next().is_none(),
-            "scratch authorisation files must be removed"
-        );
+
+        phase lockout_parameters_parse_and_classify_against_the_target;
+        {
+            {
+                let p = parse_properties(SWTPM);
+                assert_eq!(p.max_tries, 3);
+                assert_eq!(p.recovery_time, 1000);
+                assert_eq!(p.lockout_recovery, 1000);
+                assert_eq!(p.counter, 0);
+                assert!(!p.lockout_auth_set);
+                assert!(!p.in_lockout);
+            }
+            {
+                let p = parse_properties(&SWTPM.replace(
+                    "lockoutAuthSet:            0",
+                    "lockoutAuthSet:            1",
+                ));
+                assert!(p.lockout_auth_set);
+            }
+            {
+                let a = assess(parse_properties(SWTPM), Target::default());
+                assert!(!a.pin_is_defensible());
+                assert!(
+                    a.critical
+                        .iter()
+                        .any(|c| c.contains("reset authorisation is empty")),
+                    "{:?}",
+                    a.critical
+                );
+            }
+            {
+                let p = Params {
+                    max_tries: 0,
+                    recovery_time: 7200,
+                    lockout_recovery: 86400,
+                    lockout_auth_set: true,
+                    ..Default::default()
+                };
+                let a = assess(p, Target::default());
+                assert!(!a.pin_is_defensible());
+            }
+            {
+                let p = Params {
+                    max_tries: 8,
+                    recovery_time: 0,
+                    lockout_recovery: 86400,
+                    lockout_auth_set: true,
+                    ..Default::default()
+                };
+                assert!(!assess(p, Target::default()).pin_is_defensible());
+            }
+            {
+                let p = Params {
+                    max_tries: 64,
+                    recovery_time: 600,
+                    lockout_recovery: 600,
+                    lockout_auth_set: true,
+                    ..Default::default()
+                };
+                let a = assess(p, Target::default());
+                assert!(a.pin_is_defensible(), "{:?}", a.critical);
+                assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
+            }
+            {
+                let p = Params {
+                    max_tries: 8,
+                    recovery_time: 7200,
+                    lockout_recovery: 86400,
+                    lockout_auth_set: true,
+                    ..Default::default()
+                };
+                let a = assess(p, Target::default());
+                assert!(a.pin_is_defensible());
+                assert!(a.warnings.is_empty(), "{:?}", a.warnings);
+            }
+            {
+                let p = Params {
+                    max_tries: 4,
+                    recovery_time: 86400,
+                    lockout_recovery: 172_800,
+                    lockout_auth_set: true,
+                    ..Default::default()
+                };
+                let a = assess(p, Target::default());
+                assert!(a.warnings.is_empty(), "{:?}", a.warnings);
+            }
+            {
+                let a = new_reset_auth().unwrap();
+                assert_eq!(a.len(), RESET_AUTH_CHARS);
+                assert!(
+                    a.len() <= 48,
+                    "TPM2B_AUTH is refused above ~48 bytes on real implementations"
+                );
+                assert!(a.iter().all(u8::is_ascii_hexdigit));
+                assert_ne!(*a, *new_reset_auth().unwrap());
+            }
+        }
     }
 
     const SWTPM: &str = "\
@@ -456,101 +557,4 @@ TPM2_PT_MAX_AUTH_FAIL: 0x3
 TPM2_PT_LOCKOUT_INTERVAL: 0x3E8
 TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
 ";
-
-    #[test]
-    fn lockout_parameters_parse_and_classify_against_the_target() {
-        {
-            let p = parse_properties(SWTPM);
-            assert_eq!(p.max_tries, 3);
-            assert_eq!(p.recovery_time, 1000);
-            assert_eq!(p.lockout_recovery, 1000);
-            assert_eq!(p.counter, 0);
-            assert!(!p.lockout_auth_set);
-            assert!(!p.in_lockout);
-        }
-        {
-            let p = parse_properties(&SWTPM.replace(
-                "lockoutAuthSet:            0",
-                "lockoutAuthSet:            1",
-            ));
-            assert!(p.lockout_auth_set);
-        }
-        {
-            let a = assess(parse_properties(SWTPM), Target::default());
-            assert!(!a.pin_is_defensible());
-            assert!(
-                a.critical
-                    .iter()
-                    .any(|c| c.contains("reset authorisation is empty")),
-                "{:?}",
-                a.critical
-            );
-        }
-        {
-            let p = Params {
-                max_tries: 0,
-                recovery_time: 7200,
-                lockout_recovery: 86400,
-                lockout_auth_set: true,
-                ..Default::default()
-            };
-            let a = assess(p, Target::default());
-            assert!(!a.pin_is_defensible());
-        }
-        {
-            let p = Params {
-                max_tries: 8,
-                recovery_time: 0,
-                lockout_recovery: 86400,
-                lockout_auth_set: true,
-                ..Default::default()
-            };
-            assert!(!assess(p, Target::default()).pin_is_defensible());
-        }
-        {
-            let p = Params {
-                max_tries: 64,
-                recovery_time: 600,
-                lockout_recovery: 600,
-                lockout_auth_set: true,
-                ..Default::default()
-            };
-            let a = assess(p, Target::default());
-            assert!(a.pin_is_defensible(), "{:?}", a.critical);
-            assert_eq!(a.warnings.len(), 3, "{:?}", a.warnings);
-        }
-        {
-            let p = Params {
-                max_tries: 8,
-                recovery_time: 7200,
-                lockout_recovery: 86400,
-                lockout_auth_set: true,
-                ..Default::default()
-            };
-            let a = assess(p, Target::default());
-            assert!(a.pin_is_defensible());
-            assert!(a.warnings.is_empty(), "{:?}", a.warnings);
-        }
-        {
-            let p = Params {
-                max_tries: 4,
-                recovery_time: 86400,
-                lockout_recovery: 172_800,
-                lockout_auth_set: true,
-                ..Default::default()
-            };
-            let a = assess(p, Target::default());
-            assert!(a.warnings.is_empty(), "{:?}", a.warnings);
-        }
-        {
-            let a = new_reset_auth().unwrap();
-            assert_eq!(a.len(), RESET_AUTH_CHARS);
-            assert!(
-                a.len() <= 48,
-                "TPM2B_AUTH is refused above ~48 bytes on real implementations"
-            );
-            assert!(a.iter().all(u8::is_ascii_hexdigit));
-            assert_ne!(*a, *new_reset_auth().unwrap());
-        }
-    }
 }

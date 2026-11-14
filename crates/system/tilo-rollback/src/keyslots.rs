@@ -830,36 +830,112 @@ Digests:
   0: pbkdf2
 ";
 
-    #[test]
-    fn keyslot_dumps_parse_only_keyslots_and_secrets_stay_off_argv() {
+    tilo_test_env::scenario! {
+        fn keyslots_are_read_and_enrolled_with_no_secret_on_argv_and_no_tool_before_its_precondition;
+
+        phase keyslot_dumps_parse_only_keyslots_and_secrets_stay_off_argv;
         {
-            assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
+            {
+                assert_eq!(parse_keyslots(DUMP), vec![0, 2]);
+            }
+            {
+                // The Tokens section also uses "  N: name"; the parser must stop at it.
+                let ks = parse_keyslots(DUMP);
+                assert!(
+                    !ks.contains(&1),
+                    "token id 1 leaked into the keyslot list: {ks:?}"
+                );
+            }
+            {
+                assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
+            }
+            {
+                let p = new_passphrase().unwrap();
+                assert_eq!(p.len(), 64);
+                assert!(p.iter().all(u8::is_ascii_hexdigit));
+                // Two calls must not agree.
+                assert_ne!(*p, *new_passphrase().unwrap());
+            }
+            {
+                let auth = unseal_auth(
+                    Path::new("/run/work/policy.ctx"),
+                    Some(Path::new("/run/work/pin")),
+                );
+                assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
+                assert!(!auth.contains("246810"));
+            }
         }
+
+        phase enrolling_or_boot_unsealing_without_its_precondition_is_refused_before_any_tool_runs;
         {
-            // The Tokens section also uses "  N: name"; the parser must stop at it.
-            let ks = parse_keyslots(DUMP);
-            assert!(
-                !ks.contains(&1),
-                "token id 1 leaked into the keyslot list: {ks:?}"
+            let scratch = tempfile::tempdir().unwrap();
+            let ws = Workspace::new(scratch.path());
+            let runner = NoTools::default();
+            let device = scratch.path().join("disk.img");
+            let key = scratch.path().join("signing.public.pem");
+            let prediction = Prediction {
+                approved_policy: vec![0xAA; 32],
+                signature: vec![0xBB; 256],
+                label: String::new(),
+            };
+            let artifact = SealedArtifact {
+                public: b"public",
+                private: b"private",
+                policy_digest: b"digest",
+            };
+            let boot = |pin: bool| policy::BootPolicy {
+                generation: 9,
+                key_name: b"name",
+                pcr_bank: "sha256",
+                pcrs: &[11],
+                platform_pcrs: &[7],
+                pin,
+            };
+            let no_prediction = Enrollment {
+                generation: 9,
+                floor: crate::counter::FloorState {
+                    counter: 1,
+                    base: 1,
+                },
+                predictions: &[],
+                pin: None,
+            };
+            let cfg = crate::Config::default();
+            let refusals = [
+                (
+                    "enrolling a generation with no prediction",
+                    enroll_generation(&runner, &ws, &device, &cfg, &no_prediction, b"recovery")
+                        .map(drop),
+                    "refusing to enroll generation 9 with no signed PCR prediction",
+                ),
+                (
+                    "unsealing a boot artifact with no prediction",
+                    unseal_boot(&runner, &ws, &artifact, &boot(false), &[], &key).map(drop),
+                    "refusing to unseal generation 9 with no signed prediction",
+                ),
+                (
+                    "unsealing a PIN-sealed boot artifact",
+                    unseal_boot(
+                        &runner,
+                        &ws,
+                        &artifact,
+                        &boot(true),
+                        std::slice::from_ref(&prediction),
+                        &key,
+                    )
+                    .map(drop),
+                    "a PIN-sealed boot artifact needs the rollback token path, not the installer handoff",
+                ),
+            ];
+            for (case, result, expected) in refusals {
+                let error = result.expect_err(case);
+                assert_eq!(error.to_string(), expected, "{case}");
+            }
+            assert_eq!(
+                *runner.asked.lock().unwrap(),
+                Vec::<String>::new(),
+                "a refusal ran a tool first"
             );
-        }
-        {
-            assert!(parse_keyslots("LUKS header information\nVersion: 2\n").is_empty());
-        }
-        {
-            let p = new_passphrase().unwrap();
-            assert_eq!(p.len(), 64);
-            assert!(p.iter().all(u8::is_ascii_hexdigit));
-            // Two calls must not agree.
-            assert_ne!(*p, *new_passphrase().unwrap());
-        }
-        {
-            let auth = unseal_auth(
-                Path::new("/run/work/policy.ctx"),
-                Some(Path::new("/run/work/pin")),
-            );
-            assert_eq!(auth, "session:/run/work/policy.ctx+file:/run/work/pin");
-            assert!(!auth.contains("246810"));
         }
     }
 
@@ -880,77 +956,5 @@ Digests:
             self.asked.lock().unwrap().push(program.to_string());
             bail!("{program} was run")
         }
-    }
-
-    #[test]
-    fn enrolling_or_boot_unsealing_without_its_precondition_is_refused_before_any_tool_runs() {
-        let scratch = tempfile::tempdir().unwrap();
-        let ws = Workspace::new(scratch.path());
-        let runner = NoTools::default();
-        let device = scratch.path().join("disk.img");
-        let key = scratch.path().join("signing.public.pem");
-        let prediction = Prediction {
-            approved_policy: vec![0xAA; 32],
-            signature: vec![0xBB; 256],
-            label: String::new(),
-        };
-        let artifact = SealedArtifact {
-            public: b"public",
-            private: b"private",
-            policy_digest: b"digest",
-        };
-        let boot = |pin: bool| policy::BootPolicy {
-            generation: 9,
-            key_name: b"name",
-            pcr_bank: "sha256",
-            pcrs: &[11],
-            platform_pcrs: &[7],
-            pin,
-        };
-        let no_prediction = Enrollment {
-            generation: 9,
-            floor: crate::counter::FloorState {
-                counter: 1,
-                base: 1,
-            },
-            predictions: &[],
-            pin: None,
-        };
-        let cfg = crate::Config::default();
-        let refusals = [
-            (
-                "enrolling a generation with no prediction",
-                enroll_generation(&runner, &ws, &device, &cfg, &no_prediction, b"recovery")
-                    .map(drop),
-                "refusing to enroll generation 9 with no signed PCR prediction",
-            ),
-            (
-                "unsealing a boot artifact with no prediction",
-                unseal_boot(&runner, &ws, &artifact, &boot(false), &[], &key).map(drop),
-                "refusing to unseal generation 9 with no signed prediction",
-            ),
-            (
-                "unsealing a PIN-sealed boot artifact",
-                unseal_boot(
-                    &runner,
-                    &ws,
-                    &artifact,
-                    &boot(true),
-                    std::slice::from_ref(&prediction),
-                    &key,
-                )
-                .map(drop),
-                "a PIN-sealed boot artifact needs the rollback token path, not the installer handoff",
-            ),
-        ];
-        for (case, result, expected) in refusals {
-            let error = result.expect_err(case);
-            assert_eq!(error.to_string(), expected, "{case}");
-        }
-        assert_eq!(
-            *runner.asked.lock().unwrap(),
-            Vec::<String>::new(),
-            "a refusal ran a tool first"
-        );
     }
 }
