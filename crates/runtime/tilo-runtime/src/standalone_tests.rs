@@ -968,7 +968,7 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     };
     assert_eq!(verb.args["app"].as_str(), Some("Caller"));
     assert_eq!(verb.args["target"].as_str(), Some("Target App"));
-    assert_eq!(verb.args["lifetime"].as_str(), Some("workspace"));
+    assert_eq!(verb.args["lifetime"].as_str(), Some("until revoked"));
 
     grants.revoke(&workspace_id, &id);
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
