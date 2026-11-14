@@ -85,7 +85,8 @@ pub(super) async fn join(
             TransportOrigin::RetainedRelayDelta(bootstrap.host.device_public_key),
             postcard::from_bytes(bytes).map_err(|error| error.to_string())?,
             SystemTime::now(),
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
     }
     Ok(peer)
 }
