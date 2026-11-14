@@ -36,8 +36,7 @@ fn click(part: &mut ShellPart, name: &str) {
 
 /// A room's notebook, published as the session publishes it.
 fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
-    let record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new("Pat"), || None).unwrap();
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new("Pat"), || None).unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -50,33 +49,7 @@ fn notebook() -> (RecordService, tilolang_tilo::runtime::Meta) {
         )
         .unwrap();
     host.root_of(NOTES_APP).unwrap();
-    let mut record = record;
-    for committed in host.take_committed() {
-        tilo_actions_apply(&host, &mut record, &committed.action);
-    }
-    (RecordService::new(record, host, "Pat"), notes.meta)
-}
-
-/// Commit what the runtime made on its own (the notebook's root) to `record`.
-fn tilo_actions_apply(
-    host: &Host,
-    record: &mut tilo_resource::Doc,
-    action: &tilolang_tilo::DynAction,
-) {
-    let context = ui::tilo_actions::ActionContext::for_resource("room", &action.kind, &action.kind)
-        .with_invoker(ui::tilo_actions::ActionInvoker::actor("Pat"));
-    host.with_schemas(|| {
-        ui::tilo_actions::apply_local_with_context(
-            record,
-            action,
-            action.encode().unwrap(),
-            Some(b"Pat"),
-            context,
-        )
-    })
-    .unwrap();
-    record.commit();
-    host.sync_from(record);
+    (RecordService::new(host, "Pat"), notes.meta)
 }
 
 fn action_id(meta: &tilolang_tilo::runtime::Meta, name: &str) -> String {
@@ -429,13 +402,6 @@ const TASKS_APP: &str = "so.tilo.lang.tasks";
 /// What Bo writes, and what the task made from it is called.
 const SAID: &str = "can someone book the van for Saturday?";
 
-/// Commit what the runtime made on its own to `record`, as a session's record takes it.
-fn commit(host: &Host, record: &mut tilo_resource::Doc) {
-    for committed in host.take_committed() {
-        tilo_actions_apply(host, record, &committed.action);
-    }
-}
-
 /// The value the action `action` of `meta` gives when the person runs it with `args`.
 fn call(host: &Host, meta: &tilolang_tilo::runtime::Meta, action: &str, args: Vec<Value>) -> Value {
     let id = action_id(meta, action);
@@ -473,16 +439,13 @@ struct Room {
 }
 
 fn room() -> Room {
-    let record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new("ada"), || None).unwrap();
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new("ada"), || None).unwrap();
     let chat = host.load_builtin(CHAT, CHAT_IDS).unwrap();
     host.load_builtin(DISCUSSION, DISCUSSION_IDS).unwrap();
     let tasks = host.load_builtin(TASKS, TASKS_IDS).unwrap();
     // Both roots exist, as they do once each app's window was opened in the workspace.
     let all = Value::resource(&host.root_of(CHAT_APP).unwrap());
     let tasks_root = Value::resource(&host.root_of(TASKS_APP).unwrap());
-    let mut record = record;
-    commit(&host, &mut record);
     let team = call(
         &host,
         &chat.meta,
@@ -495,7 +458,6 @@ fn room() -> Room {
         "add_channel",
         vec![team, Value::text("design")],
     );
-    commit(&host, &mut record);
     let said = Value::Rich(tilolang_tilo::runtime::rich::RichValue::from_text(SAID));
     let message = call(
         &host,
@@ -503,7 +465,6 @@ fn room() -> Room {
         "send",
         vec![design.clone(), said, Value::none()],
     );
-    commit(&host, &mut record);
     // The task is made from the message, as the message's own menu makes it: the words the
     // message says fill the title the task is called by, and the task is made from the message.
     let message = target(&message);
@@ -522,9 +483,8 @@ fn room() -> Room {
         tilolang_tilo::runtime::InvokeOutcome::Done(made) => made,
         other => panic!("new_task: {other:?}"),
     };
-    commit(&host, &mut record);
     Room {
-        service: RecordService::new(record, host, "ada"),
+        service: RecordService::new(host, "ada"),
         channel: target(&design).id_string(),
         message,
         task: published(&target(&made)),

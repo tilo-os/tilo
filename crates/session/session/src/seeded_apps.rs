@@ -39,16 +39,16 @@ pub const APPS: [&str; 5] = [
 ];
 
 /// The records of the installed apps [`APPS`] names, in one workspace record of `person`'s:
-/// each app's root made and filled by its first scenario as `person`'s steps, published for
-/// them.
+/// each app's root made and filled by its first scenario, each step as its authorship names it,
+/// published for them.
 ///
 /// # Errors
 /// An app of [`APPS`] is not installed as a tilolang package, its payload does not read, or its
 /// scenario does not run.
 pub fn seeded(person: &str, catalog: &package_store::Catalog) -> Result<RecordService, String> {
     let installed = installed_apps(catalog)?;
-    let mut record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new(person), || None).map_err(|e| e.to_string())?;
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None)
+        .map_err(|e| e.to_string())?;
     host.set_words(crate::i18n::SeededWords);
     // A package's imported modules ride in its own bundle, so any order loads; the packages a
     // session reads first are loaded first, so a package that another one shows is the one it
@@ -68,16 +68,14 @@ pub fn seeded(person: &str, catalog: &package_store::Catalog) -> Result<RecordSe
     for (app, scenario) in scenarios {
         host.root_of(&app)
             .map_err(|error| format!("{app}'s root: {error}"))?;
-        commit(&host, &mut record, person)?;
         let Some(scenario) = scenario else {
             continue;
         };
         host.runtime()
             .invoke_action(&Principal::new(person), (scenario.action.as_str(), vec![]))
             .map_err(|error| format!("{app} {:?}: {error}", scenario.name))?;
-        commit(&host, &mut record, person)?;
     }
-    let mut service = RecordService::new(record, host, person);
+    let mut service = RecordService::new(host, person);
     // What an app tells reaches the person through the platform's notifier this session serves,
     // as any app's notification does.
     service.set_tell(Toolkit::new(
@@ -123,31 +121,4 @@ fn installed_apps(catalog: &package_store::Catalog) -> Result<Vec<InstalledApp>,
         apps.push(found.clone());
     }
     Ok(apps)
-}
-
-/// Commit what `host` committed to `record`, each as a step of `person`'s.
-fn commit(host: &Host, record: &mut tilo_resource::Doc, person: &str) -> Result<(), String> {
-    for committed in host.take_committed() {
-        let action = &committed.action;
-        let encoded = action.encode().map_err(|error| error.to_string())?;
-        let context = ui::tilo_actions::ActionContext::for_resource(
-            action.resources().first().copied().unwrap_or("room"),
-            &action.kind,
-            &action.kind,
-        )
-        .with_invoker(ui::tilo_actions::ActionInvoker::actor(person.to_owned()));
-        host.with_schemas(|| {
-            ui::tilo_actions::apply_local_with_context(
-                record,
-                action,
-                encoded,
-                Some(person.as_bytes()),
-                context,
-            )
-        })
-        .map_err(|error| error.to_string())?;
-        record.commit();
-        host.sync_from(record);
-    }
-    Ok(())
 }

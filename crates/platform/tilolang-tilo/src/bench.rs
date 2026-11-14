@@ -64,7 +64,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value as Json, json};
 use tilo_actions::{ActionContext, ActionInvoker};
-use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang::source::{compile_dirs, dependency_order};
 use tilolang::{Compiled, SeededEntropy};
@@ -617,10 +616,10 @@ pub(crate) fn item_path(id: &str, field: &str) -> Vec<Segment> {
     ]
 }
 
-/// Commit `action` on `doc` through the executor, as a window's host does: recorded at
-/// [`BENCH_TIME`] unless it says when it was made, so what the windows show of when things
-/// changed is the same in every run.
-fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
+/// `action` as the bench records it, `who`'s step, with what its change is recorded with:
+/// recorded at [`BENCH_TIME`] unless it says when it was made, so what the windows show of when
+/// things changed is the same in every run.
+fn bench_step(action: &DynAction, who: &str) -> (DynAction, ActionContext) {
     let mut action = action.clone();
     // The action records who invoked it, as the runtime's own do: what a window reads of a
     // change is whose it was, so an action of the seed's is the person's it seeds as, not
@@ -629,7 +628,6 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
     if action.authorship.at.is_none() {
         action.authorship.at = Some(BENCH_TIME.to_owned());
     }
-    let action = &action;
     let context = ActionContext::for_resource(
         action.resources().first().copied().unwrap_or("workspace"),
         &action.kind,
@@ -637,16 +635,36 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
     )
     .with_app("so.tilo.lang", "tilolang")
     .with_invoker(ActionInvoker::actor(who.to_owned()));
-    tilo_actions::apply_local_with_context(
-        doc,
-        action,
-        action.encode().map_err(|e| e.to_string())?,
-        Some(who.as_bytes()),
-        context,
-    )
-    .map_err(|e| e.to_string())?;
-    doc.commit();
-    Ok(())
+    (action, context)
+}
+
+/// Commit `action` on `doc`, a replica of the workspace's of its own, through the executor.
+fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
+    let (action, context) = bench_step(action, who);
+    let encoded = action.encode().map_err(|e| e.to_string())?;
+    crate::store::apply_step(doc, &action, encoded, who.as_bytes(), context)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Commit `action`, which `host`'s store wrote, as a window's record does: what the store wrote
+/// is its change.
+fn commit(host: &Host, action: &DynAction, who: &str) -> Result<(), String> {
+    let (action, context) = bench_step(action, who);
+    let encoded = action.encode().map_err(|e| e.to_string())?;
+    host.with_schemas(|| {
+        host.store()
+            .commit_action(
+                crate::chunk::FIRST,
+                (&action, Some(&action)),
+                encoded,
+                who.as_bytes(),
+                context,
+                |_, _| (),
+            )
+            .0
+    })
+    .map_err(|e| e.to_string())
 }
 
 fn root_id(shape: &Shape) -> String {
@@ -655,7 +673,6 @@ fn root_id(shape: &Shape) -> String {
 
 /// One machine's window onto the workspace: the record, the host and the open views.
 struct Workspace {
-    doc: Doc,
     host: Host,
     list: ViewInstance,
     phases: Phases,
@@ -751,10 +768,8 @@ fn prepare_index(doc: &Doc, packages: &[Compiled]) -> Result<(IndexDir, f64), St
 struct Phases {
     /// The runtime's own transaction: the edit through the bound control.
     edit: Vec<f64>,
-    /// The executor committing the runtime's action into the workspace record.
+    /// The store committing the runtime's action as its change, and deriving what it changed.
     execute: Vec<f64>,
-    /// The store catching up with the record.
-    sync: Vec<f64>,
     /// The views re-running what changed.
     poll: Vec<f64>,
     /// Search reindexing what changed.
@@ -808,7 +823,6 @@ impl Phases {
         json!({
             "edit_p50_ms": p50(&mut self.edit),
             "execute_p50_ms": p50(&mut self.execute),
-            "sync_p50_ms": p50(&mut self.sync),
             "poll_p50_ms": p50(&mut self.poll),
             "search_p50_ms": p50(&mut self.search),
             "publish_p50_ms": p50(&mut self.publish),
@@ -837,7 +851,7 @@ const VIEWER: &str = "bench";
 
 impl Workspace {
     fn open(
-        doc: Doc,
+        doc: &Doc,
         packages: &[Compiled],
         app: &str,
         profile: bool,
@@ -849,7 +863,7 @@ impl Workspace {
     /// [`Self::open`], counting what each unit costs from the moment the host is made: what
     /// the opening work is made of, by unit ([`crate::cost`]).
     fn open_counting(
-        doc: Doc,
+        doc: &Doc,
         packages: &[Compiled],
         app: &str,
         profile: bool,
@@ -859,7 +873,7 @@ impl Workspace {
         let start = Instant::now();
         let host = Host::open(
             Opening {
-                record: Some(&doc),
+                record: Some(doc),
                 index_dir: index.as_ref().map(|dir| dir.path().to_owned()),
                 ..Opening::default()
             },
@@ -914,7 +928,6 @@ impl Workspace {
         let profiled = host.runtime().engine().profiled();
         phases.engine(profiled.map(|_| EngineProfile::default()), profiled);
         Ok(Self {
-            doc,
             host,
             list,
             phases,
@@ -925,24 +938,30 @@ impl Workspace {
         })
     }
 
+    /// A replica of the workspace's record as the host holds it: its committed changes only.
+    fn record(&self) -> Doc {
+        self.host
+            .store()
+            .with_record(|chunks| chunks.committed(crate::chunk::FIRST))
+            .unwrap_or_default()
+    }
+
     /// Wait for publication to have read the workspace, and take it in.
     fn settle(&mut self) {
         self.host.wait_index();
         self.published.settle(&self.host, &self.planner);
     }
 
-    /// What a frame does after a change: commit what the runtime committed through the
-    /// executor, bring the store up to date with the record, and run what went stale.
+    /// What a frame does after a change: commit what the runtime committed, and run what went
+    /// stale.
     fn frame(&mut self, others: &mut [&mut ViewInstance]) -> Result<usize, String> {
         let profiled = self.host.runtime().engine().profiled();
         let start = Instant::now();
         for committed in self.host.take_committed() {
             self.commits = self.commits.saturating_add(1);
-            execute(&mut self.doc, &committed.action, "bench")?;
+            commit(&self.host, &committed.action, "bench")?;
         }
         let executed = Instant::now();
-        self.host.sync_from(&self.doc);
-        let synced = Instant::now();
         let mut patches = self.list.poll_patches().map_err(|e| e.to_string())?.len();
         for view in others {
             patches = patches.saturating_add(view.poll_patches().map_err(|e| e.to_string())?.len());
@@ -950,8 +969,7 @@ impl Workspace {
         let polled = Instant::now();
         self.published.update(&self.host, &self.planner);
         self.phases.execute.push(ms(executed.duration_since(start)));
-        self.phases.sync.push(ms(synced.duration_since(executed)));
-        self.phases.poll.push(ms(polled.duration_since(synced)));
+        self.phases.poll.push(ms(polled.duration_since(executed)));
         self.phases.publish.push(ms(polled.elapsed()));
         let after = self.host.runtime().engine().profiled();
         self.phases.engine(profiled, after);
@@ -1409,7 +1427,7 @@ impl Sized<'_> {
     /// [`Self::open`] from the index `index`, which is the sample's to change.
     fn opened(&self, index: IndexDir) -> Result<Workspace, String> {
         Workspace::open(
-            self.base.clone(),
+            &self.base,
             self.packages,
             &self.meta.app,
             self.config.profile,
@@ -1667,7 +1685,7 @@ fn measure_memory(workspace: &Path, package: &Path, index: Option<PathBuf>) -> R
         .map_err(|e| e.to_string())?;
     // The parent's directory, which it removes.
     let index = index.map(IndexDir);
-    let mut workspace = Workspace::open(doc, &packages, &app, false, index)?;
+    let mut workspace = Workspace::open(&doc, &packages, &app, false, index)?;
     workspace.settle();
     workspace.frame(&mut [])?;
     // A live window publishes what search finds of the workspace as it opens.
@@ -1851,13 +1869,10 @@ fn first_frame(sized: &Sized<'_>, saved: &[u8]) -> Result<Vec<Record>, String> {
                     None
                 }
             };
-            let mut loading = loading.borrow_mut();
-            let doc = loading.wait()?;
             // The keystroke is a change of its own: what the first change of a window costs.
             for committed in host.take_committed() {
-                execute(doc, &committed.action, "bench")?;
+                commit(&host, &committed.action, "bench")?;
             }
-            host.sync_from(doc);
             list.poll_patches().map_err(|e| e.to_string())?;
             if let Some(editor) = editor.as_mut() {
                 editor.poll_patches().map_err(|e| e.to_string())?;
@@ -2188,7 +2203,7 @@ fn peer_change<'a>(
 
 /// A peer changing what is on screen, its change merged into the workspace.
 fn peer_edit(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, String> {
-    let mut peer = workspace.doc.fork();
+    let mut peer = workspace.record();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
         let (subject, edit) = peer_change(sized, workspace, sample)?;
@@ -2206,10 +2221,7 @@ fn peer_edit(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Record, Str
         execute(&mut peer, &action, "peer")?;
         let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        workspace
-            .doc
-            .merge_incoming(&mut peer)
-            .map_err(|e| e.to_string())?;
+        workspace.host.sync_from(&peer);
         workspace.phases.edit.push(ms(start.elapsed()));
         let patches = workspace.frame(&mut [])?;
         let took = ms(start.elapsed());
@@ -2233,7 +2245,7 @@ fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
         return Ok(None);
     };
     let principals = thread::principals(sized.packages);
-    let mut peer = workspace.doc.fork();
+    let mut peer = workspace.record();
     let mut changes = Changes::default();
     let first = sized.target(workspace.list.tree());
     for sample in 0..sized.config.samples {
@@ -2270,10 +2282,7 @@ fn peer_post(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Reco
         execute(&mut peer, &action, "peer")?;
         let before = Work::of(workspace, &[]);
         let start = Instant::now();
-        workspace
-            .doc
-            .merge_incoming(&mut peer)
-            .map_err(|e| e.to_string())?;
+        workspace.host.sync_from(&peer);
         let patches = workspace.frame(&mut [])?;
         let took = ms(start.elapsed());
         let mut done = Work::of(workspace, &[]).since(before);
@@ -2628,7 +2637,7 @@ mod costs {
         let packages = compile(&dir).expect("the tasks package compiles");
         let doc = seeded_record(&packages, 10_000).expect("the workspace seeds");
         let app = packages.last().expect("a package").meta.app.clone();
-        let mut workspace = Workspace::open_counting(doc, &packages, &app, false, None, true)
+        let mut workspace = Workspace::open_counting(&doc, &packages, &app, false, None, true)
             .expect("the workspace opens");
         workspace.settle();
         let costs = workspace
@@ -2658,7 +2667,7 @@ mod costs {
             // The index an earlier window kept, so the open reads it rather than building one.
             let (index, _) = prepare_index(&doc, &packages).expect("the index builds");
             let mut workspace =
-                Workspace::open_counting(doc, &packages, &app, false, Some(index), false)
+                Workspace::open_counting(&doc, &packages, &app, false, Some(index), false)
                     .expect("the workspace opens");
             workspace.settle();
             workspace.host.store().read_stats()

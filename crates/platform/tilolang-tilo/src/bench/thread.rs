@@ -13,7 +13,6 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use serde_json::{Value as Json, json};
-use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Collection, Id};
 use tilolang::Compiled;
 use tilolang_runtime::value::{ResourceRef, Value};
@@ -260,7 +259,7 @@ fn post(
 ) -> Result<Record, String> {
     let shape = sized.shape;
     let principals = principals(sized.packages);
-    let mut peer = workspace.doc.fork();
+    let mut peer = workspace.record();
     let mut changes = Changes::default();
     for sample in 0..sized.config.samples {
         let id = format!("peer-{sample:06}");
@@ -298,10 +297,7 @@ fn post(
         execute(&mut peer, &action, "peer")?;
         let before = Work::of(workspace, &[&thread.view]);
         let start = Instant::now();
-        workspace
-            .doc
-            .merge_incoming(&mut peer)
-            .map_err(|e| e.to_string())?;
+        workspace.host.sync_from(&peer);
         let patches = workspace.frame(&mut [&mut thread.view])?;
         // The transcript follows its end: the new last row comes into view.
         let len = thread.view.list_len(&thread.list).unwrap_or(0);

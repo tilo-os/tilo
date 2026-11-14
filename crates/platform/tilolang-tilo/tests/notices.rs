@@ -118,8 +118,8 @@ fn args(value: Json) -> Map<String, Json> {
 /// A session's record service over `record`, for `person`, telling what it shows to a recorder.
 /// Its clock stands before the reminder, so its own turn runs nothing until it is told to.
 fn service(name: &str, person: &str, record: &AutoCommit) -> (RecordService, Recorder) {
-    let Replica { doc, host, .. } = Replica::new(name, record.clone(), &[DISCUSSION, TASKS]).0;
-    let mut service = RecordService::new(doc, host, person);
+    let Replica { host, .. } = Replica::new(name, record.clone(), &[DISCUSSION, TASKS]).0;
+    let mut service = RecordService::new(host, person);
     service.set_clock(|| "2026-10-27T09:00:00Z".to_owned());
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
@@ -141,8 +141,8 @@ fn ada_workspace() -> (
     });
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
-    let Replica { doc, host, .. } = ada;
-    let mut service = RecordService::new(doc, host, "ada");
+    let Replica { host, .. } = ada;
+    let mut service = RecordService::new(host, "ada");
     service.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -190,7 +190,7 @@ fn remind(service: &mut RecordService, call: &str, clock: &std::cell::RefCell<St
 
 /// The record as it is here, to give the next device.
 fn record_of(service: &RecordService) -> AutoCommit {
-    service.record().clone()
+    service.record()
 }
 
 /// What the notice's tag names: its id in the record.
@@ -442,8 +442,8 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
     // The moment comes on the workspace's device; each of Bo's takes in what it wrote, and
     // shows it, saying what the task is and when it is due.
     remind(&mut ada, &call, &clock);
-    laptop.take_in(&mut record_of(&ada)).unwrap();
-    phone.take_in(&mut record_of(&ada)).unwrap();
+    laptop.take_in(&record_of(&ada));
+    phone.take_in(&record_of(&ada));
     for notices in [&laptop_notices, &phone_notices] {
         let shown = notices.shown.borrow();
         assert_eq!(shown.len(), 1, "one notice: {shown:#?}");
@@ -476,15 +476,15 @@ fn dismissing_a_notice_on_one_device_clears_it_on_the_others() {
     laptop.poll();
     phone.poll();
     remind(&mut ada, &call, &clock);
-    laptop.take_in(&mut record_of(&ada)).unwrap();
-    phone.take_in(&mut record_of(&ada)).unwrap();
+    laptop.take_in(&record_of(&ada));
+    phone.take_in(&record_of(&ada));
     let shown = laptop_notices.shown.borrow().clone();
     assert_eq!(shown.len(), 1);
     assert_eq!(phone_notices.shown.borrow().len(), 1, "both showed it");
 
     // Bo dismisses it on their laptop: the record says it is seen, as their own change.
     laptop.notice_seen(&id_of(&shown[0].tag));
-    phone.take_in(&mut record_of(&laptop)).unwrap();
+    phone.take_in(&record_of(&laptop));
 
     // Their phone takes the notification back, and shows it no more.
     assert_eq!(
@@ -509,8 +509,8 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     laptop.poll();
     phone.poll();
     remind(&mut ada, &call, &clock);
-    laptop.take_in(&mut record_of(&ada)).unwrap();
-    phone.take_in(&mut record_of(&ada)).unwrap();
+    laptop.take_in(&record_of(&ada));
+    phone.take_in(&record_of(&ada));
     let shown = laptop_notices.shown.borrow().clone();
     assert_eq!(shown.len(), 1);
     assert_eq!(phone_notices.shown.borrow().len(), 1, "both showed it");
@@ -519,7 +519,7 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     // theirs to see, and their phone keeps showing it.
     laptop_notices.close(&shown[0].tag, Closed::Expired);
     laptop.poll();
-    phone.take_in(&mut record_of(&laptop)).unwrap();
+    phone.take_in(&record_of(&laptop));
     assert!(
         phone_notices.withdrawn.borrow().is_empty(),
         "an expiry answers nothing: {:#?}",
@@ -530,7 +530,7 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     // devices has seen.
     laptop_notices.close(&shown[0].tag, Closed::Withdrawn);
     laptop.poll();
-    phone.take_in(&mut record_of(&laptop)).unwrap();
+    phone.take_in(&record_of(&laptop));
     assert!(
         phone_notices.withdrawn.borrow().is_empty(),
         "taking one back answers nothing: {:#?}",
@@ -541,7 +541,7 @@ fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
     // phone takes it back.
     laptop_notices.close(&shown[0].tag, Closed::Dismissed);
     laptop.poll();
-    phone.take_in(&mut record_of(&laptop)).unwrap();
+    phone.take_in(&record_of(&laptop));
     assert_eq!(
         phone_notices.withdrawn.borrow().clone(),
         vec![shown[0].tag.clone()],
@@ -568,7 +568,7 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
     // The moment comes, and the phone takes in what the workspace wrote: this is news to it.
     remind(&mut ada, &call, &clock);
     let record = record_of(&ada);
-    phone.take_in(&mut record_of(&ada)).unwrap();
+    phone.take_in(&record_of(&ada));
     assert_eq!(phone_notices.shown.borrow().len(), 1, "news to this device");
 
     // A device that restarts having told it keeps that, and tells nothing again.
@@ -591,7 +591,7 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
     );
 
     // Nor does another device's turn run the trigger a second time.
-    joining.take_in(&mut record_of(&ada)).unwrap();
+    joining.take_in(&record_of(&ada));
     assert_eq!(notices(ada.host()).len(), 1, "one notice in the workspace");
 }
 
@@ -603,7 +603,7 @@ fn what_a_notice_opens_resolves_from_another_device() {
     let (mut phone, phone_notices) = service("bo", "bo", &before);
     phone.poll();
     remind(&mut ada, &call, &clock);
-    phone.take_in(&mut record_of(&ada)).unwrap();
+    phone.take_in(&record_of(&ada));
     let shown = phone_notices.shown.borrow().clone();
     let place = place(&shown[0]);
     assert_eq!(place.app, TASKS_APP);
@@ -625,8 +625,8 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
     own.host.root_of("so.tilo.test.own").unwrap();
     own.commit();
 
-    let Replica { doc, host, .. } = own;
-    let mut service = RecordService::new(doc, host, &person);
+    let Replica { host, .. } = own;
+    let mut service = RecordService::new(host, &person);
     let recorder = Recorder::default();
     service.set_tell(recorder.clone());
     service.poll();

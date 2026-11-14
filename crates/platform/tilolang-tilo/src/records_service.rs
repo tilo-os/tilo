@@ -35,7 +35,8 @@ use crate::publish::{Planner, Publications, edit_action, publish_package, resour
 
 /// The workspace record's tilolang records, published to the session.
 pub struct RecordService {
-    record: tilo_resource::Doc,
+    /// The runtime the records are read through, whose store holds the workspace record: the
+    /// one copy of it, which every change made here is written into once.
     host: Host,
     planner: Arc<dyn Planner>,
     publications: Publications,
@@ -53,8 +54,8 @@ pub struct RecordService {
     /// taken in anew, a document changed as a whole).
     moved: std::collections::BTreeSet<String>,
     moved_unsaid: bool,
-    /// The packages the session runs itself (the shell), whose records it keeps in
-    /// [`Self::record`] beside the apps': each its compiled module, its description embedded,
+    /// The packages the session runs itself (the shell), whose records it keeps in the
+    /// workspace record beside the apps': each its compiled module, its description embedded,
     /// so a connection reads the package's records by its app as it reads any app's.
     shared: std::collections::BTreeMap<String, std::sync::Arc<[u8]>>,
     /// The document each of [`Self::shared`]'s packages' parts commit into, by the app: what
@@ -95,20 +96,18 @@ pub struct RecordService {
 }
 
 impl RecordService {
-    /// The records `host` runs over `record`, its packages loaded, published for `person`.
+    /// The records `host` holds, its packages loaded, published for `person`. What its packages
+    /// made on their own before (their roots, a scenario's data) is committed first, each as the
+    /// step its authorship names.
     #[must_use]
-    pub fn new(record: tilo_resource::Doc, host: Host, person: impl Into<String>) -> Self {
+    pub fn new(host: Host, person: impl Into<String>) -> Self {
         let person: String = person.into();
-        host.sync_from(&record);
         let planner: Arc<dyn Planner> = Arc::new(host.handle());
-        let mut publications = Publications::new(&host);
+        let publications = Publications::new(&host);
         let watch = host.store().watch();
-        publications.settle(&host, &planner);
-        let _ = watch.take();
         let content = Arc::new(crate::content::Records::default());
         let kept = content.store();
-        Self {
-            record,
+        let mut service = Self {
             host,
             planner,
             publications,
@@ -129,7 +128,11 @@ impl RecordService {
             content,
             kept,
             window: tilo_wake::WakeScope::new(),
-        }
+        };
+        let _ = service.flush();
+        service.publications.settle(&service.host, &service.planner);
+        let _ = service.watch.take();
+        service
     }
 
     /// Keep the large parts of the record of `app`'s actions in `store`: the content store the
@@ -174,16 +177,11 @@ impl RecordService {
     /// arrangement and the shell's settings, and both are the person's, synced with their
     /// devices, as an app's record is.
     pub fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
-        use tilo_automerge::ApplyIncoming as _;
         let _in_records = self.in_records();
         let Some(meta) = crate::runtime::Meta::from_wasm(share.wasm) else {
             return Err(format!("{} carries no description", share.app));
         };
-        self.record
-            .merge_incoming(&mut share.records.borrow_mut())
-            .map_err(|error| error.to_string())?;
-        self.record.commit();
-        self.host.sync_from(&self.record);
+        self.host.sync_from(&share.records.borrow());
         // The package's own code runs here, over its record as any app's does: its roots are
         // resources of the record, so a program reads and changes them by the app.
         self.host
@@ -196,11 +194,8 @@ impl RecordService {
         }
         // The roots are made: what that wrote goes where the package's parts read it, so the
         // record they draw exists for them too, each as the step its authorship names.
-        for committed in self.host.take_committed() {
-            let invoker = invoker_of(&committed.action);
-            self.commit(&committed.action, &invoker)?;
-        }
-        *share.records.borrow_mut() = self.record.clone();
+        self.flush()?;
+        *share.records.borrow_mut() = self.record();
         self.shared
             .insert(meta.app.clone(), std::sync::Arc::from(share.wasm));
         self.shared_records
@@ -218,28 +213,20 @@ impl RecordService {
         let _in_records = self.in_records();
         let mut took = false;
         for (app, records) in &self.shared_records {
-            let heads = self.record.committed_heads();
-            let theirs = records.borrow().committed_heads();
-            if heads == theirs {
+            if self.heads() == records.borrow().committed_heads() {
                 continue;
             }
-            let mut theirs = records.borrow_mut();
-            match self.record.merge_incoming(&mut theirs) {
-                Ok(merged) if merged.is_empty() => {}
-                Ok(_) => {
-                    took = true;
-                    // What the parts hold is the same record: the change this service makes
-                    // (by a connection's action) reaches them too.
-                    let _ = theirs.merge_incoming(&mut self.record.clone());
-                }
-                Err(error) => return Err(format!("{app}'s record: {error}")),
-            }
+            took |= self.host.sync_from(&records.borrow());
+            // What the parts hold is the same record: the change this service makes (by a
+            // connection's action) reaches them too.
+            records
+                .borrow_mut()
+                .merge_incoming(&mut self.record())
+                .map_err(|error| format!("{app}'s record: {error}"))?;
         }
         if !took {
             return Ok(false);
         }
-        self.record.commit();
-        self.host.sync_from(&self.record);
         self.moved_unsaid = true;
         Ok(true)
     }
@@ -264,15 +251,26 @@ impl RecordService {
         Some(tilo_service::Record {
             app: app.to_owned(),
             id: crate::own_record(&package.meta, &self.person).unwrap_or_default(),
-            document: self.record.clone().save(),
+            document: self.record().save(),
             packages,
         })
     }
 
-    /// The workspace record as it is here.
+    /// A copy of the workspace record as it is here: its committed changes only.
     #[must_use]
-    pub fn record(&self) -> &tilo_resource::Doc {
-        &self.record
+    pub fn record(&self) -> tilo_resource::Doc {
+        self.host
+            .store()
+            .with_record(|chunks| chunks.committed(crate::chunk::FIRST))
+            .unwrap_or_default()
+    }
+
+    /// The heads of the workspace record's committed changes.
+    fn heads(&self) -> Vec<automerge::ChangeHash> {
+        self.host
+            .store()
+            .with_record(|chunks| chunks.first().map(tilo_resource::Doc::committed_heads))
+            .unwrap_or_default()
     }
 
     /// The runtime the records are read through.
@@ -282,16 +280,11 @@ impl RecordService {
     }
 
     /// Take in what another replica of the workspace record holds.
-    pub fn take_in(&mut self, other: &mut tilo_resource::Doc) -> Result<(), String> {
-        use tilo_automerge::ApplyIncoming as _;
+    pub fn take_in(&mut self, other: &tilo_resource::Doc) {
         let _in_records = self.in_records();
-        self.record
-            .merge_incoming(other)
-            .map_err(|error| error.to_string())?;
-        self.host.sync_from(&self.record);
+        self.host.sync_from(other);
         // What reached it of the person's notices, told as it arrives.
         self.told();
-        Ok(())
     }
 
     /// Have `wake` called (from another thread) when records built off the frame are ready for
@@ -388,7 +381,7 @@ impl RecordService {
         if wrote {
             // What the origins wrote is committed to the record this service publishes, as the
             // origins' own changes.
-            self.flush();
+            let _ = self.flush();
             self.publications.settle(&self.host, &self.planner);
         }
         wrote
@@ -456,7 +449,7 @@ impl RecordService {
     /// Commit `action` to the record as a step of `invoker`: the person seated here, or an
     /// agent acting for them.
     fn commit(
-        &mut self,
+        &self,
         action: &DynAction,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
@@ -465,7 +458,7 @@ impl RecordService {
 
     /// [`Self::commit`] as a step of the run `run`, when it is one of a run's.
     fn commit_in(
-        &mut self,
+        &self,
         action: &DynAction,
         invoker: &tilo_actions::ActionInvoker,
         run: Option<&tilo_actions::WorkGroup>,
@@ -479,43 +472,51 @@ impl RecordService {
             &action.kind,
         );
         self.content.writing(&action.app);
-        self.apply(action, encoded, in_run(context, invoker, run))
+        self.apply(
+            (action, Some(action)),
+            encoded,
+            in_run(context, invoker, run),
+        )
     }
 
-    /// Apply `action` (`encoded`) to the record as the step `context` describes, and hand the
-    /// change to the parts that share the record.
+    /// Commit `action` (`encoded`) to the record as the step `context` describes, and hand the
+    /// change to the parts that share the record. `part`, when `action` is a tilolang action the
+    /// store wrote as it planned it, is committed as written: the action is written once
+    /// ([`crate::store::TiloStore::commit_action`]).
     fn apply(
-        &mut self,
-        action: &dyn tilo_actions::Action,
+        &self,
+        (action, part): (&dyn tilo_actions::Action, Option<&DynAction>),
         encoded: tilo_actions::EncodedAction,
         context: ActionContext,
     ) -> Result<(), String> {
         let _in_records = self.in_records();
-        let actor = context
+        let author = context
             .invoker
             .as_ref()
-            .map(|invoker| invoker.actor.clone().into_bytes());
-        let record = &mut self.record;
+            .map_or_else(|| self.person.clone(), |invoker| invoker.actor.clone());
+        let store = self.host.store();
         self.host
             .with_schemas(|| {
-                tilo_actions::apply_local_with_context(
-                    record,
-                    action,
-                    encoded,
-                    actor.as_deref(),
-                    context,
-                )
+                store
+                    .commit_action(
+                        crate::chunk::FIRST,
+                        (action, part),
+                        encoded,
+                        author.as_bytes(),
+                        context,
+                        |_, _| (),
+                    )
+                    .0
             })
             .map_err(|error| error.to_string())?;
-        self.record.commit();
-        self.host.sync_from(&self.record);
         // The change belongs to every replica of a shared record once it is committed: the
         // parts of a package the session runs itself (the shell) draw it on their next turn.
-        for records in self.shared_records.values() {
+        if !self.shared_records.is_empty() {
             use tilo_automerge::ApplyIncoming as _;
-            let _ = records
-                .borrow_mut()
-                .merge_incoming(&mut self.record.clone());
+            let mut record = self.record();
+            for records in self.shared_records.values() {
+                let _ = records.borrow_mut().merge_incoming(&mut record);
+            }
         }
         Ok(())
     }
@@ -549,7 +550,12 @@ impl RecordService {
                 .ok_or_else(|| DoorError::Unknown(address.clone()))?
                 .map_err(DoorError::InvalidArguments)?
         } else {
-            let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
+            // The action is planned to be carried out at once: what its plan writes is its
+            // change, written once, as the invoker's.
+            let resources = self.resources();
+            let encoded = self.host.carrying_out(invoker.actor.as_bytes(), || {
+                tilo_actions::door::encode_json(&resources, &address, arguments)
+            })?;
             if encoded.type_id == crate::effects::OPEN_OPERATION {
                 let mut open =
                     open_asked(&encoded.payload, resource).map_err(DoorError::InvalidArguments)?;
@@ -571,7 +577,13 @@ impl RecordService {
                     .map_err(DoorError::Failed);
             }
             if encoded.type_id == VIEW_TYPE {
-                return verbs::answer(&self.record, &encoded.payload, &self.words)
+                return self
+                    .host
+                    .store()
+                    .with_record(|chunks| {
+                        let doc = chunks.first().ok_or("the record is not held here")?;
+                        verbs::answer(doc, &encoded.payload, &self.words)
+                    })
                     .map(Started::Done)
                     .map_err(DoorError::Failed);
             }
@@ -634,24 +646,21 @@ impl RecordService {
         let _in_records = self.in_records();
         let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
         let encoded = action.encoded()?;
-        let before = self.record.get_heads();
+        let before = self.heads();
         // The step the verb takes back is a change of the record the resource is of: a part it
         // keeps, when the step is too large to record whole, is that record's.
         if let Some(app) = app_of_resource(resource) {
             self.content.writing(app);
         }
         let context = ActionContext::for_resource(resource, &kind, &kind);
-        self.apply(&action, encoded, in_run(context, invoker, run))?;
+        self.apply((&action, None), encoded, in_run(context, invoker, run))?;
         self.publications.settle(&self.host, &self.planner);
         self.told();
-        let after = self.record.get_heads();
-        let patches = self.record.diff(&before, &after);
-        Ok(verbs::result(
-            edit.verb(),
-            &self.record,
-            &patches,
-            &self.words,
-        ))
+        Ok(self.host.store().with_record(|chunks| {
+            let doc = chunks.first()?;
+            let patches = doc.committed_diff(&before, &doc.committed_heads());
+            verbs::result(edit.verb(), doc, &patches, &self.words)
+        }))
     }
 }
 
@@ -793,19 +802,23 @@ impl RecordService {
         }
         // What a trigger did is the app's own change, committed as its invocation says: the same
         // commit as an action from the workspace, as the run's principal.
-        self.flush();
+        let _ = self.flush();
         self.moved_unsaid = true;
         true
     }
 
     /// Commit what the packages committed on their own — a trigger's change, a notice marked
-    /// seen — each as the step its authorship names.
-    fn flush(&mut self) {
+    /// seen — each as the step its authorship names: the first change the record did not take,
+    /// when one was not.
+    fn flush(&self) -> Result<(), String> {
+        let mut out = Ok(());
         for committed in self.host.take_committed() {
             if let Err(error) = self.commit(&committed.action, &invoker_of(&committed.action)) {
                 tracing::warn!(%error, "a change made on its own did not reach the workspace");
+                out = out.and(Err(error));
             }
         }
+        out
     }
 
     /// How long until what the packages have due next: the service's next poll runs it then, so
@@ -844,7 +857,7 @@ impl RecordService {
             tracing::warn!(%error, notice = id, "a notice was not marked seen");
             return;
         }
-        self.flush();
+        let _ = self.flush();
         self.told();
     }
 
@@ -1044,7 +1057,7 @@ impl Service for RecordService {
             .map(|(app, kind)| tilo_service::HistoryRecord {
                 app: app.to_owned(),
                 kind: kind.to_owned(),
-                document: self.record.clone(),
+                document: self.record(),
             })
             .collect()
     }

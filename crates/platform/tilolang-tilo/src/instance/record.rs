@@ -501,10 +501,8 @@ impl InstanceRecord {
     pub fn chunks(&self) -> Chunks {
         let mut copy = Chunks::of(self.doc());
         self.read(|chunks| {
-            for (chunk, doc) in chunks.all().filter(|(chunk, _)| *chunk != FIRST) {
-                let mut doc = doc.clone();
-                doc.rollback();
-                copy.insert(chunk, doc);
+            for (chunk, _) in chunks.all().filter(|(chunk, _)| *chunk != FIRST) {
+                copy.insert(chunk, chunks.committed(chunk).unwrap_or_default());
             }
         });
         copy
@@ -513,9 +511,7 @@ impl InstanceRecord {
     /// A copy of the chunk `chunk`, its committed changes only ([`Self::doc`]).
     #[must_use]
     pub fn chunk(&self, chunk: ChunkNo) -> Option<Doc> {
-        let mut doc = self.read(|chunks| chunks.held(chunk).cloned())?;
-        doc.rollback();
-        Some(doc)
+        self.read(|chunks| chunks.committed(chunk))
     }
 
     /// Read the record and the chunks above it this replica holds.
@@ -1557,7 +1553,7 @@ impl InstanceRecord {
     ///
     /// `part`, when `action` is the part of a tilolang action the instance's store wrote, is
     /// committed as the store wrote it when that is how replaying it writes it
-    /// ([`crate::store::TiloStore::written_as`]), rather than written a second time.
+    /// ([`crate::store::TiloStore::commit_action`]), rather than written a second time.
     fn apply_on(
         &mut self,
         chunk: ChunkNo,
@@ -1583,44 +1579,26 @@ impl InstanceRecord {
         self.keep_on_disk(chunk);
         // What the store wrote of the action is its change, as replaying the action writes it:
         // committed as the author's, never applied a second time.
-        let written = match (&self.chunks, part) {
-            (Docs::Store(store), Some(part)) => store
-                .written_as(chunk, part)
-                .map(|described| (store.clone(), part, described)),
-            _ => None,
-        };
-        let (before, refused) = if let Some((store, part, described)) = written {
-            let (out, moved) = store.commit_open(chunk, part, author.as_bytes(), |doc| {
-                let before = doc.committed_heads();
-                tilo_actions::commit_written(
-                    doc,
-                    part,
+        let check = |doc: &mut Doc, before| kept_or_refused(&record, doc, before);
+        let (before, refused) = match &self.chunks {
+            Docs::Store(store) => {
+                let (out, moved) = store.commit_action(
+                    chunk,
+                    (action, part),
                     encoded,
                     author.as_bytes(),
                     context,
-                    Some(described),
-                )
-                .map_err(|error| RecordError::Refused(error.to_string()))?;
-                kept_or_refused(&record, doc, before)
-            });
-            self.moved |= moved;
-            out?
-        } else {
-            self.write_chunk(chunk, |doc| {
-                let before = doc.committed_heads();
-                tilo_actions::apply_local_with_context(
-                    doc,
-                    action,
-                    encoded,
-                    Some(author.as_bytes()),
-                    context,
-                )
-                .map_err(|error| RecordError::Refused(error.to_string()))?;
-                // The change is a step of whoever made it, by the invoker its entry names: their
-                // Undo takes it back.
-                doc.commit();
-                kept_or_refused(&record, doc, before)
-            })?
+                    check,
+                );
+                self.moved |= moved;
+                out.map_err(|error| RecordError::Refused(error.to_string()))??
+            }
+            Docs::Own(_) => self.write_chunk(chunk, |doc| {
+                let before =
+                    crate::store::apply_step(doc, action, encoded, author.as_bytes(), context)
+                        .map_err(|error| RecordError::Refused(error.to_string()))?;
+                check(doc, before)
+            })?,
         };
         if let Some(why) = refused {
             tracing::warn!(%app, chunk, %why, "workspace: a change the workspace refuses was not kept");

@@ -322,7 +322,7 @@ pub struct StoreStats {
     /// ([`TiloStore::sync_from`]).
     pub merges: u64,
     /// Actions whose writes the store made became their change as written, with nothing
-    /// applied a second time ([`TiloStore::commit_open`]).
+    /// applied a second time ([`TiloStore::commit_action`]).
     pub written_once: u64,
     /// Indexes built from the record whole, there being none to read (or none to trust).
     pub builds: u64,
@@ -364,6 +364,7 @@ use listed::ListedOnce;
 mod scoped;
 mod sync;
 use scoped::{Changing, Held};
+pub(crate) use sync::apply_step;
 mod clock;
 use clock::ClockSource;
 mod burst;
@@ -426,7 +427,7 @@ struct Inner {
     adopted: bool,
     /// Who the record's holder writes as: an action's writes into a chunk with no other open
     /// writes are made under this actor, so they are the change the holder commits for it
-    /// ([`TiloStore::commit_open`]).
+    /// ([`TiloStore::commit_action`]).
     author: Option<automerge::ActorId>,
     /// The chunks the store asked its source for and the source cannot give: they are not on
     /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
@@ -1997,7 +1998,7 @@ impl Inner {
         // An action's first write into a chunk that holds no other open writes writes as its
         // author, who commits it as the action's change. Writes open before it (another
         // action's, or derived ones) leave the actor as it is: setting it would commit them, and
-        // the action's change is written alone when it commits ([`TiloStore::commit_open`]).
+        // the action's change is written alone when it commits ([`TiloStore::commit_action`]).
         if !derived
             && index == 0
             && doc.pending_ops() == 0

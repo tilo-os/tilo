@@ -383,8 +383,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
 /// [`notebook`] as kept by `person`, whom the notes are theirs and every step of it is theirs:
 /// the id a session acts as on a device that has an identity of its own.
 pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
-    let mut record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new(person), || None).unwrap();
+    let host = Host::new(&tilo_resource::Doc::new(), Principal::new(person), || None).unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -396,25 +395,7 @@ pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>
     )
     .unwrap();
     host.root_of(NOTES).unwrap();
-    for committed in host.take_committed() {
-        let action = &committed.action;
-        let context =
-            ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
-                .with_invoker(ui::tilo_actions::ActionInvoker::actor(person));
-        host.with_schemas(|| {
-            ui::tilo_actions::apply_local_with_context(
-                &mut record,
-                action,
-                action.encode().unwrap(),
-                Some(person.as_bytes()),
-                context,
-            )
-        })
-        .unwrap();
-        record.commit();
-        host.sync_from(&record);
-    }
-    let mut service = RecordService::new(record, host, person);
+    let mut service = RecordService::new(host, person);
     let book = service
         .resources()
         .into_iter()

@@ -48,9 +48,9 @@ fn service() -> (RecordService, tilolang_runtime::Meta) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, NOTES]);
     ada.host.root_of(APP).unwrap();
     ada.commit();
-    let Replica { doc, host, .. } = ada;
+    let Replica { host, .. } = ada;
     (
-        RecordService::new(doc, host, "ada"),
+        RecordService::new(host, "ada"),
         packages.last().unwrap().meta.clone(),
     )
 }
@@ -74,6 +74,44 @@ fn new_note(service: &mut RecordService) -> String {
     };
     service.settle();
     output.resources.first().cloned().expect("the note it made")
+}
+
+#[test]
+fn an_action_through_the_service_is_written_once_as_its_change() {
+    let (mut service, _) = service();
+    let before = service.host().store().stats();
+    let heads = service.record().get_heads();
+    new_note(&mut service);
+    let after = service.host().store().stats();
+    assert_eq!(
+        after.written_once,
+        before.written_once + 1,
+        "what the action's plan wrote is its change"
+    );
+    assert_eq!(
+        after.merges, before.merges,
+        "no copy of the record is merged in"
+    );
+
+    // A peer replaying the action the change records gets the same change, to the byte.
+    let mut peer = service.record();
+    let arrived: Vec<_> = peer
+        .get_changes(&heads)
+        .iter()
+        .map(automerge::Change::hash)
+        .collect();
+    assert_eq!(arrived.len(), 1, "the action is one change");
+    let mut registry = tilo_actions::ActionRegistry::new();
+    tilolang_tilo::history::register(&mut registry);
+    for change in arrived {
+        let verified = service
+            .host()
+            .with_schemas(|| tilo_actions::verify_change(&mut peer, change, &registry));
+        assert!(
+            matches!(verified, Ok(tilo_actions::Verified::Reproduced)),
+            "a peer replaying the change gets the same one: {verified:?}"
+        );
+    }
 }
 
 /// Every text a tree shows, in its props.
@@ -119,7 +157,7 @@ tilo_test_env::scenario! {
             .expect("the note publishes its own open");
         assert!(open.encode_immediate().is_some(), "its open takes no input");
 
-        let before = service.record().clone().get_heads();
+        let before = service.record().get_heads();
         // Invoked as an agent answering in a conversation, the open is answered with nothing done to
         // the record: the session places the note beside that conversation.
         let agent =
@@ -134,7 +172,7 @@ tilo_test_env::scenario! {
             "it changed nothing of the record"
         );
         assert_eq!(
-            service.record().clone().get_heads(),
+            service.record().get_heads(),
             before,
             "the record did not change"
         );
@@ -262,8 +300,8 @@ fn tasks() -> (RecordService, std::rc::Rc<std::cell::RefCell<String>>) {
     });
     ada.host.root_of(TASKS_APP).unwrap();
     ada.commit();
-    let Replica { doc, host, .. } = ada;
-    let mut service = RecordService::new(doc, host, "ada");
+    let Replica { host, .. } = ada;
+    let mut service = RecordService::new(host, "ada");
     service.set_clock({
         let clock = std::rc::Rc::clone(&clock);
         move || clock.borrow().clone()
@@ -472,7 +510,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     );
 
     // Its change keeps the body as content, sealed, in the record's store.
-    let (paste, parts) = kept_as_content(&mut service.record().clone());
+    let (paste, parts) = kept_as_content(&mut service.record());
     assert!(
         parts.iter().all(|part| tilo_content::is_sealed(part)),
         "a record's parts are sealed: {parts:?}"
@@ -484,9 +522,9 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
 
     // The record opens again over what the device holds: the change decodes from the store alone,
     // and the note the reopened record publishes reads the paste back.
-    let reopened = reopened_service(service.record(), &store);
+    let reopened = reopened_service(&service.record(), &store);
     assert_eq!(
-        crate::window::decoded(reopened.record().clone(), paste, store.clone()).unwrap(),
+        crate::window::decoded(reopened.record(), paste, store.clone()).unwrap(),
         tilo_actions::Verified::Reproduced,
         "after the record opens again, the paste reads back as it ran"
     );
@@ -506,7 +544,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
     );
     assert!(
         matches!(
-            crate::window::decoded(reopened.record().clone(), paste, theirs.clone()).unwrap(),
+            crate::window::decoded(reopened.record(), paste, theirs.clone()).unwrap(),
             tilo_actions::Verified::ContentMissing(_)
         ),
         "the peer lacks the paste until it arrives"
@@ -526,7 +564,7 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
         lane.arrive(hash.to_owned(), bytes);
     }
     assert_eq!(
-        crate::window::decoded(reopened.record().clone(), paste, theirs).unwrap(),
+        crate::window::decoded(reopened.record(), paste, theirs).unwrap(),
         tilo_actions::Verified::Reproduced,
         "once the paste arrived, the peer's action reproduces its change"
     );
@@ -536,8 +574,8 @@ fn an_agents_paste_past_a_mebibyte_is_kept_and_reads_back_here_and_on_a_peer() {
 /// the device holds, as the session opens it on the next start.
 fn reopened_service(doc: &tilo_resource::Doc, store: &tilo_content::ContentStore) -> RecordService {
     let (replica, _) = Replica::new("ada", doc.clone(), &[DISCUSSION, NOTES]);
-    let Replica { doc, host, .. } = replica;
-    let mut service = RecordService::new(doc, host, "ada");
+    let Replica { host, .. } = replica;
+    let mut service = RecordService::new(host, "ada");
     service.provide_content(APP, store.clone());
     service.settle();
     service

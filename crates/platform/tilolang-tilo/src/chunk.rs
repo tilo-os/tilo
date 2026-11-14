@@ -341,6 +341,16 @@ impl Chunks {
             .or_else(|| self.parked.get(&chunk).map(AsRef::as_ref))
     }
 
+    /// A copy of the chunk `chunk` the record's holder has, its committed changes only: the
+    /// store's unsaved writes are no change, and a copy that kept them would commit them as one
+    /// when it is saved.
+    #[must_use]
+    pub fn committed(&self, chunk: ChunkNo) -> Option<Doc> {
+        let mut doc = self.held(chunk)?.clone();
+        doc.rollback();
+        Some(doc)
+    }
+
     /// The chunk `chunk` the record's holder writes into: the one it has, else one started
     /// here, as a write into a run that starts there is made before that chunk arrives.
     pub fn open_held(&mut self, chunk: ChunkNo) -> &mut Doc {

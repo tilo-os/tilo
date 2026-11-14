@@ -141,7 +141,7 @@ impl TiloStore {
 
     /// Have the store write an action's writes as `author` (the record's holder) where they are
     /// the first open writes of their chunk, so they are the action's change as written
-    /// ([`Self::commit_open`]).
+    /// ([`Self::commit_action`]).
     pub fn set_author(&self, author: &[u8]) {
         self.changing().author = Some(automerge::ActorId::from(author));
     }
@@ -158,36 +158,41 @@ impl TiloStore {
         out
     }
 
-    /// Whether the store's open writes into chunk `chunk` begin with the action `part`: each of
-    /// its edits in its order, as one action of the store's, with the ids replaying it mints.
-    /// Then they are its change as replaying it writes it, to commit ([`Self::commit_open`]),
-    /// with what it did as history names it, read before its first write.
-    #[must_use]
-    pub fn written_as(&self, chunk: ChunkNo, part: &DynAction) -> Option<Described> {
-        self.held().written_as(chunk, part)
-    }
-
-    /// Commit the writes of the action `part` into chunk `chunk`, which [`Self::written_as`]
-    /// found, as `author`'s change with `commit`: the action is written once. When the chunk
-    /// holds other open writes as well (derived ones, which no change carries, or an action's
-    /// queued after it), or they were written under another actor, the part is written alone
-    /// under `author` first, and the rest goes back on after the commit. Its new change is
-    /// derived as [`Self::write_chunk`] derives one; also whether anything moved.
-    pub fn commit_open<R>(
+    /// Commit `action`, encoded as `encoded`, into chunk `chunk` as `author`'s step recorded with
+    /// `context`; `then` sees the chunk in the same write, with the heads it held before. When
+    /// the store's open writes into the chunk begin with `part` (each edit in its order, as one
+    /// action of the store's, with the ids replaying it mints), they are its change as replaying
+    /// it writes it, and are committed: the action is written once. When the chunk holds other
+    /// open writes as well (derived ones, or an action's queued after it), or they were written
+    /// under another actor, the part is written alone under `author` first, and the rest goes
+    /// back on after the commit. Else the action is applied now ([`apply_step`]). Its new change
+    /// is derived as [`Self::write_chunk`] derives one; also whether anything moved.
+    pub fn commit_action<R>(
         &self,
         chunk: ChunkNo,
-        part: &DynAction,
+        (action, part): (&dyn tilo_actions::Action, Option<&DynAction>),
+        encoded: tilo_actions::EncodedAction,
         author: &[u8],
-        commit: impl FnOnce(&mut Doc) -> R,
-    ) -> (R, bool) {
+        context: tilo_actions::ActionContext,
+        then: impl FnOnce(&mut Doc, Vec<automerge::ChangeHash>) -> R,
+    ) -> (Result<R, tilo_actions::ActionError>, bool) {
+        let written = part.and_then(|part| Some((part, self.held().written_as(chunk, part)?)));
+        let Some((part, described)) = written else {
+            return self.write_chunk(chunk, |doc| {
+                let before = apply_step(doc, action, encoded, author, context)?;
+                Ok(then(doc, before))
+            });
+        };
         let out = {
             let mut inner = self.mutate();
             inner.stats.written_once = inner.stats.written_once.saturating_add(1);
             inner.write_alone(chunk, part.edits.len(), author);
-            commit(inner.chunks.open_held(chunk))
+            let doc = inner.chunks.open_held(chunk);
+            let before = doc.committed_heads();
+            tilo_actions::commit_written(doc, part, encoded, author, context, Some(described))
+                .map(|_| then(doc, before))
         };
-        let moved = self.catch_up(chunk);
-        (out, moved)
+        (out, self.catch_up(chunk))
     }
 
     /// Derive what the store's own document of `chunk` gained since the store last read it:
@@ -283,7 +288,7 @@ struct Derived {
 
 impl Inner {
     /// Whether the open writes of chunk `chunk` begin with the action `part`, written as
-    /// replaying it writes ([`TiloStore::written_as`]); with what it did, read before its first
+    /// replaying it writes ([`TiloStore::commit_action`]); with what it did, read before its first
     /// write. `None` when they do not.
     fn written_as(&self, chunk: ChunkNo, part: &DynAction) -> Option<Described> {
         let mut writes = self
@@ -675,6 +680,21 @@ fn named<'a>(
 }
 
 /// Apply `changes` to `doc`: the number it gained, as a merge counts them.
+/// Apply `action`, encoded as `encoded`, to `doc` as `author`'s step recorded with `context`,
+/// committed: the heads `doc` held before it.
+pub fn apply_step(
+    doc: &mut Doc,
+    action: &dyn tilo_actions::Action,
+    encoded: tilo_actions::EncodedAction,
+    author: &[u8],
+    context: tilo_actions::ActionContext,
+) -> Result<Vec<automerge::ChangeHash>, tilo_actions::ActionError> {
+    let before = doc.committed_heads();
+    tilo_actions::apply_local_with_context(doc, action, encoded, Some(author), context)?;
+    doc.commit();
+    Ok(before)
+}
+
 fn take(doc: &mut Doc, changes: Vec<automerge::Change>) -> usize {
     let count = changes.len();
     match doc.apply_incoming(changes) {

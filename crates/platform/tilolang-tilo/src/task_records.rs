@@ -42,8 +42,8 @@ pub struct RecordReads {
     /// record of its earliest id.
     records_under: BTreeMap<String, String>,
     source: Rc<dyn RecordSource>,
-    /// The records this program read, by app, each with a host of its own over it.
-    open: RefCell<HashMap<String, (tilo_resource::Doc, Host)>>,
+    /// The records this program read, by app, each held by a host of its own.
+    open: RefCell<HashMap<String, Host>>,
     /// The apps whose record this program read as none: what the program saw of it (its root,
     /// say) was made by the read alone, never written anywhere.
     read_none: RefCell<std::collections::HashSet<String>>,
@@ -129,14 +129,17 @@ impl RecordReads {
             self.open.borrow_mut().insert(app.to_owned(), opened);
             return Ok(());
         }
-        let mut open = self.open.borrow_mut();
-        let Some((doc, host)) = open.get_mut(app) else {
+        let open = self.open.borrow();
+        let Some(host) = open.get(app) else {
             return Ok(());
         };
-        tilo_automerge::ApplyIncoming::load_incoming(doc, change)
-            .map_err(|error| format!("{app}'s change does not apply to its record: {error}"))?;
-        host.sync_from(doc);
-        Ok(())
+        host.store()
+            .write_chunk(crate::chunk::FIRST, |doc| {
+                tilo_automerge::ApplyIncoming::load_incoming(doc, change)
+            })
+            .0
+            .map(|_| ())
+            .map_err(|error| format!("{app}'s change does not apply to its record: {error}"))
     }
 
     /// The fields of the resource `item` of the app `app` ([`Host::read_values`]).
@@ -190,17 +193,17 @@ impl RecordReads {
         app: &str,
         read: impl FnOnce(&Host) -> Result<T, String>,
     ) -> Result<T, String> {
-        if let Some((_, host)) = self.open.borrow().get(app) {
+        if let Some(host) = self.open.borrow().get(app) {
             return read(host);
         }
-        let (doc, host) = self.open_host(app)?;
+        let host = self.open_host(app)?;
         let answer = read(&host);
-        self.open.borrow_mut().insert(app.to_owned(), (doc, host));
+        self.open.borrow_mut().insert(app.to_owned(), host);
         answer
     }
 
     /// A host of the app `app`'s package over its record, as the door hands it now.
-    fn open_host(&self, app: &str) -> Result<(tilo_resource::Doc, Host), String> {
+    fn open_host(&self, app: &str) -> Result<Host, String> {
         let (under, record) = self
             .address(app)
             .ok_or_else(|| format!("{app} is not installed"))?;
@@ -214,11 +217,7 @@ impl RecordReads {
     }
 
     /// A host of the app `app`'s package over its record `bytes` (none: an empty record).
-    fn host_over(
-        &self,
-        app: &str,
-        bytes: Option<&[u8]>,
-    ) -> Result<(tilo_resource::Doc, Host), String> {
+    fn host_over(&self, app: &str, bytes: Option<&[u8]>) -> Result<Host, String> {
         self.host_over_with(app, bytes, &[])
     }
 
@@ -229,7 +228,7 @@ impl RecordReads {
         app: &str,
         bytes: Option<&[u8]>,
         wrote: &[Vec<u8>],
-    ) -> Result<(tilo_resource::Doc, Host), String> {
+    ) -> Result<Host, String> {
         let bundle = self
             .bundles
             .get(app)
@@ -248,7 +247,7 @@ impl RecordReads {
         let host = Host::new(&doc, viewer, || None).map_err(|error| error.to_string())?;
         self.load(&host, bundle, &mut Vec::new())?;
         host.wait_index();
-        Ok((doc, host))
+        Ok(host)
     }
 
     /// Load `bundle` into `host`, after the installed packages it uses that it does not carry
