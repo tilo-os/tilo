@@ -772,7 +772,8 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
 }
 
 /// A message this session does not answer is still said so, so nothing of an app's waits on an
-/// answer that will not come.
+/// answer that will not come: every kind of message it serves nothing for is named back to the
+/// app as the app sent it, in the order the app sent them.
 #[test]
 fn a_message_the_session_cannot_answer_is_said_so() {
     let _settled = ui::motion::testing::settled();
@@ -792,13 +793,91 @@ fn a_message_the_session_cannot_answer_is_said_so() {
             region: [0.0, 0.0, 320.0, 240.0],
         },
     );
+    // The rest of what this session serves nothing for, each as the app names it on the wire,
+    // told on the same connection after it.
+    let rest = [
+        // What a window embeds of other apps' resources, and what else it shares live.
+        (
+            "embeds",
+            FloatingSurfaceClientMessage::Embeds {
+                embeds: Vec::new(),
+                instance: None,
+            },
+        ),
+        (
+            "shared_windows",
+            FloatingSurfaceClientMessage::SharedWindows { shared: Vec::new() },
+        ),
+        // The resource an agent would be asked about.
+        (
+            "window_resource",
+            FloatingSurfaceClientMessage::WindowResource { resource: None },
+        ),
+        // The answer to a device-shell operation nobody here asked for.
+        (
+            "device_shell_outcome",
+            FloatingSurfaceClientMessage::DeviceShellOutcome {
+                request: 1,
+                result: Err("refused".to_owned()),
+            },
+        ),
+        // A window's changes to describe, with no changes in it.
+        (
+            "describe_history",
+            FloatingSurfaceClientMessage::DescribeHistory {
+                changes: Vec::new(),
+            },
+        ),
+        // The connection said its version when it opened: a second greeting is told so too.
+        (
+            "hello",
+            FloatingSurfaceClientMessage::Hello {
+                version: FLOATING_SURFACE_PROTOCOL_VERSION,
+            },
+        ),
+        // A frame of a page, on a connection that offered no page.
+        (
+            "paint_stream",
+            FloatingSurfaceClientMessage::PaintStream {
+                payload: String::new(),
+                page: [0.0, 0.0, 320.0, 240.0],
+                scale: 1.0,
+                instance: None,
+                part: None,
+            },
+        ),
+    ];
+    for (_, message) in &rest {
+        tell(&mut connection, message);
+    }
     let answered = host_frames(&mut session, &mut connection, |answered| {
-        unanswered(answered, "update_region")
+        unanswered(answered, "paint_stream")
     });
     assert!(
         unanswered(&answered, "update_region"),
         "a message the session cannot answer is said so: {answered:?}"
     );
+    // Each is said so by the name the app sent it under, and in the order the app sent them: the
+    // last answers the session wrote are these, one for one.
+    let said: Vec<&str> = answered
+        .iter()
+        .filter_map(|frame| match frame {
+            FloatingSurfaceHostMessage::Unanswered { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .collect();
+    let sent: Vec<&str> = std::iter::once("update_region")
+        .chain(rest.iter().map(|(name, _)| *name))
+        .collect();
+    let last = &said[said.len().saturating_sub(sent.len())..];
+    for (at, name) in sent.iter().enumerate() {
+        assert_eq!(
+            last.get(at),
+            Some(name),
+            "message {at} (`{name}`) is said to be unanswered where the app sent it: of {sent:?} \
+             the session said {said:?}"
+        );
+    }
 }
 
 /// The workspace in front, and who the shell holds as its owner.
