@@ -4,6 +4,7 @@ import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
+import {UPLOAD_ACTIONS,UPLOAD_FOLDER,chooseFiles,dropRoute,droppedEntries,walkDropped} from './upload-files.mjs';
 import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines,wheelPointerMove} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
@@ -429,6 +430,13 @@ export async function mountDesktop(target,options={}) {
     onError:error=>report({catalogueError:String(error)})});
   const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes,fontLoader.digestOf(bytes)??''),failed:()=>runtime.font_failed(id)});
+  // Files going up into the workspace (`[{file, path}]`): one job the desk
+  // shows; a refusal the desk says itself.
+  function upload(files){
+    if(!active()||!files?.length)return;
+    try{runtime.desktop_upload(id,files);report({lastInput:'upload',upload:`${files.length} files`});}
+    catch(error){report({upload:'refused',error:String(error?.message??error)});}
+  }
   function update(raw){
     if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
@@ -441,7 +449,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(UPLOAD_ACTIONS.includes(request?.action))/* The desk menu's upload rows: the browser's chooser, then the files go up. */void chooseFiles({folder:request.action===UPLOAD_FOLDER}).then(upload,error=>report({upload:'failed',error:String(error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke?.key==='string')/* The person takes a device or an agent's grant back: the root this tab holds revokes it, for the reason they chose. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(Array.isArray(request?.profiles))fetchNames(request.profiles);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
@@ -735,18 +743,23 @@ export async function mountDesktop(target,options={}) {
         catch(error){report({clipboard:'failed',error:String(error)});}
       });
     }
-    // Files dropped on the page go to what is under the pointer, with their
-    // bytes: a page's files have no path to open.
+    // Files dropped on the page: a few plain files on a window go to that
+    // window with their bytes (a page's files have no path to open), and
+    // everything else goes up into the workspace (`upload-files.mjs`). The
+    // desktop says whether a window is under the pointer.
     on(canvas,'dragover',event=>{if(!active()||!draggingFiles(event.dataTransfer))return;event.preventDefault();event.dataTransfer.dropEffect='copy';});
     on(canvas,'drop',event=>{
       if(!active()||!draggingFiles(event.dataTransfer))return;
       event.preventDefault();
       const rect=canvas.getBoundingClientRect();
       const x=(event.clientX-rect.left)*(canvas.width/(rect.width||1)),y=(event.clientY-rect.top)*(canvas.height/(rect.height||1));
-      droppedFiles(event.dataTransfer).then(files=>{
-        if(!files.length)return;
-        const handed=runtime.drop_files(id,files,x,y);
-        report({lastInput:'drop',drop:`${handed} of ${files.length} files handed over`});
+      walkDropped(droppedEntries(event.dataTransfer)).then(({files,folder})=>{
+        if(!files.length||!active())return;
+        if(!config.app&&dropRoute({files,folder,onWindow:runtime.drop_on_window(id,x,y)})==='upload'){upload(files);return;}
+        return droppedFiles({files:files.map(({file})=>file)}).then(read=>{
+          const handed=runtime.drop_files(id,read,x,y);
+          report({lastInput:'drop',drop:`${handed} of ${read.length} files handed over`});
+        });
       }).catch(error=>report({drop:'failed',error:String(error)}));
     });
     // A key forwarded into the surface is the runtime's alone: it must not

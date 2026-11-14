@@ -28,6 +28,7 @@ use web_time::Instant;
 mod gets;
 #[cfg(not(target_arch = "wasm32"))]
 mod puts;
+pub mod upload;
 mod workspace;
 
 /// How long a request waits for the device's answer.
@@ -403,9 +404,12 @@ pub async fn ask<H: ActionHost + Clone + Send + Sync + 'static>(
 }
 
 impl SessionActions {
-    /// Ask the device for `step` of an upload, waiting for its answer.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn put_step(&self, step: tilo_actions::remote::ContentPutStep) -> Answered<ContentPutAnswer> {
+    /// Ask the device for `step` of an upload: its answer, once it comes, or why none came within
+    /// [`REPLY_DEADLINE`]. A page awaits it; a caller off one may block on it.
+    pub fn put_step(
+        &self,
+        step: tilo_actions::remote::ContentPutStep,
+    ) -> Pending<Answered<ContentPutAnswer>> {
         let correlation = self.0.next_correlation.fetch_add(1, Ordering::Relaxed);
         let (answer, answered) = pending();
         self.0
@@ -417,10 +421,22 @@ impl SessionActions {
             .0
             .send(RemoteActionMessage::ContentPutRequest { correlation, step })
         {
-            self.0.waiting.lock_recover().puts.remove(&correlation);
-            return Err(error);
+            let asked = self.0.waiting.lock_recover().puts.remove(&correlation);
+            if let Some(asked) = asked {
+                asked.answer.complete(Err(error));
+            }
         }
-        in_time(answered).unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
+        answered
+    }
+
+    /// [`Self::put_step`], waited for.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_step_waited(
+        &self,
+        step: tilo_actions::remote::ContentPutStep,
+    ) -> Answered<ContentPutAnswer> {
+        in_time(self.put_step(step))
+            .unwrap_or_else(|| Err(unavailable("the device did not answer in time")))
     }
 
     /// Ask the device for a piece of `content`, waiting for its answer.

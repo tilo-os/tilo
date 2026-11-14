@@ -15,6 +15,8 @@ cursor-icon = "1"
 serde.workspace = true
 serde_json.workspace = true
 tilo-actions = { path = "../../collab/actions" }
+# What a file uploaded through the session is, and so the app it lands in.
+tilo-content-types = { path = "../../system/content-types" }
 tilo-desktop-model = { path = "../desktop-model" }
 # The desk as the surfaces draw it and the person arranges it: the handle the arrangement changes
 # and the search text typed on the canvas places through.

@@ -204,6 +204,55 @@ pub fn drop_files(id: u64, files: &JsValue, x: f64, y: f64) -> Result<u32, JsVal
     })
 }
 
+/// Whether a drop at physical `(x, y)` of the canvas lands on a window the desk shows, which
+/// takes it as [`drop_files`] hands it: anywhere else on a desk (its background, between
+/// windows) the files are put into the workspace instead ([`desktop_upload`]). A mount that is
+/// one app, not a desk, is all window.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn drop_on_window(id: u64, x: f64, y: f64) -> Result<bool, JsValue> {
+    with_mount_quietly(id, |m| {
+        let Some(desktop) = m.desktop.as_ref() else {
+            return Ok(true);
+        };
+        let (x, y) = m.viewport.map_pointer(x, y);
+        let dpr = m.viewport.applied().dpr.max(f64::MIN_POSITIVE);
+        let point = ui::kurbo::Point::new(x / dpr, y / dpr);
+        Ok(desktop
+            .handle
+            .float_covers()
+            .into_iter()
+            .chain(desktop.handle.shown_tabs())
+            .any(|(_, rect)| rect.contains(point)))
+    })
+}
+
+/// Put `files` (`[{file, path}]`: a `File` or `Blob` the browser keeps, and its path in what was
+/// dropped or chosen) into the desktop's workspace, each landed in the app that opens it, as one
+/// job the person follows on the desk. The bytes are read a piece at a time as they go up.
+///
+/// # Errors
+///
+/// Rejects a closed or single-application mount, a page in no workspace, and a person who may
+/// not change the workspace's records.
+#[wasm_bindgen]
+pub fn desktop_upload(id: u64, files: &JsValue) -> Result<(), JsValue> {
+    let files = super::uploads::Picked::all(files);
+    with_mount(id, |m| {
+        m.desktop
+            .as_ref()
+            .ok_or_else(|| error("Desktop unavailable"))?
+            .upload(files)
+            .map_err(error)?;
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(())
+    })
+}
+
 /// Image URLs the application asked for, as `[{loader, url, maxDimension}]`.
 /// The page fetches and decodes each with the browser's own image decoders,
 /// no larger than `maxDimension` on either side, and hands the pixels back

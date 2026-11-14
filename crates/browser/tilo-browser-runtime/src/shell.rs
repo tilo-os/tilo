@@ -502,6 +502,8 @@ pub(crate) struct BrowserShell {
     invitable: Rc<Cell<bool>>,
     /// The layers the session placed over the page, drawn in it.
     layers: crate::layers::Layers,
+    /// The page's long work, on a card of its own among those layers.
+    jobs: crate::jobs_card::JobsCard,
     /// Alt+Shift+Tab's walk over the desk's windows, the session's own, whose panel the bar draws.
     walk: tilo_session::switcher::WindowWalk,
     /// Whom this page follows, and what of their place it already showed: the same machine a native
@@ -710,7 +712,7 @@ impl BrowserShell {
         ));
         let (hints, top, guide) = hints_and_guide(top);
         let invitable = Rc::new(Cell::new(false));
-        let (people, layers) = mount_people(
+        let (people, mut layers) = mount_people(
             &handle,
             &chrome,
             &intents,
@@ -718,6 +720,10 @@ impl BrowserShell {
             &wake,
             Rc::clone(&invitable),
         );
+        let jobs = crate::jobs_card::JobsCard::place(&mut layers, {
+            let wake = Arc::clone(&wake);
+            Rc::new(move || wake())
+        });
         let sync = peer.and_then(crate::peer_sync::client);
         Self {
             desk,
@@ -735,6 +741,7 @@ impl BrowserShell {
             sync,
             invitable,
             layers,
+            jobs,
             follow: RefCell::default(),
             directory,
             invite,
@@ -1785,6 +1792,7 @@ impl Widget for BrowserShell {
         changed |= self.follow_record_actions();
         changed |= self.take_person_card_ask();
         changed |= self.follow_people();
+        changed |= self.jobs.follow();
         changed |= self.follow_arrived_agents();
         // A window's bar asked for its menu, or the person chose one of its rows.
         changed |= self.follow_window_menu();
