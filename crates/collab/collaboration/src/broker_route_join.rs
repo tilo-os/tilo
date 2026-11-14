@@ -3,11 +3,11 @@
 //! passes the bound ends with a reason the app shows.
 
 use super::{
-    BridgeState, InboundBridge, KeySignal, RouteLabel, RouteSpec, SdkCommand, SdkJoinContext,
-    SdkRoute, audio_output, broker_participant_kind, change_waits, committed_document,
-    follow_channel_keys, native_media, spawn_action_catalogue_stream, spawn_content_stream,
-    spawn_context_stream, spawn_invocation_stream, spawn_op_stream, spawn_presence_stream,
-    spawn_realtime_stream, spawn_task_run_stream, tokio_mpsc,
+    BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteLabel, RouteSpec, SdkCommand,
+    SdkJoinContext, SdkRoute, audio_output, broker_participant_kind, change_waits,
+    committed_document, follow_channel_keys, native_media, spawn_action_catalogue_stream,
+    spawn_content_stream, spawn_context_stream, spawn_invocation_stream, spawn_op_stream,
+    spawn_presence_stream, spawn_realtime_stream, spawn_task_run_stream, tokio_mpsc,
 };
 use crate::time::Duration;
 use tilo_lock::MutexRecover as _;
@@ -183,14 +183,16 @@ pub(super) async fn join_route(
             _checks: None,
             _moderation: None,
             _attribution: None,
-            spec: spec.clone(),
-            channel,
+            document: DocumentRoute {
+                spec: spec.clone(),
+                channel,
+                encryption: std::sync::Arc::new(std::sync::Mutex::new(
+                    super::super::route_keys::RouteKeys::plain(),
+                )),
+            },
             presence: None,
             workspace_controls: std::collections::HashMap::new(),
             committed: false,
-            encryption: std::sync::Arc::new(std::sync::Mutex::new(
-                super::super::route_keys::RouteKeys::plain(),
-            )),
         });
     }
     let committed = committed_document::install(
@@ -357,11 +359,13 @@ pub(super) async fn join_route(
         _checks: checks,
         _moderation: moderation,
         _attribution: attribution,
-        spec: spec.clone(),
-        channel,
+        document: DocumentRoute {
+            spec: spec.clone(),
+            channel,
+            encryption,
+        },
         presence,
         workspace_controls: std::collections::HashMap::new(),
         committed,
-        encryption,
     })
 }

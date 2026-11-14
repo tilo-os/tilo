@@ -258,6 +258,25 @@ pub struct DocumentSendGate {
     release: tokio::sync::oneshot::Receiver<Result<(), String>>,
 }
 
+impl Captures {
+    /// Hold the next document commit: it says when it is entered, and is
+    /// answered with what is sent (dropping the sender answers `Err`).
+    pub fn gate_document(
+        &mut self,
+    ) -> (
+        mpsc::Receiver<()>,
+        tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) {
+        let (entered, observed) = mpsc::channel();
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        self.document_gates.push_back(DocumentSendGate {
+            entered,
+            release: receiver,
+        });
+        (observed, release)
+    }
+}
+
 /// Shared between the fake host's thread and the test.
 pub type SharedCaptures = std::sync::Arc<std::sync::Mutex<Captures>>;
 
@@ -2307,16 +2326,7 @@ fn document_publication_receipt_waits_for_primary_and_routed_rpc_completion() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
     let mut gates = Vec::new();
     for _ in 0..2 {
-        let (entered, observed) = mpsc::channel();
-        let (release, receiver) = tokio::sync::oneshot::channel();
-        captures
-            .lock()
-            .unwrap()
-            .document_gates
-            .push_back(DocumentSendGate {
-                entered,
-                release: receiver,
-            });
+        let (observed, release) = captures.lock().unwrap().gate_document();
         // Dropping the sender on unwind releases the fake RPC with Err.
         gates.push((observed, release));
     }
@@ -3477,16 +3487,7 @@ fn document_publication_certified_signing_refusal_never_reports_success() {
 #[cfg(unix)]
 fn committed_queued_publication_retains_payload_and_credits_until_gate_reopens() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (entered, observed) = mpsc::channel();
-    let (release, receiver) = tokio::sync::oneshot::channel();
-    captures
-        .lock()
-        .unwrap()
-        .document_gates
-        .push_back(DocumentSendGate {
-            entered,
-            release: receiver,
-        });
+    let (observed, release) = captures.lock().unwrap().gate_document();
     let broker = FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -3542,16 +3543,7 @@ fn committed_queued_publication_invalidation_is_terminal() {
 #[cfg(unix)]
 fn queued_publication_terminal_case(invalidate: bool) {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (entered, observed) = mpsc::channel();
-    let (release, receiver) = tokio::sync::oneshot::channel();
-    captures
-        .lock()
-        .unwrap()
-        .document_gates
-        .push_back(DocumentSendGate {
-            entered,
-            release: receiver,
-        });
+    let (observed, release) = captures.lock().unwrap().gate_document();
     let broker = FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -3668,16 +3660,7 @@ fn a_record_route_not_open_in_time_holds_back_only_that_record() {
 #[cfg(unix)]
 fn a_refused_document_rpc_fails_the_barrier_without_closing() {
     let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (entered, observed) = mpsc::channel();
-    let (release, receiver) = tokio::sync::oneshot::channel();
-    captures
-        .lock()
-        .unwrap()
-        .document_gates
-        .push_back(DocumentSendGate {
-            entered,
-            release: receiver,
-        });
+    let (observed, release) = captures.lock().unwrap().gate_document();
     let broker = FakeBroker {
         captures,
         ..FakeBroker::default()
@@ -4041,22 +4024,9 @@ fn document_publication_superseded_receipt_does_not_stop_worker() {
 #[cfg(test)]
 include!("native_media_tests.rs");
 
-/// A report the host resolves against the app's directory waits for the
-/// app's next turn. Reports and changes behind it go out and are answered
-/// meanwhile, or typing would outrun them and its edits miss the history.
-#[test]
-fn a_waiting_local_document_report_holds_back_nothing_behind_it() {
-    let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
-    let (release, held) = tokio::sync::oneshot::channel();
-    captures.lock().unwrap().admit_gates.push_back(held);
-    let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
-        captures,
-        ..FakeBroker::default()
-    });
-    let workspace = Uuid::new_v4();
-    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.notes", workspace);
-    let route = RouteSpec::app("so.tilo.notes", workspace);
-    let capture = |invocation: u128| crate::local_document_action::CapturedAction {
+/// A captured local edit reported as `invocation`.
+fn report_capture(invocation: u128) -> crate::local_document_action::CapturedAction {
+    crate::local_document_action::CapturedAction {
         custody: None,
         invocation: Uuid::from_u128(invocation),
         capture_id: Uuid::from_u128(invocation + 100),
@@ -4073,19 +4043,105 @@ fn a_waiting_local_document_report_holds_back_nothing_behind_it() {
         context: None,
         original_heads: Vec::new(),
         mutation_hashes: Vec::new(),
-    };
+    }
+}
+
+/// A document's round trip holds up the next document and an invocation's
+/// outcome, never the local action reports typed meanwhile: typing at speed
+/// would otherwise fill the report queue behind the changes it makes.
+#[test]
+fn a_waiting_document_holds_back_no_report_but_the_outcome_after_it() {
+    let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+    let (held, release) = captures.lock().unwrap().gate_document();
+    let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
+        captures,
+        ..FakeBroker::default()
+    });
+    let workspace = Uuid::new_v4();
+    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.notes", workspace);
+    let route = RouteSpec::app("so.tilo.notes", workspace);
+    tilo_test_env::wait_until("the primary route to publish", || {
+        manager.poll();
+        broker_state(&manager)
+            .document_reads
+            .publishable(&route.channel_id())
+    });
+    assert!(manager.send(CollabRequest::document_incremental(b"first".to_vec())));
+    tilo_test_env::recv("the held document RPC", &held);
+    assert!(manager.send(CollabRequest::document_incremental(b"second".to_vec())));
+    for request_id in 1..=20_u64 {
+        let capture = report_capture(u128::from(request_id));
+        manager
+            .report_local_document_action_to_route(route.clone(), request_id, capture)
+            .unwrap();
+    }
+    manager.send(CollabRequest::UpdateInvocation {
+        id: 7,
+        update: tilo_actions::InvocationUpdate::Succeeded {
+            invocation: tilo_actions::InvocationId::new(),
+            output: tilo_actions::ActionOutput::default(),
+        },
+    });
+    let mut answered = 0;
+    tilo_test_env::wait_until("every report answered, the document still held", || {
+        answered += manager
+            .poll()
+            .into_iter()
+            .filter(|event| matches!(event, CollabEvent::LocalDocumentActionReported { .. }))
+            .count();
+        answered == 20
+    });
+    {
+        let captures = captures.lock().unwrap();
+        assert_eq!(captures.admits_asked, 20);
+        assert_eq!(
+            captures.signed_ops.len(),
+            1,
+            "the second document waits for the first"
+        );
+        assert_eq!(
+            captures.terminal_updates, 0,
+            "the outcome waits for the document"
+        );
+    }
+    release.send(Ok(())).unwrap();
+    tilo_test_env::wait_until("the second document and the outcome", || {
+        manager.poll();
+        let captures = captures.lock().unwrap();
+        captures.signed_ops.len() == 2 && captures.terminal_updates == 1
+    });
+    assert!(manager.is_connected());
+    drop(manager);
+    worker.join().unwrap();
+}
+
+/// A report the host resolves against the app's directory waits for the
+/// app's next turn. Reports and changes behind it go out and are answered
+/// meanwhile, or typing would outrun them and its edits miss the history.
+#[test]
+fn a_waiting_local_document_report_holds_back_nothing_behind_it() {
+    let captures = Arc::new(std::sync::Mutex::new(Captures::default()));
+    let (release, held) = tokio::sync::oneshot::channel();
+    captures.lock().unwrap().admit_gates.push_back(held);
+    let (fd, captures, worker) = stand_up_fake_broker(FakeBroker {
+        captures,
+        ..FakeBroker::default()
+    });
+    let workspace = Uuid::new_v4();
+    let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "so.tilo.notes", workspace);
+    let route = RouteSpec::app("so.tilo.notes", workspace);
     tilo_test_env::wait_until("the primary route to join", || {
         manager.poll();
         manager.primary_route().is_some()
     });
     manager
-        .report_local_document_action_to_route(route.clone(), 1, capture(1))
+        .report_local_document_action_to_route(route.clone(), 1, report_capture(1))
         .unwrap();
     tilo_test_env::wait_until("the first report to reach the host", || {
         captures.lock().unwrap().admits_asked == 1
     });
     manager
-        .report_local_document_action_to_route(route, 2, capture(2))
+        .report_local_document_action_to_route(route, 2, report_capture(2))
         .unwrap();
     let mut answered = Vec::new();
     tilo_test_env::wait_until("the second report's answer, the first still held", || {

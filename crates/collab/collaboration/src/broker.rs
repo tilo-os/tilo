@@ -3664,6 +3664,8 @@ async fn drive_shovel(
     let mut key_fetch: Option<KeyFetch> = None;
     #[cfg(test)]
     let mut key_timer_rounds = 0_usize;
+    let signer: SharedSigner = std::rc::Rc::new(tokio::sync::Mutex::new(signer));
+    let lane = DocumentLane::start(signer.clone(), inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
@@ -3673,9 +3675,6 @@ async fn drive_shovel(
     // The app's live activity over the primary route, when the shell
     // presents live activities.
     let mut live_activity_link: Option<LiveActivityLink> = None;
-    // The first document mutation since the last publication barrier that
-    // did not reach the broker, reported to (and cleared by) that barrier.
-    let mut unpublished: Option<String> = None;
     // The action directory the owner published while no primary route was
     // joined, sent as soon as one is.
     let mut unrouted_directory: Option<mpsc::SyncSender<ActionDirectoryRequest>> = None;
@@ -3764,14 +3763,15 @@ async fn drive_shovel(
                             // The route learns its keys (or that it waits)
                             // before the edits that waited for it go out.
                             if let Some(fetch) = key_fetch.take() {
-                                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx)
+                                apply_fetched_keys(&routes, fetch.await, &mut *signer.lock().await, &inbound_tx)
                                     .await;
                             }
                             let round = key_schedule.join_round();
+                            let mut signing = signer.lock().await;
                             if let Some(fetch) =
-                                refresh_keys(&routes, &mut signer, &inbound_tx, &round).await
+                                refresh_keys(&routes, &mut signing, &inbound_tx, &round).await
                             {
-                                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx)
+                                apply_fetched_keys(&routes, fetch.await, &mut signing, &inbound_tx)
                                     .await;
                             }
                         }
@@ -3858,7 +3858,7 @@ async fn drive_shovel(
                 if key_fetch.is_none()
                     && let Some(round) = key_schedule.marked_round()
                 {
-                    key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                    key_fetch = refresh_keys(&routes, &mut *signer.lock().await, &inbound_tx, &round).await;
                 }
                 continue;
             }
@@ -3868,7 +3868,7 @@ async fn drive_shovel(
                     key_timer_rounds += 1;
                 }
                 let round = key_schedule.timer_round();
-                key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                key_fetch = refresh_keys(&routes, &mut *signer.lock().await, &inbound_tx, &round).await;
                 continue;
             }
             fetched = async {
@@ -3879,12 +3879,12 @@ async fn drive_shovel(
             }, if key_fetch.is_some() =>
             {
                 key_fetch = None;
-                if apply_fetched_keys(&routes, fetched, &mut signer, &inbound_tx).await {
+                if apply_fetched_keys(&routes, fetched, &mut *signer.lock().await, &inbound_tx).await {
                     key_schedule.restart();
                 }
                 // Routes told to ask while the round was out ask now.
                 if let Some(round) = key_schedule.marked_round() {
-                    key_fetch = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await;
+                    key_fetch = refresh_keys(&routes, &mut *signer.lock().await, &inbound_tx, &round).await;
                 }
                 continue;
             }
@@ -3942,6 +3942,15 @@ async fn drive_shovel(
                 },
             ));
             continue;
+        }
+        if orders_after_documents(&command) {
+            lane.drained().await;
+            // A document that did not reach the broker ended the bridge:
+            // nothing queued after it goes out, an invocation's outcome
+            // least of all.
+            if !inbound_tx.state.is_healthy() {
+                break;
+            }
         }
         let routes_before = routes.len();
         let document = command.document_len().is_some();
@@ -4017,9 +4026,10 @@ async fn drive_shovel(
                     published = dispatch_sdk_request(
                         route,
                         request,
-                        &mut signer,
+                        &lane,
                         &inbound_tx,
                         RouteRole::App,
+                        _reservation,
                     )
                     .await;
                     if !inbound_tx.state.is_healthy() {
@@ -4065,9 +4075,10 @@ async fn drive_shovel(
                     published = dispatch_sdk_request(
                         route,
                         request,
-                        &mut signer,
+                        &lane,
                         &inbound_tx,
                         RouteRole::Record,
+                        _reservation,
                     )
                     .await;
                     if !inbound_tx.state.is_healthy() {
@@ -4103,7 +4114,7 @@ async fn drive_shovel(
                 // A superseded receipt may have no receiver. Its prefix still ran.
                 // A latched, specific publication failure (a refused signature
                 // or commit) outranks the generic "did not reach" marker.
-                let unpublished = unpublished.take();
+                let unpublished = lane.unpublished.take();
                 replies.answer(&inbound_tx.state.publication_result().and_then(|()| {
                     unpublished.map_or(Ok(()), |reason| {
                         Err(DocumentPublicationError::Failed(reason))
@@ -4243,7 +4254,13 @@ async fn drive_shovel(
             #[cfg(test)]
             SdkCommand::KeyScheduleProbe(reply) => {
                 if let Some(fetch) = key_fetch.take()
-                    && apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await
+                    && apply_fetched_keys(
+                        &routes,
+                        fetch.await,
+                        &mut *signer.lock().await,
+                        &inbound_tx,
+                    )
+                    .await
                 {
                     key_schedule.restart();
                 }
@@ -4255,22 +4272,27 @@ async fn drive_shovel(
                 });
             }
         }
-        if document && !published && unpublished.is_none() {
-            unpublished = Some("a document mutation did not reach the broker".into());
+        if document && !published {
+            lane.unpublished
+                .borrow_mut()
+                .get_or_insert_with(|| "a document mutation did not reach the broker".into());
         }
         if asks_channel_keys && routes.len() > routes_before {
             // A route joined just now learns its keys (or that it waits)
             // before its first edit rather than at the next round. Only
             // sending waits for that; the routes keep receiving.
             if let Some(fetch) = key_fetch.take() {
-                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
+                apply_fetched_keys(&routes, fetch.await, &mut *signer.lock().await, &inbound_tx)
+                    .await;
             }
             let round = key_schedule.join_round();
-            if let Some(fetch) = refresh_keys(&routes, &mut signer, &inbound_tx, &round).await {
-                apply_fetched_keys(&routes, fetch.await, &mut signer, &inbound_tx).await;
+            let mut signing = signer.lock().await;
+            if let Some(fetch) = refresh_keys(&routes, &mut signing, &inbound_tx, &round).await {
+                apply_fetched_keys(&routes, fetch.await, &mut signing, &inbound_tx).await;
             }
         }
     }
+    lane.close().await;
 }
 
 #[allow(
@@ -4442,12 +4464,228 @@ struct SdkRoute {
     _checks: Option<crate::lane::Registration<super::approved_checks::Endpoint>>,
     _moderation: Option<crate::lane::Registration<super::external_moderation::Endpoint>>,
     _attribution: Option<crate::lane::Registration<super::write_attribution_lane::Endpoint>>,
-    spec: RouteSpec,
-    channel: runtime_collab::ChannelHandle,
+    document: DocumentRoute,
     presence: Option<runtime_collab::PresenceHandle>,
     workspace_controls: std::collections::HashMap<u64, runtime_collab::WorkspaceControlHandle>,
     committed: bool,
+}
+
+/// What publishing a route's document takes: its channel and its keys,
+/// shared with the connection's [`DocumentLane`].
+#[derive(Clone)]
+struct DocumentRoute {
+    spec: RouteSpec,
+    channel: runtime_collab::ChannelHandle,
     encryption: SharedRouteKeys,
+}
+
+impl std::ops::Deref for SdkRoute {
+    type Target = DocumentRoute;
+
+    fn deref(&self) -> &DocumentRoute {
+        &self.document
+    }
+}
+
+/// The connection's document publications, made one after another in the
+/// order they were asked, beside its other traffic: a document's round trip
+/// holds up the next document, never a report, a presence word or a search
+/// index delta. Everything else still goes out after the documents asked
+/// before it ([`orders_after_documents`]): an invocation's outcome never
+/// reaches the host ahead of its change.
+struct DocumentLane {
+    jobs: tokio_mpsc::UnboundedSender<LaneJob>,
+    task: tokio::task::JoinHandle<()>,
+    /// Publications asked and not yet made.
+    queued: std::rc::Rc<std::cell::Cell<usize>>,
+    /// The first document publication since the last barrier that did not
+    /// reach the broker, reported to (and cleared by) that barrier.
+    unpublished: std::rc::Rc<std::cell::RefCell<Option<String>>>,
+}
+
+/// The signer a connection's routes and its document lane share; a document
+/// holds it only while it signs and sends.
+type SharedSigner = std::rc::Rc<tokio::sync::Mutex<LocalSdkDocumentSigner>>;
+
+enum LaneJob {
+    Publish {
+        route: DocumentRoute,
+        request: CollabRequest,
+        role: RouteRole,
+        /// The queue budget the publication holds until it is made.
+        _reservation: ByteReservation,
+    },
+    /// Answered once every publication asked before it is made.
+    Drained(tokio::sync::oneshot::Sender<()>),
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
+)]
+impl DocumentLane {
+    fn start(signer: SharedSigner, inbound: InboundBridge) -> Self {
+        let (jobs, mut received) = tokio_mpsc::unbounded_channel();
+        let queued = std::rc::Rc::new(std::cell::Cell::new(0_usize));
+        let unpublished = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let (count, failed) = (queued.clone(), unpublished.clone());
+        let task = tokio::task::spawn_local(async move {
+            while let Some(job) = received.recv().await {
+                match job {
+                    LaneJob::Publish {
+                        route,
+                        request,
+                        role,
+                        _reservation,
+                    } => {
+                        if !publish_document(&route, &signer, request, &inbound, role).await {
+                            failed.borrow_mut().get_or_insert_with(|| {
+                                "a document mutation did not reach the broker".to_owned()
+                            });
+                        }
+                        count.set(count.get().saturating_sub(1));
+                    }
+                    LaneJob::Drained(done) => {
+                        let _ = done.send(());
+                    }
+                }
+            }
+        });
+        Self {
+            jobs,
+            task,
+            queued,
+            unpublished,
+        }
+    }
+
+    /// Queue `request` behind the documents asked before it.
+    fn publish(
+        &self,
+        route: &DocumentRoute,
+        request: CollabRequest,
+        role: RouteRole,
+        reservation: ByteReservation,
+    ) {
+        self.queued.set(self.queued.get().saturating_add(1));
+        let _ = self.jobs.send(LaneJob::Publish {
+            route: route.clone(),
+            request,
+            role,
+            _reservation: reservation,
+        });
+    }
+
+    /// Wait until every publication asked so far is made.
+    async fn drained(&self) {
+        let (done, wait) = tokio::sync::oneshot::channel();
+        if self.queued.get() != 0 && self.jobs.send(LaneJob::Drained(done)).is_ok() {
+            let _ = wait.await;
+        }
+    }
+
+    /// Make what is queued, then end.
+    async fn close(self) {
+        drop(self.jobs);
+        let _ = self.task.await;
+    }
+}
+
+/// Whether `command` goes out only after the documents asked before it. Only
+/// what no document's outcome bears on passes them: a local action report
+/// (admission is no publication), a presence word and a search index delta.
+fn orders_after_documents(command: &SdkCommand) -> bool {
+    !matches!(
+        command,
+        SdkCommand::Primary(request) | SdkCommand::ToRoute(_, request)
+            if matches!(
+                request,
+                CollabRequest::Document { .. }
+                    | CollabRequest::SignedOperation { .. }
+                    | CollabRequest::ReportLocalDocumentAction { .. }
+                    | CollabRequest::Presence { .. }
+                    | CollabRequest::PublishSearchIndex { .. }
+            )
+    )
+}
+
+/// Make one document publication on `route`, once the route may publish.
+/// Every failure is recorded on the bridge before this returns.
+#[allow(
+    clippy::future_not_send,
+    reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
+)]
+async fn publish_document(
+    route: &DocumentRoute,
+    signer: &SharedSigner,
+    request: CollabRequest,
+    inbound_tx: &InboundBridge,
+    role: RouteRole,
+) -> bool {
+    match wait_for_document_publication(route, &inbound_tx.state).await {
+        PublicationWait::Open => {}
+        PublicationWait::Stopped => return false,
+        // A record's route can wait on another device (its keys come
+        // from one that holds them): only that record waits, and its
+        // owner sends it whole once the route opens.
+        PublicationWait::Late if role == RouteRole::Record => {
+            inbound_tx.state.route_unpublished(route.spec.channel_id());
+            return false;
+        }
+        PublicationWait::Late => {
+            inbound_tx.state.publication_failed(
+                "queued document publication",
+                "hydration did not become current before deadline",
+                true,
+            );
+            return false;
+        }
+    }
+    match request {
+        CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
+            Ok(bytes) => match route.channel.send(&bytes).await {
+                Ok(()) => inbound_tx.state.change_sent(&route.spec),
+                // A definite refusal is the peer's answer about this signed
+                // change: it alone is not accepted and the bridge stays open.
+                Err(error) if refused_by_peer(&error) => inbound_tx.state.note_refused_change(
+                    &route.spec,
+                    "signed document commit RPC",
+                    &error,
+                ),
+                Err(error) => {
+                    inbound_tx
+                        .state
+                        .publication_failed("signed document commit RPC", error, true);
+                }
+            },
+            Err(error) => {
+                inbound_tx
+                    .state
+                    .publication_failed("signed document encoding", error, true);
+            }
+        },
+        // The helper records every failure, including a policy denial that
+        // leaves the identity connection usable, before returning its result.
+        CollabRequest::Document {
+            mutation,
+            authorization,
+            commit,
+        } => {
+            let mut signer = signer.lock().await;
+            return send_document_mutation(
+                route,
+                &mut signer,
+                mutation,
+                authorization,
+                commit,
+                inbound_tx,
+            )
+            .await
+            .is_ok();
+        }
+        _ => {}
+    }
+    true
 }
 
 // Not `Send`: the route state it holds stays on the shovel thread's
@@ -5475,7 +5713,10 @@ enum RouteRole {
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
-async fn wait_for_document_publication(route: &SdkRoute, state: &BridgeState) -> PublicationWait {
+async fn wait_for_document_publication(
+    route: &DocumentRoute,
+    state: &BridgeState,
+) -> PublicationWait {
     let deadline = tilo_rt::timer_now() + Duration::from_secs(3);
     let key = route.spec.channel_id();
     loop {
@@ -5512,7 +5753,7 @@ async fn wait_for_document_publication(route: &SdkRoute, state: &BridgeState) ->
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_document_mutation(
-    route: &SdkRoute,
+    route: &DocumentRoute,
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
     authorization: Option<std::sync::Arc<dyn crate::DocumentCustody>>,
@@ -5593,7 +5834,7 @@ async fn send_document_mutation(
 /// the broker stamps it here. The device signature over the payload then
 /// signs the commit, and a receiver reads the author off that signature.
 fn origin_commit(
-    route: &SdkRoute,
+    route: &DocumentRoute,
     signer: &LocalSdkDocumentSigner,
     declared: Option<collab_types::WorkspaceCommit>,
     mutation: &collab_types::DocumentMutation,
@@ -5669,7 +5910,7 @@ fn origin_claims(
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn send_document_frame(
-    route: &SdkRoute,
+    route: &DocumentRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
     claims: &[collab_types::ChangeClaim],
@@ -5736,7 +5977,7 @@ fn signer_device(signer: &LocalSdkDocumentSigner) -> [u8; 32] {
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
 )]
 async fn try_send_frame(
-    route: &SdkRoute,
+    route: &DocumentRoute,
     signer: &mut LocalSdkDocumentSigner,
     cleartext: Vec<u8>,
     claims: &[collab_types::ChangeClaim],
@@ -5953,7 +6194,7 @@ impl std::fmt::Display for FrameRefusal {
     clippy::future_not_send,
     reason = "the host identity transport is retained only on the shovel LocalSet"
 )]
-async fn refresh_route_keys(route: &SdkRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
+async fn refresh_route_keys(route: &DocumentRoute, signer: &mut LocalSdkDocumentSigner) -> bool {
     let Ok(known) = route
         .encryption
         .lock()
@@ -6249,34 +6490,11 @@ async fn answer_beside<T: 'static>(
 async fn dispatch_sdk_request(
     route: &mut SdkRoute,
     request: CollabRequest,
-    signer: &mut LocalSdkDocumentSigner,
+    lane: &DocumentLane,
     inbound_tx: &InboundBridge,
     role: RouteRole,
+    reservation: ByteReservation,
 ) -> bool {
-    if matches!(
-        request,
-        CollabRequest::Document { .. } | CollabRequest::SignedOperation { .. }
-    ) {
-        match wait_for_document_publication(route, &inbound_tx.state).await {
-            PublicationWait::Open => {}
-            PublicationWait::Stopped => return false,
-            // A record's route can wait on another device (its keys come
-            // from one that holds them): only that record waits, and its
-            // owner sends it whole once the route opens.
-            PublicationWait::Late if role == RouteRole::Record => {
-                inbound_tx.state.route_unpublished(route.spec.channel_id());
-                return false;
-            }
-            PublicationWait::Late => {
-                inbound_tx.state.publication_failed(
-                    "queued document publication",
-                    "hydration did not become current before deadline",
-                    true,
-                );
-                return false;
-            }
-        }
-    }
     match request {
         CollabRequest::ExternalModeration {
             command,
@@ -6287,39 +6505,8 @@ async fn dispatch_sdk_request(
                 .await;
         }
         CollabRequest::Hello { .. } => {}
-        CollabRequest::SignedOperation { envelope } => match postcard::to_stdvec(&*envelope) {
-            Ok(bytes) => match route.channel.send(&bytes).await {
-                Ok(()) => inbound_tx.state.change_sent(&route.spec),
-                // A definite refusal is the peer's answer about this signed
-                // change: it alone is not accepted and the bridge stays open.
-                Err(error) if refused_by_peer(&error) => inbound_tx.state.note_refused_change(
-                    &route.spec,
-                    "signed document commit RPC",
-                    &error,
-                ),
-                Err(error) => {
-                    inbound_tx
-                        .state
-                        .publication_failed("signed document commit RPC", error, true);
-                }
-            },
-            Err(error) => {
-                inbound_tx
-                    .state
-                    .publication_failed("signed document encoding", error, true);
-            }
-        },
-        CollabRequest::Document {
-            mutation,
-            authorization,
-            commit,
-        } => {
-            // The helper records every failure, including a policy denial that
-            // leaves the identity connection usable, before returning its result.
-            let outcome =
-                send_document_mutation(route, signer, mutation, authorization, commit, inbound_tx)
-                    .await;
-            return outcome.is_ok();
+        request @ (CollabRequest::SignedOperation { .. } | CollabRequest::Document { .. }) => {
+            lane.publish(route, request, role, reservation);
         }
         CollabRequest::OfferContent { hash, bytes } => {
             if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {

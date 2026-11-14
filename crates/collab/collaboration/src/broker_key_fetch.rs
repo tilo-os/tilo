@@ -2,7 +2,7 @@
 //! endpoint with none was given, answers each route's question off the
 //! shovel thread, and the answer updates the route's keys.
 
-use super::{EndpointChannelKeys, SdkCertifiedIdentity, SdkRoute};
+use super::{DocumentRoute, EndpointChannelKeys, SdkCertifiedIdentity};
 
 /// The keys the identity service answered, or, when it could not answer,
 /// that they are unavailable and the answer was not the channel service's.
@@ -40,7 +40,11 @@ pub(super) struct KeysAnswer {
 
 /// Take the identity service's `reply` for `route`, asked at `generation`.
 /// Returns whether the route's state or keys changed.
-pub(super) fn update_route_keys(route: &SdkRoute, answer: KeysAnswer, generation: u64) -> bool {
+pub(super) fn update_route_keys(
+    route: &DocumentRoute,
+    answer: KeysAnswer,
+    generation: u64,
+) -> bool {
     let Ok(mut keys) = route.encryption.lock() else {
         return false;
     };
@@ -69,7 +73,7 @@ pub(super) struct KeyQuery {
 }
 
 impl KeyQuery {
-    pub(super) fn of(route: &SdkRoute, generation: u64) -> Self {
+    pub(super) fn of(route: &DocumentRoute, generation: u64) -> Self {
         Self {
             route: route.spec.channel_id(),
             workspace_id: route.spec.cluster_id.to_string(),
