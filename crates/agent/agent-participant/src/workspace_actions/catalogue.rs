@@ -34,7 +34,9 @@ impl Worker {
         // waits for the workspace's once ([`catalogue_keys`], which the
         // service's thread admitted this request by).
         let keys = catalogue_keys(query);
+        let refresh_began = std::time::Instant::now();
         let state = self.refresh(workspace_id, keys.read())?;
+        let refresh_ms = refresh_began.elapsed().as_millis();
         let revision = state.revision.to_string();
         // A workspace nothing was written in yet is named by the provider
         // asked for, so its new records are offered; one this member's replica
@@ -70,6 +72,7 @@ impl Worker {
             None => routes.iter().take(DEFAULT_ROWS_RECORDS).cloned().collect(),
         };
         let bounded = self.bounded(caller);
+        let page_began = std::time::Instant::now();
         // The workspace's own rows: its apps, to open.
         let own_rows = if query
             .provider
@@ -119,6 +122,14 @@ impl Worker {
                 }))
                 .collect();
         }
+        tracing::debug!(
+            records = routes.len(),
+            rows = page.rows.len(),
+            provider = query.provider.is_some(),
+            refresh_ms = refresh_ms,
+            page_ms = page_began.elapsed().as_millis(),
+            "workspace actions: a catalogue page was assembled"
+        );
         Ok(page)
     }
 

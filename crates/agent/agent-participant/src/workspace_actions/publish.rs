@@ -21,7 +21,7 @@ use tilo_actions::remote::{ActorPlace, InvocationReceipt, InvocationState};
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
 
-use super::{COMMIT_WAIT, Ledger, Needs, Outcome, Performed, Worker, is_part};
+use super::{Ledger, Needs, Outcome, Performed, Worker, is_part};
 use tilo_relay_protocol::WorkspaceId;
 
 /// The record at `route` as the session's replica holds it, and whether the
@@ -45,10 +45,17 @@ fn document(
     }
 }
 
-/// How long an invocation waits to hear its writes were saved before it is
-/// answered pending: the caller follows it with `tilo_status` until it is
-/// saved. A write the host saves at once (most) is answered done directly.
-const SAVE_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+/// How long an invocation waits on the service's thread for its writes to be
+/// saved before it is answered pending: the caller follows it with
+/// `tilo_status` until it is saved.
+///
+/// The wait is bounded tightly because the thread is the service's throughput:
+/// it serves every workspace of its share, and a thread held while one
+/// workspace's write reaches stable storage is time none of the others is
+/// served in. A write the host confirms at once (the ordinary case) is still
+/// answered done; anything slower is answered pending, and the caller follows
+/// it to the same outcome.
+const SAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How long a write answered pending may wait to be saved before it is
 /// answered failed: whoever follows it hears how it went within this,
@@ -279,31 +286,6 @@ impl Worker {
         Ok(())
     }
 
-    /// Hand `mutation` to the session, done only once the host holds it
-    /// durably (the session's barrier): what the next write is made over.
-    fn commit_durably(
-        &mut self,
-        workspace_id: WorkspaceId,
-        route: &DocumentRoute,
-        mutation: &DocumentMutation,
-    ) -> Result<(), String> {
-        self.hand_over(workspace_id, route, mutation)?;
-        let saved = self
-            .workspaces
-            .get(&workspace_id)
-            .ok_or("the workspace was not joined")?
-            .peer
-            .barrier()?;
-        match saved.recv_timeout(COMMIT_WAIT) {
-            Ok(Ok(())) => {
-                Written::of(route, mutation).saved();
-                Ok(())
-            }
-            Ok(Err(reason)) => Err(format!("the host did not save the change: {reason}")),
-            Err(_) => Err("the host has not acknowledged saving the change".into()),
-        }
-    }
-
     /// Answer `invocation` pending: it ran, and is done once the host holds
     /// what it wrote, which the caller follows it to.
     pub(super) fn answer_pending(
@@ -386,9 +368,16 @@ impl Worker {
                 return Saving::Failed(reason);
             }
         };
+        let waited = std::time::Instant::now();
         match saved.recv_timeout(SAVE_GRACE) {
             Ok(outcome) => {
                 log_saved(&written, &outcome);
+                tracing::debug!(
+                    writes = written.len(),
+                    waited_ms = waited.elapsed().as_millis(),
+                    saved = outcome.is_ok(),
+                    "workspace actions: a change's save settled on the service thread"
+                );
                 match outcome {
                     Ok(()) => Saving::Saved,
                     Err(reason) => {
@@ -397,6 +386,11 @@ impl Worker {
                 }
             }
             Err(tilo_session_client::RecvTimeoutError::Timeout) => {
+                tracing::debug!(
+                    writes = written.len(),
+                    waited_ms = waited.elapsed().as_millis(),
+                    "workspace actions: a change's save outlived the grace; answered pending"
+                );
                 Saving::Pending(Unsaved { saved, written })
             }
             Err(tilo_session_client::RecvTimeoutError::Disconnected) => {
@@ -530,9 +524,10 @@ impl Worker {
         } else {
             DocumentMutation::Snapshot(index.save())
         };
-        // Durably: the next name is written over this one, read back from the
-        // session's replica.
-        self.commit_durably(workspace_id, &index_route, &mutation)
+        // Handed to the session like the change it names, so the barrier the
+        // request's answer waits on covers it: done means the host holds the
+        // record and the index that names it.
+        self.commit(workspace_id, &index_route, &mutation)
     }
 }
 

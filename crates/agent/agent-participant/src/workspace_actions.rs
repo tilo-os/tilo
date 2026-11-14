@@ -114,10 +114,6 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
-/// How long a comment the host files for someone may take to be saved
-/// before the action reports that it was not.
-const COMMIT_WAIT: Duration = Duration::from_secs(10);
-
 /// Records whose rows a catalogue naming no provider lists.
 pub const DEFAULT_ROWS_RECORDS: usize = 12;
 /// Records kept held between requests; the least recently used is dropped.
@@ -1592,12 +1588,19 @@ impl Worker {
         }
     }
 
-    /// Take `job`, queued at `queued`, logging one that waited or ran long.
+    /// Take `job`, queued at `queued`, logging every one at debug and one
+    /// that waited or ran long at warn.
     fn timed(&mut self, queued: Instant, job: Job) {
         let started = Instant::now();
         let kind = job.kind();
         self.take(job);
         let (waited, ran) = (started.duration_since(queued), started.elapsed());
+        tracing::debug!(
+            kind,
+            waited_ms = waited.as_millis(),
+            ran_ms = ran.as_millis(),
+            "workspace actions: a request ran"
+        );
         if waited.max(ran) >= SLOW_JOB {
             tracing::warn!(
                 kind,
